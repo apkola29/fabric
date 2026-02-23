@@ -15,8 +15,7 @@ No user credentials are passed through -- only the SPN's `client_credentials` gr
 | Requirement | Details |
 |---|---|
 | Workspace access | The SPN must have **Contributor** (or higher) role on the Fabric workspace |
-| Semantic Model access | If the agent uses a Semantic Model data source, the SPN needs **Build** permission on that model |
-| XMLA endpoints | Must be enabled in the tenant for Semantic Model-backed agents |
+
 
 ## Setup
 
