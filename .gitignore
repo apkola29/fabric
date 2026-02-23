@@ -1,0 +1,11 @@
+# Secrets and credentials
+*.env
+.env.*
+credentials.*
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
