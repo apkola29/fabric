@@ -103,12 +103,18 @@ Docs:
 - [Execute Queries](https://learn.microsoft.com/en-us/rest/api/power-bi/datasets/execute-queries)
 - [List Datasets in Group](https://learn.microsoft.com/en-us/rest/api/power-bi/datasets/get-datasets-in-group)
 
+## Known Limitations
+
+**SPN auth does not support DAX queries on Fabric-native semantic models.**
+Semantic models with `TargetStorageMode: PremiumFiles` (DirectLake / Lakehouse-backed) reject `executeQueries` calls from service principals with `PowerBINotAuthorizedException`, even when Build permission and all tenant settings are correctly configured. This is a platform limitation -- use **Interactive Browser** auth instead for these models. SPN auth works for listing datasets.
+
 ## Troubleshooting
 
 | Error | Cause | Fix |
 |---|---|---|
 | `401 Unauthorized` on token | Bad SPN credentials | Verify Client ID/Secret in Azure portal |
-| `PowerBINotAuthorizedException` on DAX | Missing Build permission | Grant Build permission on the semantic model |
+| `PowerBINotAuthorizedException` on DAX | Missing Build permission, or SPN on a Fabric-native model | Grant Build permission; use Interactive auth for Fabric models (see above) |
 | `403 Forbidden` on list | No workspace access | Grant Viewer (or higher) role on the workspace |
+| `DatasetExecuteQueriesError` | Data issue (e.g. DateTime out of range) | Check the query or underlying data; try `EVALUATE ROW("count", COUNTROWS('Table'))` |
 | No datasets found | Workspace has no semantic models | Verify the workspace ID and that models exist |
 | `azure-identity` import error | Package not installed | Run `pip install azure-identity` |
