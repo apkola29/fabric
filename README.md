@@ -1,6 +1,6 @@
 # Fabric Data Agent CLI
 
-Interactive CLI client to query any published [Microsoft Fabric Data Agent](https://learn.microsoft.com/en-us/fabric/data-science/concept-data-agents) using Service Principal (SPN) authentication.
+Interactive CLI client to query any published [Microsoft Fabric Data Agent]([https://learn.microsoft.com/en-us/fabric/data-science/concept-data-agents](https://learn.microsoft.com/en-us/fabric/data-science/data-agent-end-to-end-tutorial)) using Service Principal (SPN) authentication.
 
 No user credentials are passed through -- only the SPN's `client_credentials` grant is used.
 
