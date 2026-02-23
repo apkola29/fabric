@@ -6,4 +6,6 @@ Tools and scripts for working with [Microsoft Fabric](https://learn.microsoft.co
 
 | Project | Description |
 |---|---|
-| [`data-agent-spn/`](data-agent-spn/) | Query published Fabric Data Agents using Service Principal (SPN) authentication |
+| [`api-connectivity/`](api-connectivity/) | Verify SPN authentication and basic Fabric REST API access |
+| [`data-agent-spn/`](data-agent-spn/) | Query Data Agents via the OpenAI Assistants-compatible API |
+| [`mcp-client/`](mcp-client/) | Query Data Agents via the Model Context Protocol (MCP) |
