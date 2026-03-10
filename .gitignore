@@ -1,0 +1,27 @@
+# Secrets and credentials
+*.env
+.env.*
+credentials.*
+_test_tenant.py
+_scan_schema.py
+
+# Exported data (may contain tenant info)
+metrics_app_schema.json
+metrics_app_full_schema.json
+
+# Temp files
+tmpclaude-*
+
+# Local tools (not published)
+capacity-simulator/
+
+# Embedded repos
+fabric.wiki/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+
