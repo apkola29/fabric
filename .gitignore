@@ -8,6 +8,12 @@ _scan_schema.py
 # Exported data (may contain tenant info)
 metrics_app_schema.json
 metrics_app_full_schema.json
+chargeback_app_schema.json
+chargeback_app_tables.json
+
+# Old folder names (replaced by fabric-monitoring-guides/)
+capacity-metrics-custom-reports/
+chargeback-custom-reports/
 
 # Temp files
 tmpclaude-*
@@ -25,3 +31,11 @@ __pycache__/
 .venv/
 venv/
 
+
+# Working artifacts
+scan_result.json
+*_measures.txt
+*_schema.txt
+cost_intelligence_exports/
+monitoring_exports/
+themes/
