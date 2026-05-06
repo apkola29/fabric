@@ -33,9 +33,7 @@ Alternatively, in the **Fabric portal**:
 
 ### Tables at a Glance
 
-The semantic model contains **105 tables** (294 measures).
-
-> **Note**: This schema was verified against the **v54** version of the Capacity Metrics App using the Scanner API on March 12, 2026. Column names use spaced format (e.g., `Capacity Id` not `capacityId`).
+The semantic model contains **110 tables** and **349 measures**. Column names use spaced format (e.g., `Capacity Id`, not `capacityId`).
 
 #### Dimension Tables
 
@@ -56,8 +54,8 @@ The semantic model contains **105 tables** (294 measures).
 | **Operation For Storage** | 2 | Operation types for storage views |
 | **Operation Names** | 1 | Operation name dimension |
 | **Metrics** | 2 | Internal placeholder table for DAX measures |
-| **Date Start** | 1 | Start date parameter (new in v54) |
-| **Date End** | 1 | End date parameter (new in v54) |
+| **Date Start** | 1 | Start date parameter |
+| **Date End** | 1 | End date parameter |
 
 #### Fact Tables — Compute (30-second granularity)
 
@@ -68,10 +66,10 @@ The semantic model contains **105 tables** (294 measures).
 | **Timepoint Background Detail** | 22 | Background operation detail per 30-second timepoint |
 | **Timepoint Overage Detail** | 11 | Overage/carryforward detail per timepoint |
 | **Timepoint Overages By Workloads** | 9 | Overages broken down by workload type |
-| **Timepoint Interactive Item Detail** | 13 | Per-operation-ID interactive detail within a timepoint *(new in v54)* |
-| **Timepoint Background Item Detail** | 14 | Per-operation-ID background detail within a timepoint *(new in v54)* |
-| **Timepoint Interactive Summary** | 7 | Aggregated interactive CU/duration/throttling per timepoint *(new in v54)* |
-| **Timepoint Background Summary** | 7 | Aggregated background CU/duration/throttling per timepoint *(new in v54)* |
+| **Timepoint Interactive Item Detail** | 13 | Per-operation-ID interactive detail within a timepoint |
+| **Timepoint Background Item Detail** | 14 | Per-operation-ID background detail within a timepoint |
+| **Timepoint Interactive Summary** | 7 | Aggregated interactive CU/duration/throttling per timepoint |
+| **Timepoint Background Summary** | 7 | Aggregated background CU/duration/throttling per timepoint |
 
 #### Fact Tables — Compute (6-minute granularity)
 
@@ -92,7 +90,7 @@ The semantic model contains **105 tables** (294 measures).
 | **Metrics By Item Operation And Day** | 22 | Daily metrics by item + operation |
 | **Max Memory By Item** | 5 | Peak memory consumption per item |
 | **Max Memory By Item And Hour** | 6 | Peak memory per item per hour |
-| **Items Operations** | 17 | Operation-level metadata per item with user counts and release type *(new in v54)* |
+| **Items Operations** | 17 | Operation-level metadata per item with user counts and release type |
 
 #### Fact Tables — Storage
 
@@ -102,20 +100,40 @@ The semantic model contains **105 tables** (294 measures).
 | **Storage By Workspaces And Day** | 11 | Daily storage trends per workspace |
 | **Storage By Workspaces And Hour** | 11 | Hourly storage per workspace |
 
-#### Fact Tables — Usage Health *(new in v54)*
+#### Fact Tables — Usage Health
 
 Pre-aggregated capacity health snapshots at multiple time windows.
 
 | Table | Columns | Description |
 |---|---|---|
-| **Usage Summary (Last 1 hour)** | 17 | Minute-level CU %, throttling risk, cumulative debt, P95 metrics, usage variance |
+| **Usage Summary (Last 1 hour)** | 19 | Minute-level CU %, throttling risk, cumulative debt, P95 metrics, usage variance, processed overage, overage billing limit |
 | **Usage Operation (Last 1 hour)** | 19 | Per-operation second-level breakdown with rejection/failure counts |
-| **Usage Summary (Last 24 hours)** | 17 | Hourly CU %, throttling risk, cumulative debt |
+| **Operations (Last 1 hour)** | * | Per-operation rollup at minute granularity (powers "by capacity" measures for the last hour) |
+| **Usage Summary (Last 24 hours)** | 19 | Hourly CU %, throttling risk, cumulative debt, processed overage, overage billing limit |
 | **Usage Operation (Last 24 hours)** | 19 | Per-operation hourly breakdown |
-| **Usage Summary (Last 7 days)** | 9 | Hourly CU %, throttling, average utilization |
+| **Operations (Last 24 hours)** | * | Per-operation rollup at hour granularity (powers "by capacity" measures for the last 24h) |
+| **Usage Summary (Last 7 days)** | 9 | Hourly CU %, throttling, average utilization (no overage columns) |
 | **Usage Operation (Last 7 days)** | 18 | Per-operation hourly breakdown (7 days) |
 
-#### Fact Tables — Item History *(new in v54)*
+#### Fact Tables — Per-Capacity Rollups
+
+One row per capacity for each window. Use these when you need a tenant-wide "top capacities by CU%" or "top capacities by overage" view without scanning detail tables.
+
+| Table | Columns | Description |
+|---|---|---|
+| **Usage Summary By Capacities (Last 1 hour)** | 10 | Per-capacity rollup for the last hour: `Health`, `Average CU %`, `Overage billing limit`, `Processed overage`, `P95 interactive delay/rejection`, `P95 background rejection`, `Usage variance`, `Average utilization` |
+| **Usage Summary By Capacities (Last 24 hours)** | 10 | Same shape, 24-hour window |
+| **Usage Summary By Capacities (Last 7 days)** | 10 | Same shape, 7-day window |
+
+#### Fact Tables — Capacity Overage Timeline
+
+Per-timepoint overage detail at the capacity level (the data behind the Overage page).
+
+| Table | Columns | Description |
+|---|---|---|
+| **Timepoint Capacity Overage Detail** | 9 | `Window start time`, `Start of 20min`, `Start of hour`, `Overage billing limit`, `Processed overage`, `Peak 20min processed overage`, `Peak 20min overage billing limit`, `Processed overage over 24hours`, `Peak 20min processed overage over 24hours` — the 24-hour smoothing window in CU·hours |
+
+#### Fact Tables — Item History
 
 Per-item CU/duration/throttling over a configurable date range.
 
@@ -126,7 +144,7 @@ Per-item CU/duration/throttling over a configurable date range.
 | **Item History Operation Detail** | 11 | Per-operation detail with status and time windows |
 | **Item History Summary** | 15 | CU breakdown (interactive/background/preview) with 15-min peaks |
 
-#### Fact Tables — Surge Protection *(new in v54)*
+#### Fact Tables — Surge Protection
 
 Workspace-level surge blocking events.
 
@@ -136,7 +154,7 @@ Workspace-level surge blocking events.
 | **Surge Protection By Hour** | 2 | Hourly count of blocked workspaces per capacity |
 | **Surge Protection Blocked Workspaces Detail** | 12 | Blocked workspace detail: duration, affected users, rejection counts, how blocked |
 
-#### Fact Tables — Workload Autoscale *(new in v54)*
+#### Fact Tables — Workload Autoscale
 
 Per-workload autoscale limit tracking.
 
@@ -159,9 +177,9 @@ Per-workload autoscale limit tracking.
 | Table | Columns | Measures | Description |
 |---|---|---|---|
 | **System Events** | 6 | — | Capacity state changes (pause, resume, throttle) |
-| **All Measures** | 0 | 294 | Home table for all 294 DAX measures |
+| **All Measures** | 0 | 349 | Home table for all 349 DAX measures |
 
-#### Timepoint Filter/Slicer Tables *(new in v54)*
+#### Timepoint Filter/Slicer Tables
 
 | Table | Columns | Description |
 |---|---|---|
@@ -341,7 +359,7 @@ Workload types in the model.
 
 #### CUDetail
 
-The core CU consumption fact table with throttling metrics per timepoint (25 columns).
+The core CU consumption fact table with throttling and processed-overage metrics per timepoint (29 columns).
 
 | Column | Type | Description |
 |---|---|---|
@@ -370,8 +388,12 @@ The core CU consumption fact table with throttling metrics per timepoint (25 col
 | `Peak6min Interactive Delay %` | Double | Peak interactive delay % in 6-min |
 | `Peak6min Interactive Rejection %` | Double | Peak interactive rejection % in 6-min |
 | `Peak6min Background Rejection %` | Double | Peak background rejection % in 6-min |
+| `Processed overage` | Double | Processed overage in CU-seconds for this 30-second window |
+| `Overage billing limit` | Double | Overage billing limit (cap) for this window |
+| `Peak 6min processed overage` | Double | Peak processed overage in the 6-minute bucket |
+| `Peak 6min overage billing limit` | Double | Peak overage billing limit in the 6-minute bucket |
 
-**Use for**: Utilization analysis over time, throttling tracking, autoscale monitoring.
+**Use for**: Utilization analysis over time, throttling tracking, autoscale monitoring, and tracking how much CU is being burned against the overage billing limit at 30-second granularity.
 
 ---
 
@@ -530,7 +552,7 @@ Overage and carryforward data per timepoint (11 columns).
 
 ---
 
-#### Items Operations *(new in v54)*
+#### Items Operations
 
 Operation-level metadata per item with user counts and release type information.
 
@@ -558,7 +580,7 @@ Operation-level metadata per item with user counts and release type information.
 
 ---
 
-#### Usage Summary (Last 1 hour / 24 hours) *(new in v54)*
+#### Usage Summary (Last 1 hour / 24 hours)
 
 Pre-aggregated capacity health snapshot with risk indicators and percentile metrics.
 
@@ -588,7 +610,7 @@ Pre-aggregated capacity health snapshot with risk indicators and percentile metr
 
 ---
 
-#### Usage Operation (Last 1 hour / 24 hours / 7 days) *(new in v54)*
+#### Usage Operation (Last 1 hour / 24 hours / 7 days)
 
 Per-operation breakdown of CU consumption, throttling, and operation status counts.
 
@@ -618,7 +640,7 @@ Per-operation breakdown of CU consumption, throttling, and operation status coun
 
 ---
 
-#### Item History Main *(new in v54)*
+#### Item History Main
 
 Dimension table linking items to their operations for the Item History page.
 
@@ -635,7 +657,7 @@ Dimension table linking items to their operations for the Item History page.
 
 ---
 
-#### Item History Operation *(new in v54)*
+#### Item History Operation
 
 Aggregated CU/duration/throttling per item per day.
 
@@ -652,7 +674,7 @@ Aggregated CU/duration/throttling per item per day.
 
 ---
 
-#### Item History Operation Detail *(new in v54)*
+#### Item History Operation Detail
 
 Per-operation detail within Item History with time windows and status.
 
@@ -672,7 +694,7 @@ Per-operation detail within Item History with time windows and status.
 
 ---
 
-#### Item History Summary *(new in v54)*
+#### Item History Summary
 
 CU breakdown (interactive/background/preview) with 15-minute peak metrics.
 
@@ -696,7 +718,7 @@ CU breakdown (interactive/background/preview) with 15-minute peak metrics.
 
 ---
 
-#### Surge Protection Blocked Workspaces Detail *(new in v54)*
+#### Surge Protection Blocked Workspaces Detail
 
 Detailed information about workspaces blocked by surge protection.
 
@@ -719,7 +741,7 @@ Detailed information about workspaces blocked by surge protection.
 
 ---
 
-#### CU Detail For Workload Autoscale *(new in v54)*
+#### CU Detail For Workload Autoscale
 
 CU consumption vs workload-level autoscale limits.
 
@@ -823,7 +845,7 @@ The semantic model uses a star-schema pattern with **Items** as the central hub.
 
 ### Key Measures
 
-The semantic model exposes **294 measures** that calculate utilization, throttling, and health metrics. These measures require **filter context** (they work inside report visuals, not in standalone DAX queries).
+The semantic model exposes **349 measures** that calculate utilization, throttling, overage, and health metrics. These measures require **filter context** (they work inside report visuals, not in standalone DAX queries).
 
 **Core measures:**
 
@@ -835,7 +857,7 @@ The semantic model exposes **294 measures** that calculate utilization, throttli
 | `Background %` | Background CU utilization as % of capacity |
 | `CU %` | Total CU utilization as % of capacity |
 
-**New in v54:**
+**Autoscale, item history, and surge protection:**
 
 | Measure | What it calculates |
 |---|---|
@@ -846,6 +868,18 @@ The semantic model exposes **294 measures** that calculate utilization, throttli
 | `Item history operation detail count` | Item History row counts |
 | `Usage variance (last 24 hours)` | 24-hour usage variance |
 | `Is item kind has autoscale` | Whether item type supports autoscale |
+
+**Overage, P95, and per-capacity health (grouped):**
+
+| Group | Examples | What it calculates |
+|---|---|---|
+| **Processed-overage tracking** | `Processed overage`, `Overage billing limit CUhr`, `Processed overage over 24hours CUhr`, `Processed overage peak 20min`, `Processed overage over 24hours peak 20min CUhr`, `Overage billing limit peak 20min CUhr` | How much overage is being burned against the billing limit |
+| **P95 by capacity** | `P95 interactive delay by capacity (last 1 hour / 24 hours)`, `P95 interactive rejection by capacity (last 1 hour / 24 hours)`, `P95 background rejection by capacity (last 1 hour / 24 hours)` | Tail-latency view per capacity for short-window investigations |
+| **Risk status** | `Risk status by capacity (last 1 hour / 24 hours)`, `Risk status dynamic (last 1 hour / 24 hours)`, `Background rejection status`, `Interactive delay status`, `Interactive rejection status` | Color-coded health indicators |
+| **Operations by capacity (Last 1h / 24h)** | `Successful / Failed / Cancelled / Inprogress / Invalid / Stopped / Rejected operations by capacity`, `Throttling(s) by capacity`, `Users by capacity` | Per-capacity operation status counts |
+| **Optimized rejection/delay** | `Background rejected capacities optimized (last hour / 24 hours / 7 days)`, `Interactive rejected capacities optimized`, `Interactive delayed capacities optimized` | Counts of impacted capacities |
+| **Utilization & variance** | `Average utilization by capacity (last 1 hour / 24 hours / 7 days)`, `Usage variance (last 1 hour)`, `Usage variance by capacity (last 1 hour / 24 hours)` | Average and variance of CU% per capacity |
+| **Color formatting** | `Background rejection color format`, `Interactive delay color format`, `Interactive rejection color format` | Conditional formatting helpers for visuals |
 
 > **Important**: The `%` measures only resolve inside Power BI report visuals with proper filter context (capacity + timepoint). They will error if you try to evaluate them in standalone DAX queries via the API. The `CU (s)` and `Duration (s)` measures work when added to the Items table context.
 
@@ -864,10 +898,13 @@ Here are some reports you can build that the built-in app doesn't provide:
 | **Workspace Density** | Items per workspace, workspaces per capacity | Identify overcrowded workspaces |
 | **Billable vs Non-Billable** | Items split by billing type across workspaces | Understand preview feature exposure |
 | **Top CU Consumers** | Items ranked by CU (s) consumption | Find your most expensive items |
-| **Surge Protection Dashboard** | Blocked workspaces with duration, affected users, rejection counts | Understand surge protection impact *(v54)* |
-| **Item History Trends** | Per-item CU and throttling over time | Identify items with growing problems *(v54)* |
-| **Capacity Health Scorecard** | Usage Summary with P95 metrics, risk indicators, cumulative debt | Executive health overview *(v54)* |
-| **Workload Autoscale Monitor** | Per-workload CU vs autoscale limits | Track autoscale effectiveness *(v54)* |
+| **Surge Protection Dashboard** | Blocked workspaces with duration, affected users, rejection counts | Understand surge protection impact |
+| **Item History Trends** | Per-item CU and throttling over time | Identify items with growing problems |
+| **Capacity Health Scorecard** | Usage Summary with P95 metrics, risk indicators, cumulative debt | Executive health overview |
+| **Workload Autoscale Monitor** | Per-workload CU vs autoscale limits | Track autoscale effectiveness |
+| **Overage Billing Burn-Down** | `Processed overage` vs `Overage billing limit` over time from `Timepoint Capacity Overage Detail` | See how fast you're burning against the overage cap |
+| **Per-Capacity 7-Day Health Grid** | One row per capacity from `Usage Summary By Capacities (Last 7 days)` with health, P95, variance, overage | Tenant-wide "which capacities are unhealthy this week" |
+| **Hot-Capacity Alert Page** | `Risk status by capacity (last 1 hour)` + `Operations by capacity (last 1 hour)` | Real-time investigation when something breaks |
 
 ## Limitations
 

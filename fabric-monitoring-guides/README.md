@@ -1,13 +1,14 @@
 # Fabric Monitoring — Build Your Own Reports
 
-Guides for building **custom Power BI reports** on top of Microsoft Fabric's built-in monitoring apps — without modifying the underlying semantic models.
+Guides for building **custom Power BI reports and Fabric-native cost reporting** on top of Microsoft Fabric's built-in monitoring apps and Azure Cost Management — without modifying the underlying semantic models.
 
 ## Available Guides
 
-| Guide | App | What you get |
+| Guide | App / Source | What you get |
 |---|---|---|
-| [**Capacity Metrics App**](capacity-metrics-app/) | [Capacity Metrics App](https://learn.microsoft.com/en-us/fabric/enterprise/metrics-app) | 45 tables covering compute utilization, throttling, storage, overages, and item-level performance — at 30-second granularity |
-| [**Chargeback App**](chargeback-app/) | [Chargeback App](https://learn.microsoft.com/en-us/fabric/enterprise/chargeback-app) | 7 tables covering per-user, per-item, per-operation CU consumption with domain-based cost allocation — at daily granularity |
+| [**Capacity Metrics App**](capacity-metrics-app/) | [Capacity Metrics App](https://learn.microsoft.com/en-us/fabric/enterprise/metrics-app) | 110 tables / 349 measures covering compute utilization, throttling, storage, processed-overage and overage-billing-limit metrics, per-capacity rollups (Last 1h / 24h / 7d), surge protection, item history, P95 latency, and item-level performance — at 30-second granularity |
+| [**Chargeback App**](chargeback-app/) | [Chargeback App](https://learn.microsoft.com/en-us/fabric/enterprise/chargeback-app) | 14 tables / 31 measures covering per-user, per-item, per-operation CU consumption with domain-based cost allocation — at daily granularity |
+| [**Azure Cost Export**](azure-cost-export/) | [Azure Cost Management Exports](https://learn.microsoft.com/en-us/azure/cost-management-billing/costs/tutorial-improved-exports) | Daily amortized-cost Parquet drop into ADLS Gen2 → mounted as a OneLake shortcut so you can join real Azure dollars (capacity SKU + reservations + OneLake storage + Copilot) to CU consumption and chargeback **inside Fabric** — no Azure portal hopping |
 
 ## When to Use Which
 
@@ -15,6 +16,7 @@ Guides for building **custom Power BI reports** on top of Microsoft Fabric's bui
 |---|---|
 | Capacity utilization % over time | Capacity Metrics App |
 | Throttling and overage analysis | Capacity Metrics App |
+| Processed overage / overage billing limit (CU·hours) | Capacity Metrics App |
 | Storage consumption trends | Capacity Metrics App |
 | Per-user CU consumption | Chargeback App |
 | Department/domain cost allocation | Chargeback App |
@@ -22,6 +24,9 @@ Guides for building **custom Power BI reports** on top of Microsoft Fabric's bui
 | 30-second granularity time-series | Capacity Metrics App |
 | Daily rollups for cost reporting | Chargeback App |
 | Both utilization + cost allocation | Use both apps together |
+| **Actual $ cost per workspace / item / domain** | **Azure Cost Export + Chargeback (CU-share allocation)** |
+| **Reservation savings + Copilot charges visibility in Fabric** | **Azure Cost Export** |
+| **ISV per-customer billback (1 capacity, many workspaces)** | **Azure Cost Export + Chargeback** |
 
 ## How Custom Reports Work
 

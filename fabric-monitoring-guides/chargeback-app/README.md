@@ -34,9 +34,7 @@ Alternatively, in the **Fabric portal**:
 
 ### Tables at a Glance
 
-The semantic model contains **10 tables** (31 measures).
-
-> **Note**: This schema was verified against the latest version of the Chargeback App using the Scanner API on March 12, 2026.
+The semantic model contains **10 user-facing tables** (plus 4 internal helper tables — 14 total) and **31 measures**.
 
 | Table | Columns | Description |
 |---|---|---|
@@ -48,8 +46,8 @@ The semantic model contains **10 tables** (31 measures).
 | **Domains** | 5 | Domain and subdomain mapping for organizational grouping |
 | **All Measures** | 0 | Home table for 31 DAX measures |
 | **Top N Selector** | 1 | Top-N filter control (hidden) |
-| **Days Ago to Start** | 1 | Configurable date range parameter (hidden) *(new)* |
-| **Export page optional columns** | 3 | Column selector for the built-in export page *(new)* |
+| **Days Ago to Start** | 1 | Configurable date range parameter (hidden) |
+| **Export page optional columns** | 3 | Column selector for the built-in export page |
 
 ### Table Schema Details
 
@@ -140,7 +138,7 @@ Domain and subdomain mapping for organizational chargeback grouping.
 | Column | Type | Description |
 |---|---|---|
 | `Domain unique key` | Text | Key linking to the Chargeback table |
-| `Domain Id` | Text | Domain identifier *(new)* |
+| `Domain Id` | Text | Domain identifier |
 | `Domain` | Text | Domain name (or "No domain" if unassigned) |
 | `Subdomain Id` | Text | Subdomain identifier |
 | `Subdomain` | Text | Subdomain name (or "No subdomain" if unassigned) |
@@ -260,13 +258,13 @@ EVALUATE Capacities
 | **Storage data** | No | Yes |
 | **Overage/carryforward** | No | Yes |
 | **Memory data** | No | Yes |
-| **Surge protection** | No | Yes *(new in v54)* |
-| **Item history trending** | No | Yes *(new in v54)* |
-| **Usage health (P95, risk)** | No | Yes *(new in v54)* |
-| **Workload autoscale** | No | Yes *(new in v54)* |
+| **Surge protection** | No | Yes |
+| **Item history trending** | No | Yes |
+| **Usage health (P95, risk)** | No | Yes |
+| **Workload autoscale** | No | Yes |
 | **Data retention** | 14 or 30 days (configurable) | 14 days |
-| **Tables** | 10 | 105 |
-| **Measures** | 31 | 294 |
+| **Tables** | 10 | 110 |
+| **Measures** | 31 | 349 |
 
 **Best combination**: Use the Chargeback App for cost allocation (who/what consumed CU) and the Capacity Metrics App for performance monitoring (utilization, throttling, overages).
 
