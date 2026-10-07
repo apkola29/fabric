@@ -13,6 +13,8 @@ They need no Microsoft Entra account and no Power BI license.
 
 > **Disclaimer.** This is a sample for learning and experimentation, provided as-is with no warranty. Review it before
 > using it for real customers ([MULTITENANCY.md](MULTITENANCY.md), section 5, lists what's left for production).
+>
+> Various Flows Explained here: https://apkola29.github.io/fabric/saas-platform/
 
 ## What it shows
 
