@@ -14,6 +14,18 @@ They need no Microsoft Entra account and no Power BI license.
 > **Disclaimer.** This is a sample for learning and experimentation, provided as-is with no warranty. Review it before
 > using it for real customers ([MULTITENANCY.md](MULTITENANCY.md), section 5, lists what's left for production).
 
+## What it shows
+
+| Area | How |
+| --- | --- |
+| Isolation | One workspace per customer, and one service principal per customer that is Admin of that workspace only. A bug that mixes up customers meets a refusal from Fabric |
+| Credentials | Federated credentials (a managed identity) or certificates, through MSAL. Nothing secret in the project: whatever is secret is asked for at runtime |
+| Embedded reports | Generate Token V2 on the server, short-lived, with each person's row-level security roles; refreshed in the browser before they expire |
+| Row-level security | Direct Lake with a fixed identity; static roles per territory; checked in a real browser, including that a report filter can't widen what a person sees |
+| AI | The customer's data agent over MCP, called as the customer's service principal |
+| Least privilege | The platform identity builds each workspace, hands it over and keeps no access |
+| Proof | 34 controls ([FRAMEWORK.md](FRAMEWORK.md)), checked by `npm test`, by a validator against the Fabric emulator, and against a live deployment |
+
 ## Who's who
 
 The documents name three companies. HiCRM is the provider that runs everything; Fabrikam and Contoso are two of its
@@ -220,18 +232,6 @@ allows. A Data Factory pipeline copies it from Fabrikam's systems into a lakehou
 (silver) and shape business tables keyed by account (gold); the gold tables join the same semantic model, under the
 same roles, and the assistant's model. All of it runs as `fabrikamsa`, in Fabrikam's workspace. The design, with its
 own diagram, is in [DATA-INTEGRATION.md](DATA-INTEGRATION.md).
-
-## What it shows
-
-| Area | How |
-| --- | --- |
-| Isolation | One workspace per customer, and one service principal per customer that is Admin of that workspace only. A bug that mixes up customers meets a refusal from Fabric |
-| Credentials | Federated credentials (a managed identity) or certificates, through MSAL. Nothing secret in the project: whatever is secret is asked for at runtime |
-| Embedded reports | Generate Token V2 on the server, short-lived, with each person's row-level security roles; refreshed in the browser before they expire |
-| Row-level security | Direct Lake with a fixed identity; static roles per territory; checked in a real browser, including that a report filter can't widen what a person sees |
-| AI | The customer's data agent over MCP, called as the customer's service principal |
-| Least privilege | The platform identity builds each workspace, hands it over and keeps no access |
-| Proof | 34 controls ([FRAMEWORK.md](FRAMEWORK.md)), checked by `npm test`, by a validator against the Fabric emulator, and against a live deployment |
 
 ## Quick start: demo mode (no Azure needed)
 
