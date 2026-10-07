@@ -68,6 +68,30 @@ a { color: var(--accent); }
 .signin h1 { margin: var(--sp-7) 0 var(--sp-5); }
 .fine-print { font-size: var(--fs-12); color: var(--ink-muted); margin-top: var(--sp-5); }
 
+/* View as: pick one of the company's people (demos and testing, on this computer only). Cards take the company's color. */
+.signin.picking { max-width: 880px; margin-top: 8vh; }
+.signin.picking #signin-form, .signin.picking #signin-help { max-width: 400px; }
+.persona-picker { margin-bottom: var(--sp-6); padding-bottom: var(--sp-5); border-bottom: 1px solid var(--rule); }
+.persona-heading { margin: 0 0 var(--sp-2); }
+.persona-lede { color: var(--ink-muted); }
+.persona-cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: var(--sp-3); margin: var(--sp-4) 0; }
+.persona-card {
+  display: grid; align-content: start; gap: 2px; padding: var(--sp-4); text-align: left; font: inherit; color: inherit; cursor: pointer;
+  background: var(--surface); border: 1px solid var(--rule-strong); border-top: 4px solid var(--accent); border-radius: var(--radius);
+  transition: background-color 120ms var(--ease-out), box-shadow 120ms var(--ease-out);
+}
+.persona-card:hover { background: var(--accent-soft); }
+.persona-card:disabled { cursor: progress; opacity: 0.6; }
+.persona-card[aria-busy="true"] { opacity: 1; box-shadow: var(--shadow); }
+.persona-role { font-size: var(--fs-12); font-weight: 600; letter-spacing: 0.02em; text-transform: uppercase; color: var(--accent); }
+.persona-name { font-family: var(--serif); font-size: var(--fs-21); line-height: 1.2; }
+.persona-email { font-size: var(--fs-12); color: var(--ink-muted); overflow-wrap: anywhere; }
+.persona-sees { margin-top: var(--sp-2); font-weight: 600; }
+.persona-elsewhere { font-size: var(--fs-14); }
+.viewas { display: flex; align-items: center; gap: var(--sp-2); white-space: nowrap; }
+.viewas > span { font-weight: 600; color: var(--ink); }
+.viewas select { width: auto; max-width: 22rem; min-height: 34px; padding: 2px var(--sp-2); font-size: var(--fs-14); }
+
 /* Top bar */
 .topbar {
   display: grid; grid-template-columns: auto auto 1fr minmax(0, auto); align-items: center; gap: var(--sp-5);

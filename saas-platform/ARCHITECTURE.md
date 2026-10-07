@@ -40,9 +40,9 @@ flowchart TB
     APP["HiCRM app and back office<br/>one deployment for every customer<br/>fabrikam.hicrm… · contoso.hicrm…"]
     subgraph IDS["HiCRM's Microsoft Entra tenant · HiCRM's own identities"]
       direction LR
-      FSA["fabrikamsa<br/>HiCRM's service account<br/>for Fabrikam's work"]
+      FSA["fabrikamsa<br/>HiCRM's service principal<br/>for Fabrikam's work"]
       PID["Platform identity<br/>builds workspaces,<br/>then lets go"]
-      CSA["contososa<br/>HiCRM's service account<br/>for Contoso's work"]
+      CSA["contososa<br/>HiCRM's service principal<br/>for Contoso's work"]
     end
     subgraph CAP["HiCRM's Fabric capacity"]
       direction LR
@@ -111,7 +111,7 @@ flowchart TB
       EMB["Embed token<br/>service"]
       AST["Assistant"]
     end
-    SA["fabrikamsa · HiCRM's service account for Fabrikam<br/>signs in with a certificate, through MSAL"]
+    SA["fabrikamsa · HiCRM's service principal for Fabrikam<br/>signs in with a certificate, through MSAL"]
     subgraph WS["Workspace for Fabrikam · on HiCRM's Fabric capacity · only Fabrikam's data"]
       direction TB
       subgraph NOW["Today"]
@@ -186,8 +186,8 @@ flowchart TB
 Not drawn:
 - HiCRM's back office and CLI, where operators sign in. Opening a customer's reports, asking its assistant or loading
   its data is written to that customer's activity log.
-- The customer registry, and the identity broker, which signs in as each customer's service account with its credential
-  from the encrypted store (Key Vault in production).
+- The customer registry, and the identity broker, which signs in as each customer's service principal with its
+  credential from the encrypted store (Key Vault in production).
 - The cloud connection through which the model reads OneLake as the workspace identity (section 2).
 
 - **The CRM is the source of truth.** HiCRM writes to a Fabric SQL database (`hicrm_db`). Fabric replicates every
@@ -242,7 +242,7 @@ flowchart TB
 
 | Identity | What it is | Access | Used for |
 | --- | --- | --- | --- |
-| Platform identity | Service principal (`AZURE_CLIENT_ID`) | Fabric APIs (tenant setting), Contributor on the capacity, Admin of a customer workspace only until the hand-over | Control plane only: create the workspace, assign capacity, make the customer's service account Admin. With `PLATFORM_WORKSPACE_ACCESS=release` (required in production) it then removes its own role, so it holds no standing role in any customer workspace and isn't held to the limit of 1,000 workspaces per identity. Moving a workspace to another capacity is the one later task that needs it; the service account re-adds it for that run only, and the activity log records it. Optionally `Application.ReadWrite.OwnedBy` in Microsoft Graph so it can create service accounts (and only manage those). |
+| Platform identity | Service principal (`AZURE_CLIENT_ID`) | Fabric APIs (tenant setting), Contributor on the capacity, Admin of a customer workspace only until the hand-over | Control plane only: create the workspace, assign capacity, make the customer's service principal Admin. With `PLATFORM_WORKSPACE_ACCESS=release` (required in production) it then removes its own role, so it holds no standing role in any customer workspace and isn't held to the limit of 1,000 workspaces per identity. Moving a workspace to another capacity is the one later task that needs it; the service principal re-adds it for that run only, and the activity log records it. Optionally `Application.ReadWrite.OwnedBy` in Microsoft Graph so it can create service principals (and only manage those). |
 | `fabrikamsa` | Service principal, one per customer | **Admin of `saas-fabrikam` only** | Everything for Fabrikam at runtime and during provisioning after the hand-over: SQL, model, connection, reports, embed tokens, the assistant. A bug that confuses customers can't reach another customer's data: the token itself has no access there. It has no rights on capacities. |
 | Workspace identity | Fabric-managed service principal of `saas-fabrikam` | Contributor of `saas-fabrikam` only | The credential of the model's cloud connection (Direct Lake fixed identity). Nobody holds a secret for it. Contributor is the least role that works: Direct Lake on OneLake needs Read and ReadAll, and Viewer has no OneLake data access. |
 | Support group | Entra group (`FABRIC_OPS_PRINCIPAL_ID`) | Viewer | Looking at the workspace in the Fabric portal. |
@@ -277,7 +277,7 @@ one-time setup with [scripts/bootstrap-identities.ps1](scripts/bootstrap-identit
   the Graph upsert keyed on the customer (`PATCH /applications(uniqueName='hicrm-tenant-<id>')` with
   `Prefer: create-if-missing`), so a retry after a crash never leaves a second app behind.
 
-`TENANT_IDENTITY_MODE=required` (production) stops provisioning until the service account exists, so nothing is ever
+`TENANT_IDENTITY_MODE=required` (production) stops provisioning until the service principal exists, so nothing is ever
 built with the shared identity. `preferred` (development) continues with the platform identity and shows a warning.
 
 ## 3. Provisioning a customer
@@ -294,7 +294,7 @@ sequenceDiagram
     participant F as Fabric and Power BI APIs
   end
   box rgb(231,240,250) HICRM · the SaaS provider
-    participant SA as fabrikamsa<br/>HiCRM's service account for Fabrikam
+    participant SA as fabrikamsa<br/>HiCRM's service principal for Fabrikam
   end
 
   Ops->>P: Add Fabrikam, Enterprise edition, sign-in domain fabrikam.com
@@ -320,7 +320,7 @@ upgrades ship: a new CRM schema version is migrated in place, a new model versio
 generated TMDL) is pushed with `updateDefinition`, the assistant is republished, and framing retries while the OneLake
 replica catches up with schema changes. Customers keep working during an upgrade: once a customer has been ready, the
 app keeps serving what already works while a later run is busy or has failed. Removing a customer deletes the
-workspace, the connection (connections live outside workspaces) and the service account.
+workspace, the connection (connections live outside workspaces) and the service principal.
 
 A customer can get a capacity of its own (back office, or `capacity <customer> <id>` in the CLI) for noisy-neighbour
 isolation or data residency; everyone else shares `FABRIC_CAPACITY_ID`.
@@ -361,14 +361,14 @@ sequenceDiagram
 ```
 
 How it works ([EMBEDDING.md](EMBEDDING.md) has every credential, the token request and the best-practice checklist):
-- This is Power BI's "embed for your customers" (app owns data). The customer's service account asks for a short
+- This is Power BI's "embed for your customers" (app owns data). The customer's service principal asks for a short
   embed token, and the browser renders the report in an iframe with the Power BI JavaScript client.
 - Customers' people need no Power BI license or Entra account. A service principal "doesn't require a Pro license"
   ([source](https://learn.microsoft.com/power-bi/developer/embedded/embed-sample-for-customers)).
 - The model reads OneLake through the bound connection's fixed identity, so embed tokens need no per-user data-source
   identity. They carry only the person's row-level security role.
 - Only the platform's standard reports open: the generated "Sales overview", or the template workspace's reports.
-- **Report use is logged per customer**, because Power BI's activity log names the service account, not the person:
+- **Report use is logged per customer**, because Power BI's activity log names the service principal, not the person:
   who viewed or saved which report, how long it took to load and render in their browser, and the embed token and
   correlation IDs that tie each entry to Power BI's records. The person and customer come from the session. Operators
   read it in the back office (the customer → Overview → Report usage) or with `npm run cli -- usage <customer>`; the
@@ -449,7 +449,7 @@ account token: `initialize`, then `tools/list`, then `tools/call` ([source](http
 **When the agent fails.**
 - It's paused for 15 minutes (no retry storm), and the reason goes to the back office.
 - Data agents are documented for paid F2+ capacities. On the pilot's trial capacity, the endpoint answered
-  `FT1 SKU Not Supported` early in the build, worked for a while, then refused the service accounts again (October
+  `FT1 SKU Not Supported` early in the build, worked for a while, then refused the service principals again (October
   2026), while a person could still use the agent there.
 - Either way, the assistant falls back to quick answers.
 
@@ -475,7 +475,7 @@ account token: `initialize`, then `tools/list`, then `tools/call` ([source](http
 | The data agent's chat in the Fabric portal | Conversations of people who chat with the agent in the portal | Each person, their own | Up to 28 days unless they clear it ([source](https://learn.microsoft.com/fabric/data-science/data-agent-tenant-settings)) |
 
 About these:
-- **The app's questions aren't in the Fabric portal.** The customer's service account asks them over MCP, one call per
+- **The app's questions aren't in the Fabric portal.** The customer's service principal asks them over MCP, one call per
   question, so they don't appear in anyone's chat with the agent there. The question log is where to read them.
 - **Purview needs three switches** ([source](https://learn.microsoft.com/fabric/data-science/data-agent-purview-governance)):
   - Purview Audit on;
@@ -506,7 +506,7 @@ accident.
 | Customer sign-in | Work email domain, signed cookie | Microsoft Entra External ID (or your existing IdP), roles per user. Production refuses the email-only sign-in unless `ALLOW_DEMO_SIGNIN=true` (staging). |
 | Back office | `ADMIN_KEY` sign-in (required off loopback), actions logged per customer | Behind your workforce IdP (Entra ID with Conditional Access and PIM), named operators |
 | Platform identity | A certificate (a PEM path), or a client secret for development, asked for at start and never saved | A federated credential trusting the app's managed identity (`MANAGED_IDENTITY_CLIENT_ID`), or a certificate. Production refuses client secrets |
-| Service account credentials | Certificates in an AES-256-GCM file keyed by `SECRETS_KEY`, which is asked for at start | Federated credentials (`TENANT_CREDENTIAL=federated`, nothing stored), or certificates in Key Vault (`SECRETS_PROVIDER=keyvault`, enforced) |
+| Service principal credentials | Certificates in an AES-256-GCM file keyed by `SECRETS_KEY`, which is asked for at start | Federated credentials (`TENANT_CREDENTIAL=federated`, nothing stored), or certificates in Key Vault (`SECRETS_PROVIDER=keyvault`, enforced) |
 | Identity mode | `preferred`, platform keeps workspace access | `required` and `PLATFORM_WORKSPACE_ACCESS=release` (both enforced) |
 | Data per user | Territories: row-level security roles in embed tokens, SQL scoped per person, the data agent for managers only | The same, with roles from the customer's identity provider; per-rep ownership rules if needed |
 | Capacity | Trial capacity (no Copilot, no code interpreter) | F SKUs per region or tier, dedicated capacity per large customer, autoscale or scheduled pause |
@@ -514,7 +514,7 @@ accident.
 | Question log | The last 200 questions per customer, in the registry | A log store with a retention policy |
 | Limits and sessions | In memory, one server | Shared store (for example Azure Cache for Redis) when there is more than one instance |
 | Registry | JSON file | The SaaS app's own database |
-| Monitoring | Activity log per customer, `audit` command | Fabric capacity metrics, Azure Monitor alerts on provisioning failures and audit drift, audit logs per service account |
+| Monitoring | Activity log per customer, `audit` command | Fabric capacity metrics, Azure Monitor alerts on provisioning failures and audit drift, audit logs per service principal |
 
 ## What was verified live
 
@@ -537,15 +537,15 @@ Against the `saas-fabrikam` workspace on a trial capacity:
 - The data agent now returns `FT1 SKU Not Supported` on the trial capacity (documented: it needs F2 or larger); the
   assistant fell back to quick answers, whose pipeline by stage adds up to the CRM's pipeline value exactly.
 
-With a service account per customer (October 3, 2026), both customers live, details in [BUILDOUT.md](BUILDOUT.md)
+With a service principal per customer (October 3, 2026), both customers live, details in [BUILDOUT.md](BUILDOUT.md)
 section 6:
 - `fabrikamsa` and `contososa` were created with `scripts/bootstrap-identities.ps1 -Register`. Provisioning made each
-  one Admin of its own workspace. For Fabrikam, whose workspace the platform identity had built, the service account
+  one Admin of its own workspace. For Fabrikam, whose workspace the platform identity had built, the service principal
   got its own connection and took over both models; the platform identity deleted its old connection, then removed
   its own role.
-- Each service account lists only its own workspace. For the other customer it gets 403 on the workspace, 401 on its
+- Each service principal lists only its own workspace. For the other customer it gets 403 on the workspace, 401 on its
   items, 404 for an embed token for its report, and "User is not authorized" from its data agent.
-- The tenant's admin API lists only the person who created each workspace (Admin), the service account (Admin) and
+- The tenant's admin API lists only the person who created each workspace (Admin), the service principal (Admin) and
   the workspace identity (Contributor).
 - Removing the platform identity's role took effect late: it could still open `saas-contoso` about an hour after its
   role was removed, then got 403 like everyone else. Microsoft doesn't document a delay.

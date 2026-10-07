@@ -38,8 +38,8 @@ Terms used here:
 | Question | Answer |
 | --- | --- |
 | How many Entra tenants are there? | One per company: HiCRM's, Fabrikam's and Contoso's. Today HiCRM uses only its own: the customers' people sign in with HiCRM sign-ins, and no customer system is read. A customer's tenant takes part only if the customer opts in |
-| Which identities does HiCRM use today? | Service principals, all in its own tenant: the platform identity, one service account per customer (`fabrikamsa`, `contososa`) and each workspace's identity |
-| How does HiCRM sign in to Fabric? | As the customer's own service account, through MSAL, with a certificate (a federated credential in production). Never with a person's token |
+| Which identities does HiCRM use today? | Service principals, all in its own tenant: the platform identity, one service principal per customer (`fabrikamsa`, `contososa`) and each workspace's identity. None is a person's account. The app's messages and back office call the per-customer one its "service account" |
+| How does HiCRM sign in to Fabric? | As the customer's own service principal, through MSAL, with a certificate (a federated credential is also supported). Never with a person's token |
 | Which connections are there today? | One per customer: the semantic models' OneLake connection. `fabrikamsa` owns it, and it signs in as Fabrikam's workspace identity, a service principal whose credential nobody holds. The HiCRM app itself uses no connection: it calls Fabric with `fabrikamsa`'s own tokens |
 | Does anything of a customer's get access in HiCRM's tenant? | No: no guest accounts and no roles. The customers' people never hold a token that Fabric accepts |
 | Does HiCRM get access in a customer's tenant? | Only if the customer opts in, only what the customer grants, and the customer can take it back at any time: sign-in for its people, or read access to named data |
@@ -51,7 +51,7 @@ Terms used here:
 | | HiCRM's Entra tenant | Fabrikam's Entra tenant | Contoso's Entra tenant |
 | --- | --- | --- | --- |
 | Owned and run by | HiCRM | Fabrikam | Contoso |
-| Holds | Fabric: the capacity and a workspace per customer. The platform identity, a service account and a workspace identity per customer, and HiCRM's staff | Fabrikam's people and groups, its Azure subscriptions, Microsoft 365 and Dynamics 365, and its own Fabric if it has one | The same, for Contoso |
+| Holds | Fabric: the capacity and a workspace per customer. The platform identity, a service principal and a workspace identity per customer, and HiCRM's staff | Fabrikam's people and groups, its Azure subscriptions, Microsoft 365 and Dynamics 365, and its own Fabric if it has one | The same, for Contoso |
 | HiCRM's identities in it | All of HiCRM's own | Only if Fabrikam opts in: the service principals of HiCRM's sign-in app and of `fabrikamreader`, with what Fabrikam grants them | The same, with `contosoreader` |
 | The customers' identities in it | None: no guests and no roles | Fabrikam's own | Contoso's own |
 
@@ -145,9 +145,9 @@ of HiCRM's multi-tenant apps, which creates its service principal in that tenant
 | Integration users in SaaS apps | No: app users | The SaaS app, for example Salesforce | The customer | OAuth, kept by the connection | What the app grants them | Add-on, not built |
 | Accounts behind the gateway | No: database or Windows accounts | The customer's own systems | The customer's IT | A password, encrypted for the gateway | Read-only, in those systems | Add-on, not built |
 
-`<customer>sa` and `<customer>reader` are both HiCRM's, one of each per customer. The service account works in HiCRM's
+`<customer>sa` and `<customer>reader` are both HiCRM's, one of each per customer. The service principal works in HiCRM's
 tenant: it owns and runs the customer's workspace, including its connections. The reader only reads, in the customer's
-own tenant, and only through the connections that sign in as it. Its display name follows the service account's:
+own tenant, and only through the connections that sign in as it. Its display name follows the service principal's:
 *HiCRM reader - Fabrikam (fabrikamreader)*.
 
 ## 4. Connections: who owns each one, and who it signs in as
@@ -303,7 +303,7 @@ sequenceDiagram
     participant F as Fabric, Power BI,<br/>SQL and OneLake
   end
 
-  A->>A: Customer from the session (Fabrikam), then its service account and workspace from its record
+  A->>A: Customer from the session (Fabrikam), then its service principal and workspace from its record
   A->>E: Client credentials as fabrikamsa: an assertion signed with its certificate, or a managed identity's token
   E-->>A: An access token for one resource: Fabric, Power BI, OneLake or SQL. Cached per identity and resource
   A->>F: The call: CRM reads and writes, Generate Token, the data agent over MCP
@@ -313,8 +313,8 @@ sequenceDiagram
 ```
 
 - **One identity per customer, chosen from the session.** HiCRM takes the customer from the session, never from the
-  request, and uses that customer's service account and workspace.
-- **MSAL client credentials.** The service account signs a 10-minute assertion with its certificate, or presents a
+  request, and uses that customer's service principal and workspace.
+- **MSAL client credentials.** The service principal signs a 10-minute assertion with its certificate, or presents a
   managed identity's token in production. HiCRM's tenant returns a token for one resource: Fabric
   (`api.fabric.microsoft.com`), Power BI (`analysis.windows.net/powerbi/api`), OneLake (`storage.azure.com`) or SQL
   (`database.windows.net`). Tokens are cached per identity and resource.
@@ -425,9 +425,9 @@ sequenceDiagram
 
 | Who | Where | Does | For |
 | --- | --- | --- | --- |
-| An Entra admin, or HiCRM's platform with `Application.ReadWrite.OwnedBy` | HiCRM's tenant | Creates the platform identity and a service account per customer; for the options, the sign-in app (once) and a reader per customer (`fabrikamreader`) | Today, and the options |
+| An Entra admin, or HiCRM's platform with `Application.ReadWrite.OwnedBy` | HiCRM's tenant | Creates the platform identity and a service principal per customer; for the options, the sign-in app (once) and a reader per customer (`fabrikamreader`) | Today, and the options |
 | HiCRM's platform | HiCRM's tenant | Rotates the readers' secrets, straight into the connections | Add-on |
-| A Fabric administrator | HiCRM's tenant | Turns on **Users can accept external data shares**, for the service accounts' group only | Add-on, data in a customer's Fabric |
+| A Fabric administrator | HiCRM's tenant | Turns on **Users can accept external data shares**, for the service principals' group only | Add-on, data in a customer's Fabric |
 | A HiCRM engineer | HiCRM's tenant | Registers a customer's gateway, in a session with the customer's IT | Add-on, on-premises sources |
 | An operator | HiCRM's back office | Records the customer's tenant ID | The options |
 | A Cloud Application Administrator or Application Administrator | Fabrikam's tenant | Admits HiCRM's sign-in app and assigns people to Manager and Rep; admits `fabrikamreader`, which asks for no API permissions | The options |
@@ -443,7 +443,7 @@ sequenceDiagram
    tokens never reach Fabric.
 2. **HiCRM holds only what a customer admits and grants:** service principals of HiCRM's apps, with read access to
    named data. The customer can remove either at any time.
-3. **The customer's service account owns every connection in its workspace,** and each connection signs in as the
+3. **The customer's service principal owns every connection in its workspace,** and each connection signs in as the
    narrowest identity that works: the workspace identity inside HiCRM's tenant, the customer's reader in the customer's.
 4. **One reader per customer,** admitted only in that customer's tenant, with its secret only in that customer's
    connections.
@@ -456,7 +456,7 @@ sequenceDiagram
 ## 8. Checked, and to test
 
 **Checked live** in the pilot's tenant, on 2026-10-07:
-- The workspace identity and both service accounts are single-tenant apps (`signInAudience` is `AzureADMyOrg`). The
+- The workspace identity and both service principals are single-tenant apps (`signInAudience` is `AzureADMyOrg`). The
   workspace identity is tagged `Microsoft Fabric Identity`.
 - Fabric cloud connections take these credential types: Anonymous, Basic, Key, KeyPair, OAuth2, ServicePrincipal,
   SharedAccessSignature and WorkspaceIdentity. None is a certificate or a federated credential. By source:
@@ -488,5 +488,5 @@ standing in for a customer, test these first:
 1. A pipeline copy from storage in the second tenant, through a connection that signs in as a reader's service
    principal.
 2. Azure SQL in the second tenant, with the reader.
-3. An external data share from the second tenant, accepted by a service account.
+3. An external data share from the second tenant, accepted by a service principal.
 4. Work-account sign-in from the second tenant, and its refusal at another customer's address.

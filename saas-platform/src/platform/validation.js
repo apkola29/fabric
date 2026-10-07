@@ -92,16 +92,21 @@ async function attempt(fn) {
   }
 }
 
-// A person with every territory and one limited to some: the tenant's own people when it has them.
+// The people whose reports and data to check: the tenant's own people when it has them, the manager and one rep per
+// territory set, so every row-level security role in use is checked. Otherwise a stand-in manager and rep.
 export function probePeople(tenant) {
   const domain = tenant.domains?.[0] || 'example.com';
-  const users = tenant.users || [];
-  const manager = users.find((u) => accessOf(u).territories === null);
-  const rep = users.find((u) => accessOf(u).role === 'rep' && accessOf(u).territories.length);
-  return {
-    manager: { email: manager?.email || `validator.manager@${domain}`, territories: null },
-    rep: rep ? { email: rep.email, territories: accessOf(rep).territories } : { email: `validator.rep@${domain}`, territories: [workload.TERRITORIES[0]] },
-  };
+  let manager = null;
+  const reps = {};
+  for (const user of tenant.users || []) {
+    const access = accessOf(user);
+    if (access.territories === null) manager ||= { email: user.email, territories: null };
+    else if (access.role === 'rep' && access.territories.length) reps[`${access.territories.join(' + ')} rep`] ||= { email: user.email, territories: access.territories };
+  }
+  const order = (person) => workload.TERRITORIES.indexOf(person.territories[0]);
+  const people = { manager: manager || { email: `validator.manager@${domain}`, territories: null }, ...Object.fromEntries(Object.entries(reps).sort(([, a], [, b]) => order(a) - order(b))) };
+  if (!Object.keys(reps).length) people[`${workload.TERRITORIES[0]} rep`] = { email: `validator.rep@${domain}`, territories: [workload.TERRITORIES[0]] };
+  return people;
 }
 
 // IDN-06, from the tenant settings as the platform identity reads them. A service principal can read them only through
@@ -142,6 +147,20 @@ export function assessTenantSettings(settings, { platformIsServicePrincipal = tr
   return notes;
 }
 
+// The controls each per-tenant check reports on. checkEmbedding also reads the app's own data (RLS-04) and collects the
+// people whose reports the browser opens (RLS-03).
+const COVERED_BY = {
+  checkIdentity: ['IDN-01'],
+  checkPlatformReleased: ['IDN-02'],
+  checkAudit: ['IDN-04'],
+  checkEmbedding: ['EMB-01', 'EMB-02', 'RLS-01', 'RLS-02', 'RLS-03', 'RLS-04'],
+  checkAgent: ['AI-01', 'AI-02', 'AI-03'],
+  checkQuestionLog: ['AI-04'],
+  checkUsageLog: ['OPS-06'],
+  checkCapacity: ['OPS-05'],
+  checkOwnDatabase: ['DAT-01'],
+};
+
 // `browser`, when given, opens embedded reports: { exportVisual(embedConfig, visualTitle) -> { rows: [{ label, value }] } }.
 // `secrets` is the store that holds the service principals' secrets.
 export async function validatePlatform({ config, fabric, identities, crm, tenants, secrets = null, mode = 'live', browser = null, now = () => Date.now() }) {
@@ -169,6 +188,8 @@ export async function validatePlatform({ config, fabric, identities, crm, tenant
         await check(tenant, client);
       } catch (error) {
         note('OPS-02', 'fail', `${tenant.name}: ${check.name} stopped: ${error.message}`);
+        // Its controls can't pass on the other tenants' results alone.
+        for (const id of COVERED_BY[check.name] || []) note(id, 'warn', `${tenant.name}: not fully checked, because ${check.name} stopped: ${error.message}`);
       }
     }
   }

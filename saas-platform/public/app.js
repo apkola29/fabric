@@ -14,17 +14,22 @@ const PAGE_SIZE = 25;
 const SCHEMA = { column: 'http://powerbi.com/product/schema#column', measure: 'http://powerbi.com/product/schema#measure', property: 'http://powerbi.com/product/schema#property' };
 
 const state = {
+  identityGeneration: 0,
   me: null,
   options: null,
   setupTimer: null,
   offsets: { accounts: 0, opportunities: 0, activities: 0 },
   accountId: null,
-  report: { list: [], models: [], current: null, embedded: null, mode: null, request: null, timer: null, ready: null },
+  report: { list: [], models: [], current: null, embedded: null, mode: null, request: null, timer: null, ready: null, revision: 0 },
   demoCharts: [],
   conversation: [],
 };
 
 const $ = (selector) => document.querySelector(selector);
+const currentIdentity = (generation) => generation === state.identityGeneration;
+function requireIdentity(generation) {
+  if (!currentIdentity(generation)) throw new Error('This request belongs to a previous sign-in.');
+}
 const money = new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD', maximumFractionDigits: 0 });
 const compactMoney = new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD', notation: 'compact', maximumFractionDigits: 1 });
 const count = new Intl.NumberFormat('en-US');
@@ -48,7 +53,8 @@ function el(tag, attrs = {}, ...children) {
   return node;
 }
 
-async function api(path, { method = 'GET', body, raw, headers = {} } = {}) {
+async function api(path, { method = 'GET', body, raw, headers = {}, generation = state.identityGeneration } = {}) {
+  requireIdentity(generation);
   const init = { method, headers: { ...headers } };
   if (method !== 'GET') init.headers['x-platform-client'] = 'web';
   if (raw !== undefined) init.body = raw;
@@ -56,8 +62,16 @@ async function api(path, { method = 'GET', body, raw, headers = {} } = {}) {
     init.body = JSON.stringify(body);
     init.headers['content-type'] = 'application/json';
   }
-  const res = await fetch(path, init);
-  const text = await res.text();
+  let res;
+  let text;
+  try {
+    res = await fetch(path, init);
+    text = await res.text();
+  } catch (error) {
+    requireIdentity(generation);
+    throw error;
+  }
+  requireIdentity(generation);
   let data = null;
   try {
     data = text ? JSON.parse(text) : null;
@@ -76,35 +90,48 @@ const query = (params) => new URLSearchParams(Object.entries(params).filter(([, 
 
 let toastTimer;
 function toast(message, kind = 'info') {
+  const generation = state.identityGeneration;
   const node = $('#toast');
   node.textContent = message;
   node.className = kind === 'error' ? 'toast error' : 'toast';
   node.hidden = false;
   clearTimeout(toastTimer);
   toastTimer = setTimeout(() => {
-    node.hidden = true;
+    if (currentIdentity(generation)) node.hidden = true;
   }, kind === 'error' ? 8000 : 4000);
 }
 
+const busyButtons = new Map();
 async function withBusy(button, label, work) {
+  const generation = state.identityGeneration;
   const original = button.textContent;
+  const restore = () => {
+    button.disabled = false;
+    button.removeAttribute('aria-busy');
+    button.textContent = original;
+  };
+  busyButtons.set(button, restore);
   button.disabled = true;
   button.setAttribute('aria-busy', 'true');
   button.textContent = label;
   try {
     return await work();
   } finally {
-    button.disabled = false;
-    button.removeAttribute('aria-busy');
-    button.textContent = original;
+    if (busyButtons.get(button) === restore) {
+      busyButtons.delete(button);
+      if (currentIdentity(generation)) restore();
+    }
   }
 }
 
 function debounce(fn, ms = 250) {
   let timer;
   return (...args) => {
+    const generation = state.identityGeneration;
     clearTimeout(timer);
-    timer = setTimeout(() => fn(...args), ms);
+    timer = setTimeout(() => {
+      if (currentIdentity(generation)) fn(...args);
+    }, ms);
   };
 }
 
@@ -119,13 +146,15 @@ function setProduct(name) {
 // The address decides the company before anyone signs in (platform/tenancy.js on the server): its logo, name and
 // accent color. On the shared address, the signed-in person's company once they're in.
 const THEME_PROPERTIES = ['--accent', '--accent-hover', '--accent-soft'];
-async function applySite() {
+async function applySite(generation = state.identityGeneration) {
   let site;
   try {
-    site = await api('/api/site');
+    site = await api('/api/site', { generation });
   } catch (error) {
+    if (!currentIdentity(generation)) return;
     site = error.status === 404 ? { mode: 'unknown', product: 'HiCRM' } : { mode: 'shared', product: 'HiCRM' };
   }
+  if (!currentIdentity(generation)) return;
   state.site = site;
   setProduct(site.product);
   for (const name of THEME_PROPERTIES) document.documentElement.style.removeProperty(name);
@@ -157,14 +186,49 @@ function stageBadge(stage) {
 
 // ---------- Session ----------
 
-function showSignIn() {
+// Invalidate work before changing the session, including queued timers and SDK callbacks, not just fetch responses.
+function resetIdentity() {
+  state.identityGeneration += 1;
   clearTimeout(state.setupTimer);
+  state.setupTimer = null;
+  clearTimeout(toastTimer);
+  $('#toast').hidden = true;
+  for (const restore of busyButtons.values()) restore();
+  busyButtons.clear();
   resetReport();
+  Object.assign(state.report, { list: [], models: [], current: null });
+  state.demoCharts = [];
+  state.conversation = [];
+  renderConversation();
   state.me = null;
+  state.options = null;
+  state.offsets = { accounts: 0, opportunities: 0, activities: 0 };
+  clearAccount();
+  if (/^#accounts\//.test(location.hash)) history.replaceState(null, '', `${location.pathname}${location.search}#accounts`);
+  for (const id of [
+    '#company', '#user-email', '#user-scope', '#nav', '#persona-select', '#suggestions',
+    '#kpi-pipeline', '#kpi-pipeline-note', '#kpi-won', '#kpi-winrate', '#kpi-accounts', '#home-closing', '#home-upcoming',
+    '#accounts-rows', '#accounts-pager', '#opportunities-rows', '#opportunities-totals', '#opportunities-pager', '#activities-rows', '#activities-pager',
+    '#accounts-state', '#accounts-industry', '#opportunities-owner', '#activities-owner', '#activities-type',
+    '#report-list', '#canvas', '#describe-hint', '#datasets', '#dialog-title', '#dialog-fields', '#dialog-error',
+  ]) $(id).replaceChildren();
+  for (const id of ['#accounts-filters', '#opportunities-filters', '#activities-filters', '#describe-form', '#ask-form', '#upload-form', '#web-form', '#request-form']) $(id).reset();
+  $('#describe-hint').classList.remove('error');
+  if ($('#dialog').open) $('#dialog').close();
+  dialogSubmit = null;
+  $('#ask-form button').disabled = false;
+  $('#persona-select').disabled = false;
+  $('#viewas').hidden = true;
+  closeAssistant();
+  for (const node of document.querySelectorAll('.view, .state')) node.hidden = true;
   $('#topbar').hidden = true;
   $('#main').hidden = true;
-  $('#assistant').hidden = true;
   $('#assistant-launcher').hidden = true;
+  return state.identityGeneration;
+}
+
+function showSignIn() {
+  resetIdentity();
   $('#signin').hidden = false;
   const site = state.site || { mode: 'shared' };
   // The platform's own address only finds the company; each company's address signs its people in.
@@ -184,6 +248,7 @@ function showSignIn() {
     state.emailHint = null;
   }
   (!finding && $('#email').value ? $('#password') : $('#email')).focus();
+  renderPersonaPicker().catch(() => {});
 }
 
 $('#signin-form').addEventListener('submit', async (event) => {
@@ -194,42 +259,179 @@ $('#signin-form').addEventListener('submit', async (event) => {
     toast('Enter your work email address.', 'error');
     return;
   }
+  const generation = resetIdentity();
   await withBusy(event.submitter || event.target.querySelector('button'), state.site?.mode === 'platform' ? 'Finding…' : 'Signing in…', async () => {
     try {
-      const result = await api('/api/session', { method: 'POST', body: { email, password } });
+      const result = await api('/api/session', { method: 'POST', body: { email, password }, generation });
+      if (!currentIdentity(generation)) return;
       if (result?.url) {
         location.assign(`${result.url}#email=${encodeURIComponent(email)}`);
         return;
       }
       $('#password').value = '';
-      await boot();
+      await boot(generation);
     } catch (error) {
+      if (!currentIdentity(generation)) return;
+      showSignIn();
       toast(error.message, 'error');
     }
   });
 });
 
 $('#sign-out').addEventListener('click', async () => {
-  await api('/api/session', { method: 'DELETE' }).catch(() => {});
+  const generation = resetIdentity();
+  await api('/api/session', { method: 'DELETE', generation }).catch(() => {});
+  if (!currentIdentity(generation)) return;
   location.hash = '';
-  await applySite();
-  showSignIn();
+  await applySite(generation);
+  if (currentIdentity(generation)) showSignIn();
 });
 
-async function boot() {
-  const site = await applySite();
+// ---------- View as: switch between a company's people, for demos and testing ----------
+
+// The people who sign in at this address, and the other companies' addresses. Only when "View as" is available here:
+// on this computer, outside production. Otherwise the server answers 404, and the page has the sign-in form only.
+async function fetchPersonas(generation = state.identityGeneration) {
+  try {
+    return await api('/api/personas', { generation });
+  } catch {
+    return null;
+  }
+}
+
+const seesText = (territories) => (territories === null ? 'every state' : territories.length ? `${territories.join(', ')} only` : 'no states yet');
+const personaText = (p) => `${p.name}: ${p.roleName}, ${seesText(p.territories)}`;
+const listWith = (nodes, separator) => nodes.flatMap((node, i) => (i ? [separator, node] : [node]));
+
+// Signs in as that person, then shows the app as they see it: a report opens again with their own embed token, and
+// nothing of the previous person's stays on screen (their conversation, the account they had open).
+async function viewAs(email) {
+  const generation = resetIdentity();
+  try {
+    await api('/api/persona', { method: 'POST', body: { email }, generation });
+    if (currentIdentity(generation)) await boot(generation);
+  } catch (error) {
+    if (!currentIdentity(generation)) return;
+    await boot(generation);
+    throw error;
+  }
+}
+
+function personaCard(persona, showCompany) {
+  const card = el(
+    'button',
+    { type: 'button', class: 'persona-card', role: 'listitem', 'data-email': persona.email },
+    el('span', { class: 'persona-role' }, showCompany ? `${persona.company} · ${persona.roleName}` : persona.roleName),
+    el('span', { class: 'persona-name' }, persona.name),
+    el('span', { class: 'persona-email' }, persona.email),
+    el('span', { class: 'persona-sees' }, `Sees ${seesText(persona.territories)}`),
+  );
+  card.addEventListener('click', async () => {
+    for (const other of document.querySelectorAll('.persona-card')) other.disabled = true;
+    card.setAttribute('aria-busy', 'true');
+    const switching = viewAs(persona.email);
+    const generation = state.identityGeneration;
+    try {
+      await switching;
+    } catch (error) {
+      if (currentIdentity(generation)) toast(error.message, 'error');
+    } finally {
+      if (currentIdentity(generation)) {
+        for (const other of document.querySelectorAll('.persona-card')) other.disabled = false;
+        card.removeAttribute('aria-busy');
+      }
+    }
+  });
+  return card;
+}
+
+async function renderPersonaPicker(generation = state.identityGeneration) {
+  if (!currentIdentity(generation)) return;
+  const picker = $('#persona-picker');
+  picker.hidden = true;
+  $('#signin').classList.remove('picking');
+  if (state.site?.mode === 'unknown') return;
+  const listing = await fetchPersonas(generation);
+  if (!currentIdentity(generation)) return;
+  if (!listing || !$('#topbar').hidden) return;
+  const here = listing.companies.filter((c) => c.here);
+  const people = here.flatMap((c) => c.personas.map((p) => ({ ...p, company: c.company })));
+  const others = listing.companies.filter((c) => !c.here && c.url);
+  if (!people.length && !others.length) return;
+  $('#persona-lede').textContent = people.length
+    ? `Pick one of ${here.length === 1 ? `${here[0].company}'s` : "the companies'"} people to see the app, and its reports, the way they do. Each sales rep sees one state; the manager sees every state.`
+    : 'Pick a company, then one of its people.';
+  $('#persona-cards').replaceChildren(...people.map((p) => personaCard(p, here.length > 1)));
+  $('#persona-cards').hidden = !people.length;
+  const links = others.map((c) => el('a', { href: c.url }, c.company));
+  $('#persona-elsewhere').replaceChildren(...(links.length ? [people.length ? 'Other companies, each at its own address: ' : 'Companies: ', ...listWith(links, ', ')] : []));
+  $('#persona-elsewhere').hidden = !links.length;
+  picker.hidden = false;
+  $('#signin').classList.add('picking');
+}
+
+// The top bar's "View as" list: this company's people, then the other companies (each opens its own address). It
+// names the person, so it takes the place of their name and email.
+async function renderViewAs(generation = state.identityGeneration) {
+  if (!currentIdentity(generation)) return;
+  const box = $('#viewas');
+  box.hidden = true;
+  $('#user-email').hidden = false;
+  if (!state.me?.personaSwitcher) return;
+  const listing = await fetchPersonas(generation);
+  if (!currentIdentity(generation)) return;
+  if (!listing || !state.me) return;
+  const here = listing.companies.filter((c) => c.here && c.personas.length);
+  if (!here.some((c) => c.personas.some((p) => p.email === state.me.email))) return;
+  const options = (c) => c.personas.map((p) => el('option', { value: p.email }, personaText(p)));
+  const others = listing.companies.filter((c) => !c.here && c.url);
+  $('#persona-select').replaceChildren(
+    ...(here.length === 1 ? options(here[0]) : here.map((c) => el('optgroup', { label: c.company }, ...options(c)))),
+    ...(others.length ? [el('optgroup', { label: 'Other companies' }, ...others.map((c) => el('option', { value: `url:${c.url}` }, `${c.company}: open its address`)))] : []),
+  );
+  $('#persona-select').value = state.me.email;
+  box.hidden = false;
+  $('#user-email').hidden = true;
+}
+
+$('#persona-select').addEventListener('change', async (event) => {
+  const select = event.target;
+  if (select.value.startsWith('url:')) {
+    location.assign(select.value.slice(4));
+    return;
+  }
+  const switching = viewAs(select.value);
+  const generation = state.identityGeneration;
+  select.disabled = true;
+  try {
+    await switching;
+  } catch (error) {
+    if (!currentIdentity(generation)) return;
+    toast(error.message, 'error');
+    if (state.me) select.value = state.me.email;
+  } finally {
+    if (currentIdentity(generation)) select.disabled = false;
+  }
+});
+
+async function boot(generation = state.identityGeneration) {
+  if (!currentIdentity(generation)) return;
+  const site = await applySite(generation);
+  if (!currentIdentity(generation)) return;
   if (site.mode === 'platform' || site.mode === 'unknown') {
     showSignIn();
     return;
   }
   let me;
   try {
-    me = await api('/api/me');
+    me = await api('/api/me', { generation });
   } catch (error) {
-    if (error.status !== 401) toast(error.message, 'error');
+    if (!currentIdentity(generation)) return;
     showSignIn();
+    if (error.status !== 401) toast(error.message, 'error');
     return;
   }
+  if (!currentIdentity(generation)) return;
   state.me = me;
   $('#signin').hidden = true;
   $('#topbar').hidden = false;
@@ -239,15 +441,18 @@ async function boot() {
   $('#user-email').title = $('#user-email').textContent;
   // Who sees what: managers see every territory, reps their own. The server enforces it; this just says so.
   $('#user-scope').textContent = `${me.roleName} · ${me.territories ? me.territories.join(', ') : 'All territories'}`;
+  renderViewAs(generation).catch(() => {});
   renderNav();
   if (me.status !== 'ready') {
     showState(me.status);
     return;
   }
-  if (me.features.crm) state.options = await api('/api/me/crm/options').catch(() => null);
+  const options = me.features.crm ? await api('/api/me/crm/options', { generation }).catch(() => null) : null;
+  if (!currentIdentity(generation)) return;
+  state.options = options;
   fillOptionLists();
   renderSuggestions();
-  await render();
+  await render(generation);
 }
 
 function renderNav() {
@@ -256,12 +461,15 @@ function renderNav() {
 }
 
 function showState(status) {
+  const generation = state.identityGeneration;
   for (const node of document.querySelectorAll('.view, .state')) node.hidden = true;
   $('#setting-up').hidden = status !== 'setting-up';
   $('#unavailable').hidden = status === 'setting-up';
   $('#assistant-launcher').hidden = true;
   clearTimeout(state.setupTimer);
-  if (status === 'setting-up') state.setupTimer = setTimeout(boot, 5000);
+  if (status === 'setting-up') state.setupTimer = setTimeout(() => {
+    if (currentIdentity(generation)) boot(generation);
+  }, 5000);
 }
 
 function fillOptionLists() {
@@ -285,8 +493,8 @@ function parseRoute() {
   return { view: available[0] || null, id: null };
 }
 
-async function render() {
-  if (!state.me || state.me.status !== 'ready') return;
+async function render(generation = state.identityGeneration) {
+  if (!currentIdentity(generation) || !state.me || state.me.status !== 'ready') return;
   const { view, id } = parseRoute();
   for (const node of document.querySelectorAll('.view, .state')) node.hidden = true;
   if (!view) {
@@ -303,14 +511,15 @@ async function render() {
   $('#assistant-launcher').hidden = !(state.me.features.ask && ['home', 'reports'].includes(view));
   if ($('#assistant-launcher').hidden) closeAssistant();
   try {
-    if (view === 'home') await loadHome();
-    if (view === 'accounts') await loadAccounts();
-    if (view === 'account') await loadAccount(id);
-    if (view === 'opportunities') await loadOpportunities();
-    if (view === 'activities') await loadActivities();
-    if (view === 'reports') await loadReports(id);
-    if (view === 'data') await loadData();
+    if (view === 'home') await loadHome(generation);
+    if (view === 'accounts') await loadAccounts(generation);
+    if (view === 'account') await loadAccount(id, generation);
+    if (view === 'opportunities') await loadOpportunities(generation);
+    if (view === 'activities') await loadActivities(generation);
+    if (view === 'reports') await loadReports(id, generation);
+    if (view === 'data') await loadData(generation);
   } catch (error) {
+    if (!currentIdentity(generation)) return;
     if (error.status !== 401) toast(error.message, 'error');
   }
 }
@@ -319,12 +528,13 @@ window.addEventListener('hashchange', () => render());
 
 // ---------- Home ----------
 
-async function loadHome() {
+async function loadHome(generation = state.identityGeneration) {
   const [summary, closing, upcoming] = await Promise.all([
-    api('/api/me/crm/summary'),
-    api(`/api/me/crm/opportunities?${query({ status: 'open', closeFrom: today(), sort: 'close', direction: 'asc', limit: 6 })}`),
-    api(`/api/me/crm/activities?${query({ status: 'open', direction: 'asc', limit: 6 })}`),
+    api('/api/me/crm/summary', { generation }),
+    api(`/api/me/crm/opportunities?${query({ status: 'open', closeFrom: today(), sort: 'close', direction: 'asc', limit: 6 })}`, { generation }),
+    api(`/api/me/crm/activities?${query({ status: 'open', direction: 'asc', limit: 6 })}`, { generation }),
   ]);
+  if (!currentIdentity(generation)) return;
   $('#kpi-pipeline').textContent = fmtMoney(summary.pipelineValue);
   $('#kpi-pipeline-note').textContent = `across ${count.format(summary.openOpportunities)} open opportunities`;
   $('#kpi-won').textContent = compactMoney.format(summary.wonThisYear || 0);
@@ -347,20 +557,30 @@ async function loadHome() {
 // ---------- Accounts ----------
 
 function pager(container, key, total, reload) {
+  const generation = state.identityGeneration;
   const offset = state.offsets[key];
   const end = Math.min(offset + PAGE_SIZE, total);
+  const go = (next) => {
+    if (!currentIdentity(generation)) return;
+    state.offsets[key] = next;
+    reload(generation).catch((error) => {
+      if (currentIdentity(generation)) toast(error.message, 'error');
+    });
+  };
   container.replaceChildren(
     el('span', {}, total ? `${count.format(offset + 1)}–${count.format(end)} of ${count.format(total)}` : ''),
-    el('button', { class: 'button', type: 'button', disabled: offset === 0, onclick: () => ((state.offsets[key] = Math.max(0, offset - PAGE_SIZE)), reload()) }, 'Previous'),
-    el('button', { class: 'button', type: 'button', disabled: end >= total, onclick: () => ((state.offsets[key] = offset + PAGE_SIZE), reload()) }, 'Next'),
+    el('button', { class: 'button', type: 'button', disabled: offset === 0, onclick: () => go(Math.max(0, offset - PAGE_SIZE)) }, 'Previous'),
+    el('button', { class: 'button', type: 'button', disabled: end >= total, onclick: () => go(offset + PAGE_SIZE) }, 'Next'),
   );
 }
 
-async function loadAccounts() {
+async function loadAccounts(generation = state.identityGeneration) {
+  if (!currentIdentity(generation)) return;
   const body = $('#accounts-rows');
   body.replaceChildren(loadingRow(6));
   const [sort, direction] = $('#accounts-sort').value.split(':');
-  const result = await api(`/api/me/crm/accounts?${query({ search: $('#accounts-search').value.trim(), state: $('#accounts-state').value, industry: $('#accounts-industry').value, sort, direction, limit: PAGE_SIZE, offset: state.offsets.accounts })}`);
+  const result = await api(`/api/me/crm/accounts?${query({ search: $('#accounts-search').value.trim(), state: $('#accounts-state').value, industry: $('#accounts-industry').value, sort, direction, limit: PAGE_SIZE, offset: state.offsets.accounts })}`, { generation });
+  if (!currentIdentity(generation)) return;
   body.replaceChildren(
     ...(result.rows.length
       ? result.rows.map((a) =>
@@ -381,8 +601,11 @@ async function loadAccounts() {
 }
 
 const reloadAccounts = () => {
+  const generation = state.identityGeneration;
   state.offsets.accounts = 0;
-  loadAccounts().catch((error) => toast(error.message, 'error'));
+  loadAccounts(generation).catch((error) => {
+    if (currentIdentity(generation)) toast(error.message, 'error');
+  });
 };
 $('#accounts-search').addEventListener('input', debounce(reloadAccounts));
 $('#accounts-state').addEventListener('change', reloadAccounts);
@@ -390,9 +613,29 @@ $('#accounts-industry').addEventListener('change', reloadAccounts);
 $('#accounts-sort').addEventListener('change', reloadAccounts);
 $('#accounts-filters').addEventListener('submit', (event) => event.preventDefault());
 
-async function loadAccount(id) {
+function clearAccount() {
+  state.accountId = null;
+  for (const id of ['#account-title', '#account-facts', '#account-deals', '#account-activities', '#account-contacts']) $(id).replaceChildren();
+  for (const id of ['#account-deal', '#account-log', '#account-contact']) $(id).disabled = true;
+}
+
+async function loadAccount(id, generation = state.identityGeneration) {
+  if (!currentIdentity(generation)) return;
+  clearAccount();
+  $('#account-title').textContent = 'Loading…';
+  let account;
+  try {
+    account = await api(`/api/me/crm/accounts/${encodeURIComponent(id)}`, { generation });
+  } catch (error) {
+    if (currentIdentity(generation)) {
+      clearAccount();
+      $('#account-title').textContent = 'Account unavailable';
+    }
+    throw error;
+  }
+  if (!currentIdentity(generation)) return;
   state.accountId = id;
-  const account = await api(`/api/me/crm/accounts/${encodeURIComponent(id)}`);
+  for (const button of ['#account-deal', '#account-log', '#account-contact']) $(button).disabled = false;
   $('#account-title').textContent = account.name;
   const facts = [
     ['Territory', account.state || 'Unassigned'],
@@ -422,26 +665,31 @@ async function loadAccount(id) {
 
 // ---------- Opportunities ----------
 
-async function loadOpportunities() {
+async function loadOpportunities(generation = state.identityGeneration) {
+  if (!currentIdentity(generation)) return;
   const body = $('#opportunities-rows');
   body.replaceChildren(loadingRow(6));
   const status = $('#opportunities-status').value;
-  const result = await api(`/api/me/crm/opportunities?${query({ search: $('#opportunities-search').value.trim(), status, ownerId: $('#opportunities-owner').value, sort: 'close', direction: status === 'open' ? 'asc' : 'desc', limit: PAGE_SIZE, offset: state.offsets.opportunities })}`);
+  const result = await api(`/api/me/crm/opportunities?${query({ search: $('#opportunities-search').value.trim(), status, ownerId: $('#opportunities-owner').value, sort: 'close', direction: status === 'open' ? 'asc' : 'desc', limit: PAGE_SIZE, offset: state.offsets.opportunities })}`, { generation });
+  if (!currentIdentity(generation)) return;
   $('#opportunities-totals').textContent = `${count.format(result.total)} ${status === 'open' ? 'open ' : status === 'won' ? 'won ' : status === 'lost' ? 'lost ' : ''}opportunities`;
   body.replaceChildren(
     ...(result.rows.length
       ? result.rows.map((o) => {
           const select = el('select', { 'aria-label': `Stage of ${o.name}` }, ...state.options.stages.map((s) => el('option', { value: s, selected: s === o.stage }, s)));
           select.addEventListener('change', async () => {
+            if (!currentIdentity(generation)) return;
             select.disabled = true;
             try {
-              const updated = await api(`/api/me/crm/opportunities/${encodeURIComponent(o.id)}`, { method: 'PATCH', body: { stage: select.value } });
+              const updated = await api(`/api/me/crm/opportunities/${encodeURIComponent(o.id)}`, { method: 'PATCH', body: { stage: select.value }, generation });
+              if (!currentIdentity(generation)) return;
               toast(`${updated.name} moved to ${updated.stage}.`);
             } catch (error) {
+              if (!currentIdentity(generation)) return;
               select.value = o.stage;
               toast(error.message, 'error');
             } finally {
-              select.disabled = false;
+              if (currentIdentity(generation)) select.disabled = false;
             }
           });
           return el('tr', {}, el('td', {}, o.name), el('td', {}, el('a', { href: `#accounts/${encodeURIComponent(o.accountId)}` }, o.accountName)), el('td', {}, select), el('td', { class: 'num' }, fmtMoney(o.amount)), el('td', { class: 'date' }, fmtDate(o.closeDate)), el('td', {}, o.ownerName || '—'));
@@ -452,8 +700,11 @@ async function loadOpportunities() {
 }
 
 const reloadOpportunities = () => {
+  const generation = state.identityGeneration;
   state.offsets.opportunities = 0;
-  loadOpportunities().catch((error) => toast(error.message, 'error'));
+  loadOpportunities(generation).catch((error) => {
+    if (currentIdentity(generation)) toast(error.message, 'error');
+  });
 };
 $('#opportunities-search').addEventListener('input', debounce(reloadOpportunities));
 $('#opportunities-status').addEventListener('change', reloadOpportunities);
@@ -462,25 +713,30 @@ $('#opportunities-filters').addEventListener('submit', (event) => event.preventD
 
 // ---------- Activities ----------
 
-async function loadActivities() {
+async function loadActivities(generation = state.identityGeneration) {
+  if (!currentIdentity(generation)) return;
   const body = $('#activities-rows');
   body.replaceChildren(loadingRow(6));
   const status = document.querySelector('input[name="activities-status"]:checked').value;
-  const result = await api(`/api/me/crm/activities?${query({ status, type: $('#activities-type').value, ownerId: $('#activities-owner').value, direction: status === 'open' ? 'asc' : 'desc', limit: PAGE_SIZE, offset: state.offsets.activities })}`);
+  const result = await api(`/api/me/crm/activities?${query({ status, type: $('#activities-type').value, ownerId: $('#activities-owner').value, direction: status === 'open' ? 'asc' : 'desc', limit: PAGE_SIZE, offset: state.offsets.activities })}`, { generation });
+  if (!currentIdentity(generation)) return;
   body.replaceChildren(
     ...(result.rows.length
       ? result.rows.map((a) => {
           const box = el('input', { type: 'checkbox', checked: a.completed, 'aria-label': `Done: ${a.subject}` });
           box.addEventListener('change', async () => {
+            if (!currentIdentity(generation)) return;
             box.disabled = true;
             try {
-              await api(`/api/me/crm/activities/${encodeURIComponent(a.id)}`, { method: 'PATCH', body: { completed: box.checked } });
+              await api(`/api/me/crm/activities/${encodeURIComponent(a.id)}`, { method: 'PATCH', body: { completed: box.checked }, generation });
+              if (!currentIdentity(generation)) return;
               toast(box.checked ? 'Marked as done.' : 'Marked as planned.');
             } catch (error) {
+              if (!currentIdentity(generation)) return;
               box.checked = !box.checked;
               toast(error.message, 'error');
             } finally {
-              box.disabled = false;
+              if (currentIdentity(generation)) box.disabled = false;
             }
           });
           return el('tr', {}, el('td', { class: 'date' }, fmtDate(a.date)), el('td', {}, el('span', { class: 'type' }, a.type)), el('td', {}, a.subject, a.opportunityName ? el('span', { class: 'sub' }, a.opportunityName) : null), el('td', {}, el('a', { href: `#accounts/${encodeURIComponent(a.accountId)}` }, a.accountName)), el('td', {}, a.ownerName || '—'), el('td', {}, box));
@@ -491,8 +747,11 @@ async function loadActivities() {
 }
 
 const reloadActivities = () => {
+  const generation = state.identityGeneration;
   state.offsets.activities = 0;
-  loadActivities().catch((error) => toast(error.message, 'error'));
+  loadActivities(generation).catch((error) => {
+    if (currentIdentity(generation)) toast(error.message, 'error');
+  });
 };
 $('#activities-filters').addEventListener('change', reloadActivities);
 $('#activities-filters').addEventListener('submit', (event) => event.preventDefault());
@@ -502,6 +761,7 @@ $('#activities-filters').addEventListener('submit', (event) => event.preventDefa
 let dialogSubmit = null;
 
 function fieldControl(field) {
+  const generation = state.identityGeneration;
   const id = `f-${field.name}`;
   let control;
   if (field.type === 'select') {
@@ -510,7 +770,9 @@ function fieldControl(field) {
     const list = el('datalist', { id: `${id}-list` });
     control = el('input', { id, name: field.name, list: list.id, autocomplete: 'off', required: field.required, placeholder: 'Start typing an account name' });
     const lookup = debounce(async () => {
-      const found = await api(`/api/me/crm/lookup/accounts?${query({ q: control.value.trim() })}`).catch(() => []);
+      if (!currentIdentity(generation)) return;
+      const found = await api(`/api/me/crm/lookup/accounts?${query({ q: control.value.trim() })}`, { generation }).catch(() => []);
+      if (!currentIdentity(generation)) return;
       control.dataset.matches = JSON.stringify(found);
       list.replaceChildren(...found.map((a) => el('option', { value: a.name })));
     });
@@ -531,7 +793,7 @@ function openForm({ title, fields, submitLabel = 'Save', onSubmit }) {
   $('#dialog-fields').replaceChildren(...fields.map(fieldControl));
   $('#dialog-submit').textContent = submitLabel;
   $('#dialog-error').hidden = true;
-  dialogSubmit = { fields, onSubmit };
+  dialogSubmit = { fields, onSubmit, generation: state.identityGeneration };
   $('#dialog').showModal();
   $('#dialog-fields').querySelector('input, select, textarea')?.focus();
 }
@@ -555,13 +817,18 @@ $('#dialog-cancel').addEventListener('click', () => $('#dialog').close());
 $('#dialog-form').addEventListener('submit', async (event) => {
   event.preventDefault();
   if (!dialogSubmit) return;
+  const submission = dialogSubmit;
+  const { generation } = submission;
+  if (!currentIdentity(generation)) return;
   const error = $('#dialog-error');
   error.hidden = true;
   await withBusy($('#dialog-submit'), 'Saving…', async () => {
     try {
-      await dialogSubmit.onSubmit(formValues(dialogSubmit.fields));
+      await submission.onSubmit(formValues(submission.fields), generation);
+      if (!currentIdentity(generation)) return;
       $('#dialog').close();
     } catch (failure) {
+      if (!currentIdentity(generation)) return;
       error.textContent = failure.message;
       error.hidden = false;
     }
@@ -585,8 +852,9 @@ function accountForm() {
       { name: 'ownerId', label: 'Owner', type: 'select', blank: 'Nobody yet', options: repOptions() },
     ],
     submitLabel: 'Create account',
-    onSubmit: async (values) => {
-      const account = await api('/api/me/crm/accounts', { method: 'POST', body: values });
+    onSubmit: async (values, generation) => {
+      const account = await api('/api/me/crm/accounts', { method: 'POST', body: values, generation });
+      if (!currentIdentity(generation)) return;
       toast(`${account.name} added.`);
       location.hash = `#accounts/${encodeURIComponent(account.id)}`;
     },
@@ -605,10 +873,11 @@ function opportunityForm(accountId) {
       { name: 'ownerId', label: 'Owner', type: 'select', blank: 'Nobody yet', options: repOptions() },
     ],
     submitLabel: 'Create opportunity',
-    onSubmit: async (values) => {
-      const deal = await api('/api/me/crm/opportunities', { method: 'POST', body: { ...values, accountId: accountId || values.accountId } });
+    onSubmit: async (values, generation) => {
+      const deal = await api('/api/me/crm/opportunities', { method: 'POST', body: { ...values, accountId: accountId || values.accountId }, generation });
+      if (!currentIdentity(generation)) return;
       toast(`${deal.name} added.`);
-      render();
+      render(generation);
     },
   });
 }
@@ -625,10 +894,11 @@ function activityForm(accountId) {
       { name: 'ownerId', label: 'Owner', type: 'select', blank: 'Nobody yet', options: repOptions() },
     ],
     submitLabel: 'Log activity',
-    onSubmit: async (values) => {
-      await api('/api/me/crm/activities', { method: 'POST', body: { ...values, accountId: accountId || values.accountId } });
+    onSubmit: async (values, generation) => {
+      await api('/api/me/crm/activities', { method: 'POST', body: { ...values, accountId: accountId || values.accountId }, generation });
+      if (!currentIdentity(generation)) return;
       toast('Activity logged.');
-      render();
+      render(generation);
     },
   });
 }
@@ -644,10 +914,11 @@ function contactForm(accountId) {
       { name: 'phone', label: 'Phone', type: 'tel' },
     ],
     submitLabel: 'Add contact',
-    onSubmit: async (values) => {
-      await api('/api/me/crm/contacts', { method: 'POST', body: { ...values, accountId } });
+    onSubmit: async (values, generation) => {
+      await api('/api/me/crm/contacts', { method: 'POST', body: { ...values, accountId }, generation });
+      if (!currentIdentity(generation)) return;
       toast('Contact added.');
-      render();
+      render(generation);
     },
   });
 }
@@ -662,6 +933,7 @@ $('#account-contact').addEventListener('click', () => contactForm(state.accountI
 // ---------- Reports ----------
 
 function resetReport() {
+  state.report.revision += 1;
   clearInterval(state.report.timer);
   if (state.report.embedded) window.powerbi?.reset($('#canvas'));
   Object.assign(state.report, { embedded: null, mode: null, request: null, ready: null, onSaved: null, refreshAt: null, tokenId: null, checkToken: null });
@@ -681,15 +953,17 @@ function renderReportList() {
   $('#edit-report').textContent = state.report.mode === 'edit' ? 'Done editing' : 'Edit report';
 }
 
-async function loadReports(reportId) {
-  const listing = await api('/api/me/reports');
+async function loadReports(reportId, generation = state.identityGeneration) {
+  if (!currentIdentity(generation)) return;
+  const listing = await api('/api/me/reports', { generation });
+  if (!currentIdentity(generation)) return;
   state.report.list = listing.reports;
   state.report.models = listing.models;
   $('#new-report').hidden = !(rights().create && listing.models.length);
   $('#describe-form').hidden = !(rights().edit || rights().create);
   const target = reportId || (state.report.current?.kind === 'create' ? null : state.report.current?.reportId) || listing.reports[0]?.id;
   if (target && listing.reports.some((r) => r.id === target)) {
-    if (state.report.current?.reportId !== target || !state.report.embedded) await openReport(target, 'view');
+    if (state.report.current?.reportId !== target || !state.report.embedded) await openReport(target, 'view', generation);
     else renderReportList();
     return;
   }
@@ -698,10 +972,11 @@ async function loadReports(reportId) {
   $('#canvas').replaceChildren(canvasNote('No reports yet', listing.models.length && rights().create ? 'Start one with New report, or describe a chart above.' : 'Your reports appear here as soon as they are ready.'));
 }
 
-async function openReport(reportId, mode) {
+async function openReport(reportId, mode, generation = state.identityGeneration) {
+  if (!currentIdentity(generation)) return;
   state.report.current = { kind: 'report', reportId };
-  await embed({ mode, reportId });
-  renderReportList();
+  await embed({ mode, reportId }, generation);
+  if (currentIdentity(generation)) renderReportList();
 }
 
 $('#edit-report').addEventListener('click', () => {
@@ -710,20 +985,25 @@ $('#edit-report').addEventListener('click', () => {
 });
 
 $('#new-report').addEventListener('click', async () => {
+  const generation = state.identityGeneration;
   const model = state.report.models[0];
   if (!model) return;
   state.report.current = { kind: 'create' };
   state.demoCharts = [];
   renderReportList();
-  await embed({ mode: 'create', datasetId: model.id });
+  await embed({ mode: 'create', datasetId: model.id }, generation);
 });
 
-async function embed(request) {
+async function embed(request, generation = state.identityGeneration) {
+  if (!currentIdentity(generation)) return;
   const canvas = $('#canvas');
   resetReport();
+  const revision = state.report.revision;
+  const active = () => currentIdentity(generation) && state.report.revision === revision;
   canvas.replaceChildren(canvasNote(null, 'Opening…'));
   try {
-    const config = await api('/api/me/embed', { method: 'POST', body: request });
+    const config = await api('/api/me/embed', { method: 'POST', body: request, generation });
+    if (!active()) return;
     state.report.request = request;
     state.report.mode = config.mode;
     if (config.demo) {
@@ -731,13 +1011,14 @@ async function embed(request) {
       state.report.ready = Promise.resolve(null);
       return;
     }
-    embedLive(canvas, config);
+    embedLive(canvas, config, generation);
   } catch (error) {
-    canvas.replaceChildren(canvasNote(null, error.message));
+    if (active()) canvas.replaceChildren(canvasNote(null, error.message));
   }
 }
 
-function embedLive(canvas, config) {
+function embedLive(canvas, config, generation = state.identityGeneration) {
+  if (!currentIdentity(generation)) return;
   const client = window['powerbi-client'];
   if (!window.powerbi || !client) {
     canvas.replaceChildren(canvasNote(null, "Reports couldn't load. Check your connection and try again."));
@@ -761,8 +1042,11 @@ function embedLive(canvas, config) {
           settings: { panes: { filters: { visible: config.mode === 'edit' } } },
         });
   state.report.embedded = embedded;
+  const active = () => currentIdentity(generation) && state.report.embedded === embedded;
   state.report.ready = new Promise((resolve) => embedded.on('loaded', () => resolve(embedded)));
-  embedded.on('error', (event) => toast(event.detail?.message || "The report couldn't load.", 'error'));
+  embedded.on('error', (event) => {
+    if (active()) toast(event.detail?.message || "The report couldn't load.", 'error');
+  });
   // Usage, as in Microsoft's App-Owns-Data Starter Kit: how long the report took to load and render, with the embed
   // token's ID and the report's correlation ID, which tie the view to Power BI's own records. First render only.
   const started = performance.now();
@@ -770,19 +1054,21 @@ function embedLive(canvas, config) {
   let logged = config.kind === 'create';
   state.report.tokenId = config.tokenId || null;
   embedded.on('loaded', () => {
-    loadMs = Math.round(performance.now() - started);
+    if (active()) loadMs = Math.round(performance.now() - started);
   });
   embedded.on('rendered', async () => {
-    if (logged) return;
+    if (!active() || logged) return;
     logged = true;
     const renderMs = Math.round(performance.now() - started);
     const correlationId = await Promise.resolve(embedded.getCorrelationId?.()).catch(() => null);
-    logUsage({ event: 'view', reportId: config.reportId, reportName: config.name, loadMs, renderMs, correlationId, tokenId: state.report.tokenId });
+    if (!active()) return;
+    logUsage({ event: 'view', reportId: config.reportId, reportName: config.name, loadMs, renderMs, correlationId, tokenId: state.report.tokenId }, generation);
   });
   embedded.on('saved', async (event) => {
+    if (!active()) return;
     const savedId = event.detail?.reportObjectId;
     const saved = config.kind === 'create' ? 'create' : event.detail?.saveAs ? 'copy' : 'save';
-    if (savedId) logUsage({ event: saved, reportId: savedId, reportName: event.detail?.reportName || config.name, ...(saved === 'copy' ? { originalReportId: config.reportId } : {}), tokenId: state.report.tokenId });
+    if (savedId) logUsage({ event: saved, reportId: savedId, reportName: event.detail?.reportName || config.name, ...(saved === 'copy' ? { originalReportId: config.reportId } : {}), tokenId: state.report.tokenId }, generation);
     // A save started by "describe a chart" continues there; any other save refreshes the list.
     if (state.report.onSaved) {
       const handler = state.report.onSaved;
@@ -794,44 +1080,57 @@ function embedLive(canvas, config) {
     // "Save as" and a new report leave the frame on a report its token doesn't name, and a refresh would ask for the
     // original again. So the saved report opens with a token of its own, as in Microsoft's App-Owns-Data Starter Kit.
     if (savedId && saved !== 'save') {
-      state.report.list = (await api('/api/me/reports')).reports;
-      await openReport(savedId, rights().edit ? 'edit' : 'view');
+      const listing = await api('/api/me/reports', { generation }).catch((error) => {
+        if (active()) toast(error.message, 'error');
+        return null;
+      });
+      if (!active() || !listing) return;
+      state.report.list = listing.reports;
+      await openReport(savedId, rights().edit ? 'edit' : 'view', generation);
       return;
     }
     if (savedId) state.report.current = { kind: 'report', reportId: savedId };
-    await loadReports(savedId || undefined);
+    await loadReports(savedId || undefined, generation).catch((error) => {
+      if (active()) toast(error.message, 'error');
+    });
   });
-  scheduleTokenRefresh(embedded, config);
+  scheduleTokenRefresh(embedded, config, generation);
 }
 
 // The usage log is never in the way: if it can't be written, the report keeps working.
-function logUsage(body) {
-  api('/api/me/reports/usage', { method: 'POST', body }).catch(() => {});
+function logUsage(body, generation = state.identityGeneration) {
+  if (currentIdentity(generation)) api('/api/me/reports/usage', { method: 'POST', body, generation }).catch(() => {});
 }
 
 // Embed tokens are short-lived. Check every 30 seconds and whenever the tab becomes visible again (timers stall while
 // a device sleeps), and swap in a fresh token when it's due (embed-token.js says when).
-function scheduleTokenRefresh(embedded, config) {
+function scheduleTokenRefresh(embedded, config, generation = state.identityGeneration) {
   clearInterval(state.report.timer);
   state.report.refreshAt = refreshTimeOf(config);
   let refreshing = false;
-  state.report.checkToken = async () => {
-    if (refreshing || state.report.embedded !== embedded || !state.report.request) return;
+  const active = () => currentIdentity(generation) && state.report.embedded === embedded;
+  const checkToken = async () => {
+    if (!active() || refreshing || !state.report.request) return;
     if (Date.now() < state.report.refreshAt) return;
     refreshing = true;
     try {
-      const fresh = await api('/api/me/embed', { method: 'POST', body: state.report.request });
+      const fresh = await api('/api/me/embed', { method: 'POST', body: state.report.request, generation });
+      if (!active()) return;
       await embedded.setAccessToken(fresh.accessToken);
+      if (!active()) return;
       state.report.refreshAt = refreshTimeOf(fresh);
       state.report.tokenId = fresh.tokenId || null;
     } catch {
-      clearInterval(state.report.timer);
-      toast('Your session for this report ended. Open it again.', 'error');
+      if (active()) {
+        clearInterval(state.report.timer);
+        toast('Your session for this report ended. Open it again.', 'error');
+      }
     } finally {
       refreshing = false;
     }
   };
-  state.report.timer = setInterval(() => state.report.checkToken?.(), TOKEN_CHECK_MS);
+  state.report.checkToken = checkToken;
+  state.report.timer = setInterval(checkToken, TOKEN_CHECK_MS);
 }
 
 document.addEventListener('visibilitychange', () => {
@@ -841,12 +1140,14 @@ document.addEventListener('visibilitychange', () => {
 // "Describe a chart": the server turns the words into a visual spec; the report authoring API builds it.
 $('#describe-form').addEventListener('submit', async (event) => {
   event.preventDefault();
+  const generation = state.identityGeneration;
   const text = $('#describe-text').value.trim();
   const hint = $('#describe-hint');
   if (!text) return;
   await withBusy(event.submitter || event.target.querySelector('button'), 'Adding…', async () => {
     try {
-      const spec = await api('/api/me/reports/describe', { method: 'POST', body: { text } });
+      const spec = await api('/api/me/reports/describe', { method: 'POST', body: { text }, generation });
+      if (!currentIdentity(generation)) return;
       if (!spec.ok) {
         hint.textContent = spec.message;
         hint.classList.add('error');
@@ -854,16 +1155,22 @@ $('#describe-form').addEventListener('submit', async (event) => {
       }
       hint.classList.remove('error');
       if (state.me.demo) {
-        if (!state.report.request) await embed(state.report.models[0] ? { mode: 'create', datasetId: state.report.models[0].id } : { mode: 'view' });
+        if (!state.report.request) await embed(state.report.models[0] ? { mode: 'create', datasetId: state.report.models[0].id } : { mode: 'view' }, generation);
+        if (!currentIdentity(generation)) return;
         state.demoCharts.unshift(spec);
         renderDemoBoard();
       } else {
-        await ensureEditable();
-        await addVisual(await state.report.ready, spec);
+        await ensureEditable(generation);
+        if (!currentIdentity(generation)) return;
+        const report = await state.report.ready;
+        if (!currentIdentity(generation)) return;
+        await addVisual(report, spec, generation);
       }
+      if (!currentIdentity(generation)) return;
       hint.textContent = `Added “${spec.title}”.${spec.notes?.length ? ` ${spec.notes.join(' ')}` : ''} Save the report to keep it.`;
       $('#describe-text').value = '';
     } catch (error) {
+      if (!currentIdentity(generation)) return;
       hint.textContent = error.message;
       hint.classList.add('error');
     }
@@ -872,31 +1179,43 @@ $('#describe-form').addEventListener('submit', async (event) => {
 
 // Charts can only be added to a saved report open for editing. A brand-new report is saved first (Power BI's
 // create mode has no page API), then reopened in edit mode with a token for that report.
-async function ensureEditable() {
+async function ensureEditable(generation = state.identityGeneration) {
+  if (!currentIdentity(generation)) return;
   if (state.report.embedded && state.report.mode === 'edit') return;
   if (!state.report.embedded && !state.report.current?.reportId && state.report.models[0]) {
     state.report.current = { kind: 'create' };
-    await embed({ mode: 'create', datasetId: state.report.models[0].id });
+    await embed({ mode: 'create', datasetId: state.report.models[0].id }, generation);
+    if (!currentIdentity(generation)) return;
   }
   if (state.report.mode === 'create' && state.report.embedded) {
     const created = await state.report.ready;
+    if (!currentIdentity(generation)) return;
     const saved = new Promise((resolve) => {
       state.report.onSaved = resolve;
     });
     await created.saveAs({ name: `New report ${new Date().toISOString().slice(0, 10)}` });
+    if (!currentIdentity(generation)) return;
     const reportId = await saved;
+    if (!currentIdentity(generation)) return;
     if (!reportId) throw new Error("The new report couldn't be saved.");
-    state.report.list = (await api('/api/me/reports')).reports;
-    await openReport(reportId, 'edit');
+    const listing = await api('/api/me/reports', { generation });
+    if (!currentIdentity(generation)) return;
+    state.report.list = listing.reports;
+    await openReport(reportId, 'edit', generation);
   } else if (state.report.current?.reportId) {
-    await openReport(state.report.current.reportId, 'edit');
+    await openReport(state.report.current.reportId, 'edit', generation);
   }
+  if (!currentIdentity(generation)) return;
   if (!state.report.ready) throw new Error("The report couldn't open for editing.");
 }
 
-async function addVisual(report, spec) {
+async function addVisual(report, spec, generation = state.identityGeneration) {
+  const active = () => currentIdentity(generation) && state.report.embedded === report;
+  if (!active()) return;
   const page = await report.getActivePage();
+  if (!active()) return;
   const visuals = await page.getVisuals().catch(() => []);
+  if (!active()) return;
   const pageWidth = page.defaultSize?.width || 1280;
   const card = spec.visualType === 'card';
   const width = card ? Math.round(pageWidth / 5) : Math.round((pageWidth - 72) / 2);
@@ -905,16 +1224,22 @@ async function addVisual(report, spec) {
   // Visuals created without an explicit display state come out hidden.
   const layout = { x: 24, y: visuals.length ? bottom + 24 : 24, width, height, displayState: { mode: 0 } };
   const { visual } = await page.createVisual(spec.visualType, layout, false);
+  if (!active()) return;
   const { dataRoles = [] } = await visual.getCapabilities();
+  if (!active()) return;
   // 0 = grouping, 1 = measure, 2 = either (for example a table's Values).
   const grouping = dataRoles.find((r) => r.kind === 0) || dataRoles.find((r) => r.kind === 2);
   const measures = dataRoles.find((r) => r.kind === 1) || dataRoles.find((r) => r.kind === 2);
   if (spec.dimension && grouping) await visual.addDataField(grouping.name, { $schema: SCHEMA.column, table: spec.dimension.table, column: spec.dimension.column });
+  if (!active()) return;
   if (measures) await visual.addDataField(measures.name, { $schema: SCHEMA.measure, table: spec.measure.table, measure: spec.measure.name });
+  if (!active()) return;
   if (spec.sortByCategory && spec.dimension) {
     await visual.sortBy({ orderBy: [{ target: { table: spec.dimension.table, column: spec.dimension.column }, direction: 1 }] }).catch(() => {});
+    if (!active()) return;
   }
   await visual.setProperty({ objectName: 'title', propertyName: 'visible' }, { schema: SCHEMA.property, value: true }).catch(() => {});
+  if (!active()) return;
   await visual.setProperty({ objectName: 'title', propertyName: 'titleText' }, { schema: SCHEMA.property, value: spec.title }).catch(() => {});
 }
 
@@ -1070,20 +1395,24 @@ function renderConversation() {
 }
 
 async function ask(question) {
+  const generation = state.identityGeneration;
   state.conversation.push({ from: 'you', text: question });
   state.conversation.push({ from: 'bot pending', text: 'Looking…' });
   renderConversation();
   const button = $('#ask-form button');
   button.disabled = true;
   try {
-    const result = await api('/api/me/ask', { method: 'POST', body: { question } });
+    const result = await api('/api/me/ask', { method: 'POST', body: { question }, generation });
+    if (!currentIdentity(generation)) return;
     const { answer, rows, suggestions, source, chart, measure, dimension, chartSource, images } = result;
     state.conversation[state.conversation.length - 1] = { from: 'bot', question, text: answer, rows, suggestions, source, chart, measure, dimension, chartSource, images };
   } catch (error) {
-    state.conversation[state.conversation.length - 1] = { from: 'bot error', text: error.message };
+    if (currentIdentity(generation)) state.conversation[state.conversation.length - 1] = { from: 'bot error', text: error.message };
   } finally {
-    button.disabled = false;
-    renderConversation();
+    if (currentIdentity(generation)) {
+      button.disabled = false;
+      renderConversation();
+    }
   }
 }
 
@@ -1103,10 +1432,12 @@ $('#question').addEventListener('keydown', (event) => {
 
 // ---------- Data (data integration add-on) ----------
 
-async function loadData() {
+async function loadData(generation = state.identityGeneration) {
+  if (!currentIdentity(generation)) return;
   const body = $('#datasets');
   body.replaceChildren(loadingRow(4));
-  const datasets = await api('/api/me/data');
+  const datasets = await api('/api/me/data', { generation });
+  if (!currentIdentity(generation)) return;
   body.replaceChildren(
     ...(datasets.length
       ? datasets.map((d) => el('tr', {}, el('td', {}, d.name), el('td', {}, d.source), el('td', { class: 'num' }, d.rows === null ? '—' : count.format(d.rows)), el('td', { class: 'date' }, d.updatedAt ? fmtDate(d.updatedAt) : '—')))
@@ -1135,6 +1466,7 @@ async function excelSheetsAsCsv(file, baseName) {
 
 $('#upload-form').addEventListener('submit', async (event) => {
   event.preventDefault();
+  const generation = state.identityGeneration;
   const file = $('#upload-file').files[0];
   if (!file) {
     toast('Choose a file to upload.', 'error');
@@ -1144,20 +1476,23 @@ $('#upload-form').addEventListener('submit', async (event) => {
   await withBusy(event.submitter, 'Uploading…', async () => {
     try {
       const parts = /\.xlsx?$/i.test(file.name) ? await excelSheetsAsCsv(file, baseName) : [{ name: baseName, fileName: file.name, bytes: new Uint8Array(await file.arrayBuffer()) }];
+      if (!currentIdentity(generation)) return;
       for (const part of parts) {
-        await api(`/api/me/uploads?${query({ name: part.name })}`, { method: 'POST', raw: part.bytes, headers: { 'x-file-name': encodeURIComponent(part.fileName), 'content-type': 'application/octet-stream' } });
+        await api(`/api/me/uploads?${query({ name: part.name })}`, { method: 'POST', raw: part.bytes, headers: { 'x-file-name': encodeURIComponent(part.fileName), 'content-type': 'application/octet-stream' }, generation });
+        if (!currentIdentity(generation)) return;
       }
       toast(`Added ${parts.map((p) => p.name).join(', ')}.`);
       event.target.reset();
-      await loadData();
+      await loadData(generation);
     } catch (error) {
-      toast(error.message, 'error');
+      if (currentIdentity(generation)) toast(error.message, 'error');
     }
   });
 });
 
 $('#web-form').addEventListener('submit', async (event) => {
   event.preventDefault();
+  const generation = state.identityGeneration;
   const url = $('#web-url').value.trim();
   if (!url) {
     toast('Paste the link to connect.', 'error');
@@ -1165,18 +1500,20 @@ $('#web-form').addEventListener('submit', async (event) => {
   }
   await withBusy(event.submitter, 'Connecting…', async () => {
     try {
-      const result = await api('/api/me/imports/web', { method: 'POST', body: { url, name: $('#web-name').value.trim() || undefined } });
+      const result = await api('/api/me/imports/web', { method: 'POST', body: { url, name: $('#web-name').value.trim() || undefined }, generation });
+      if (!currentIdentity(generation)) return;
       toast(`Added ${result.name}.`);
       event.target.reset();
-      await loadData();
+      await loadData(generation);
     } catch (error) {
-      toast(error.message, 'error');
+      if (currentIdentity(generation)) toast(error.message, 'error');
     }
   });
 });
 
 $('#request-form').addEventListener('submit', async (event) => {
   event.preventDefault();
+  const generation = state.identityGeneration;
   const message = $('#request-text').value.trim();
   if (!message) {
     toast('Tell us what you would like to connect.', 'error');
@@ -1184,11 +1521,12 @@ $('#request-form').addEventListener('submit', async (event) => {
   }
   await withBusy(event.submitter, 'Sending…', async () => {
     try {
-      await api('/api/me/requests', { method: 'POST', body: { message } });
+      await api('/api/me/requests', { method: 'POST', body: { message }, generation });
+      if (!currentIdentity(generation)) return;
       toast("Thanks. We'll contact you to set up the connection.");
       event.target.reset();
     } catch (error) {
-      toast(error.message, 'error');
+      if (currentIdentity(generation)) toast(error.message, 'error');
     }
   });
 });

@@ -18,6 +18,13 @@
     <p class="brand"><img class="brand-logo" id="signin-logo" alt="" hidden><span class="brand-mark" aria-hidden="true"></span><span class="product-name" id="signin-name"></span></p>
     <h1 id="signin-title">Sign in</h1>
     <p class="notice" id="signin-notice" role="status" hidden></p>
+    <div class="persona-picker" id="persona-picker" hidden>
+      <h2 class="persona-heading">View as</h2>
+      <p class="persona-lede" id="persona-lede"></p>
+      <div class="persona-cards" id="persona-cards" role="list"></div>
+      <p class="persona-elsewhere" id="persona-elsewhere" hidden></p>
+      <p class="fine-print">"View as" signs you in without a password. It works on this computer only, for demos and testing, and is off in production. Below, sign in with an email and password instead.</p>
+    </div>
     <form id="signin-form" novalidate>
       <label class="field">
         <span class="field-label">Work email</span>
@@ -37,6 +44,7 @@
     <p class="company" id="company"></p>
     <nav class="primary-nav" id="nav" aria-label="Main"></nav>
     <div class="user">
+      <label class="viewas" id="viewas" hidden><span>View as</span><select id="persona-select"></select></label>
       <span class="scope" id="user-scope"></span>
       <span id="user-email"></span>
       <button class="link-button" type="button" id="sign-out">Sign out</button>

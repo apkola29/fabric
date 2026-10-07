@@ -34,10 +34,16 @@ export function parseExportedRows(csv) {
   return rows.filter((row) => row.length >= 2 && row[0] !== '').map((row) => ({ label: row[0], value: Number(String(row[row.length - 1]).replace(/[^0-9.-]/g, '')) }));
 }
 
+// Edge relaunches itself when it starts under an app compatibility layer (__COMPAT_LAYER, which some terminals and
+// editors set) or elevated. The first process then exits with code 0, and the relaunched browser's DevTools address
+// never reaches us. The last two flags keep Edge in the process we started, as Playwright does; Chrome ignores them.
+export function browserArgs(profile) {
+  return ['--headless=new', '--remote-debugging-port=0', `--user-data-dir=${profile}`, '--no-first-run', '--no-default-browser-check', '--disable-extensions', '--edge-skip-compat-layer-relaunch', '--disable-features=AutoDeElevate', 'about:blank'];
+}
+
 async function launch(executable, { timeoutMs = 30_000 } = {}) {
   const profile = await mkdtemp(path.join(os.tmpdir(), 'fabric-validate-'));
-  const args = ['--headless=new', '--remote-debugging-port=0', `--user-data-dir=${profile}`, '--no-first-run', '--no-default-browser-check', '--disable-extensions', 'about:blank'];
-  const child = spawn(executable, args, { stdio: ['ignore', 'ignore', 'pipe'] });
+  const child = spawn(executable, browserArgs(profile), { stdio: ['ignore', 'ignore', 'pipe'] });
   const endpoint = await new Promise((resolve, reject) => {
     let output = '';
     const timer = setTimeout(() => reject(new Error(`The browser didn't start within ${timeoutMs / 1000} s.`)), timeoutMs);

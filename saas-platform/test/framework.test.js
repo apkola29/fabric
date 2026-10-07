@@ -3,8 +3,8 @@ import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
-import { findBrowser, parseExportedRows } from '../src/platform/browser.js';
-import { assessTenantSettings, CONTROLS, countResults, createEmulatedPlatform, formatScorecard, refused, toMarkdown, validatePlatform } from '../src/platform/validation.js';
+import { browserArgs, findBrowser, parseExportedRows } from '../src/platform/browser.js';
+import { assessTenantSettings, CONTROLS, countResults, createEmulatedPlatform, formatScorecard, probePeople, refused, toMarkdown, validatePlatform } from '../src/platform/validation.js';
 
 // The framework itself: its boundary with the sample application, its controls, and the validator that checks them.
 
@@ -38,6 +38,26 @@ test('FRAMEWORK.md lists the same controls as the validator, checked the same wa
   assert.equal(new Set(CONTROLS.map((c) => c.id)).size, CONTROLS.length, 'control IDs are unique');
 });
 
+test('the validator checks every person\'s reports: the manager and a rep per territory, or stand-ins', () => {
+  const users = [
+    { email: 'rep.ga@fabrikam.com', role: 'rep', territories: ['Georgia'] },
+    { email: 'boss@fabrikam.com', role: 'manager' },
+    { email: 'rep.tx@fabrikam.com', role: 'rep', territories: ['Texas'] },
+    { email: 'second.tx@fabrikam.com', role: 'rep', territories: ['Texas'] },
+    { email: 'rep.nm@fabrikam.com', role: 'rep', territories: ['New Mexico'] },
+  ];
+  assert.deepEqual(Object.entries(probePeople({ domains: ['fabrikam.com'], users })).map(([kind, p]) => [kind, p.email]), [
+    ['manager', 'boss@fabrikam.com'],
+    ['Texas rep', 'rep.tx@fabrikam.com'],
+    ['New Mexico rep', 'rep.nm@fabrikam.com'],
+    ['Georgia rep', 'rep.ga@fabrikam.com'],
+  ]);
+  assert.deepEqual(Object.entries(probePeople({ domains: ['contoso.com'] })).map(([kind, p]) => [kind, p.email, p.territories]), [
+    ['manager', 'validator.manager@contoso.com', null],
+    ['Texas rep', 'validator.rep@contoso.com', ['Texas']],
+  ]);
+});
+
 test('the validator passes the emulated platform: two tenants with their own service principals, the platform released', async () => {
   const platform = await createEmulatedPlatform();
   try {
@@ -50,6 +70,27 @@ test('the validator passes the emulated platform: two tenants with their own ser
     for (const control of CONTROLS.filter((c) => c.how.includes('auto') && c.id !== 'DAT-01')) assert.equal(results[control.id].status, 'pass', control.id);
     assert.equal(results['ISO-02'].details.length, 2, 'each tenant tried against the other');
     assert.match(results['RLS-01'].details.map((d) => d.detail).join('\n'), /rep validator\.rep@fabrikam\.com: effective identity with role Texas/);
+  } finally {
+    await platform.close();
+  }
+});
+
+test('a check that stops for one tenant leaves its controls to review, not passed on the other tenant alone', async () => {
+  const platform = await createEmulatedPlatform();
+  try {
+    const forTenant = platform.crm.forTenant.bind(platform.crm);
+    platform.crm.forTenant = async (tenant) => {
+      if (tenant.name === 'Contoso') throw new Error('Connection lost - read ECONNRESET');
+      return forTenant(tenant);
+    };
+    const results = byId(await validatePlatform(platform));
+    assert.match(results['OPS-02'].details.map((d) => d.detail).join('\n'), /Contoso: checkEmbedding stopped: Connection lost/);
+    for (const id of ['EMB-01', 'EMB-02', 'RLS-01', 'RLS-02', 'RLS-04']) {
+      assert.equal(results[id].status, 'warn', id);
+      assert.ok(results[id].details.some((d) => d.status === 'pass' && d.detail.startsWith('Fabrikam')), `${id}: Fabrikam was still checked`);
+      assert.ok(results[id].details.some((d) => d.status === 'warn' && /^Contoso: not fully checked, because checkEmbedding stopped/.test(d.detail)), id);
+    }
+    assert.equal(results['ISO-01'].status, 'pass', 'controls the stopped check does not cover are unaffected');
   } finally {
     await platform.close();
   }
@@ -117,7 +158,7 @@ test('a refusal is told apart from a capacity that is let in but cannot run the 
   assert.equal(refused(new Error('socket hang up')), false);
 });
 
-test('the browser check reads exported visual data and finds Edge or Chrome', () => {
+test('the browser check reads exported visual data, finds Edge or Chrome, and keeps Edge in its own process', () => {
   assert.deepEqual(parseExportedRows('State,Pipeline Value\r\nGeorgia,$2828500\r\nTexas,$2229000\r\n"Santa Fe, NM",$455000'), [
     { label: 'Georgia', value: 2828500 },
     { label: 'Texas', value: 2229000 },
@@ -127,4 +168,8 @@ test('the browser check reads exported visual data and finds Edge or Chrome', ()
   assert.equal(findBrowser({ env: { BROWSER_PATH: 'C:\\edge.exe' }, exists: (p) => p === 'C:\\edge.exe' }), 'C:\\edge.exe');
   assert.equal(findBrowser({ env: { BROWSER_PATH: 'C:\\missing.exe' }, exists: () => false }), null, 'an explicit path that is missing is not replaced');
   assert.equal(findBrowser({ env: {}, platform: 'linux', exists: (p) => p === '/usr/bin/google-chrome' }), '/usr/bin/google-chrome');
+  const args = browserArgs('C:\\profile');
+  assert.ok(args.includes('--user-data-dir=C:\\profile') && args.includes('--remote-debugging-port=0'), 'its own profile and a DevTools port');
+  assert.ok(args.includes('--edge-skip-compat-layer-relaunch'), 'Edge does not relaunch itself under a compatibility layer');
+  assert.ok(args.includes('--disable-features=AutoDeElevate'), 'Edge does not relaunch itself when elevated');
 });

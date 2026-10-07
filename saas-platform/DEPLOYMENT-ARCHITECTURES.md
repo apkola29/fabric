@@ -651,8 +651,8 @@ applied to SQL Server:
   ([contained AGs](https://learn.microsoft.com/sql/database-engine/availability-groups/windows/contained-availability-groups-overview)).
   For very small tenants, a shared database with RLS on `SESSION_CONTEXT` works, as defence in depth
   ([RLS](https://learn.microsoft.com/sql/relational-databases/security/row-level-security)).
-- **Identity**: background work runs under a group managed service account per tenant (or a Windows Server 2025
-  delegated managed service account), which can only open that tenant's database. The app's own account may only
+- **Identity**: background work runs under a group managed service principal per tenant (or a Windows Server 2025
+  delegated managed service principal), which can only open that tenant's database. The app's own account may only
   execute each tenant's API procedures. With Arc (3B), SQL Server 2025 accepts Entra sign-in, so the per-customer
   service principals of Plans 1 and 2 carry over unchanged
   ([dMSA](https://learn.microsoft.com/windows-server/identity/ad-ds/manage/delegated-managed-service-accounts/delegated-managed-service-accounts-overview)).

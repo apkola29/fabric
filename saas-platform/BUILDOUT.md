@@ -45,7 +45,7 @@ flowchart TB
     subgraph ENTRA["HiCRM's Microsoft Entra tenant"]
       direction LR
       PSP["Platform identity<br/>1 in total"]
-      SA["Service account<br/>1 per customer"]
+      SA["Service principal<br/>1 per customer"]
       WI["Workspace identity<br/>1 per customer<br/>Fabric-managed"]
     end
     subgraph FABRIC["HiCRM's Microsoft Fabric"]
@@ -86,7 +86,7 @@ The customer only provides its email domain and the list of people, each with a 
 | What | How many | Where it lives | Needed for |
 | --- | --- | --- | --- |
 | Fabric administrator (a person) | 1 | Microsoft Entra role **Fabric Administrator** | Tenant settings (section 2) |
-| Microsoft Entra admin (a person) | 1 | Entra role **Application Administrator**; **Privileged Role Administrator** only to let the platform create service accounts itself | App registrations for the platform identity and the service accounts |
+| Microsoft Entra admin (a person) | 1 | Entra role **Application Administrator**; **Privileged Role Administrator** only to let the platform create service principals itself | App registrations for the platform identity and the service principals |
 | Capacity administrator (a person) | 1 | Admin of the Fabric capacity | Giving the platform identity Contributor on the capacity |
 | Operator (a person) | 1 or more | HiCRM back office, signed in with `ADMIN_KEY`. No Entra or Fabric role | Running setup, adding people, support |
 | Report author (a person, optional) | 1 or more | Power BI Pro or Premium Per User license, plus Contributor on the workspace | Building report pages in the Power BI portal, for example with Copilot |
@@ -100,17 +100,17 @@ verified live yet; see section 6.
 
 ### Platform side, per customer
 
-A "service account" here is a **service principal** (an app registration), not a user account. It has no password,
+Each customer's service principal is an app registration, not a user account. It has no password,
 mailbox, MFA prompt or Power BI license, and needs none: Microsoft documents that embedding with a service principal
 "doesn't require a Pro license", and that app users need no license with "app owns data"
 ([source](https://learn.microsoft.com/power-bi/developer/embedded/embed-sample-for-customers)).
 
 | What | How many | Where it lives | Created by | Access |
 | --- | --- | --- | --- | --- |
-| Customer service account `<customer>sa`, for example `fabrikamsa` | 1 (required in production) | App registration and service principal in **your** Entra tenant, not the customer's | An Entra admin with `scripts/bootstrap-identities.ps1`, or the platform once it holds `Application.ReadWrite.OwnedBy` | Admin of that customer's workspace only |
+| Customer service principal `<customer>sa`, for example `fabrikamsa` | 1 (required in production) | App registration and service principal in **your** Entra tenant, not the customer's | An Entra admin with `scripts/bootstrap-identities.ps1`, or the platform once it holds `Application.ReadWrite.OwnedBy` | Admin of that customer's workspace only |
 | Workspace identity | 1 | Fabric-managed service principal in your Entra tenant. Nobody holds its secret | Fabric, when provisioning asks for it | Contributor of its own workspace only |
 | Workspace and its items | 1 workspace: SQL database, 2 semantic models, reports, data agent | Your Fabric capacity | Provisioning | |
-| Cloud connection | 1 | Fabric connections (tenant level, outside the workspace) | Provisioning; the service account owns it | Signs in as the workspace identity, no single sign-on |
+| Cloud connection | 1 | Fabric connections (tenant level, outside the workspace) | Provisioning; the service principal owns it | Signs in as the workspace identity, no single sign-on |
 | Web address | 1: `https://<customer>.<APP_DOMAIN>` (locally `http://fabrikam.localhost:3000`) | Derived from the customer's name; unique, never a reserved name | When the customer is added | Signs in only that customer's people; a session works only at its own address |
 | Logo and accent color | 1 each | The customer's record: an SVG, PNG, JPEG or WebP of 64 KB at most, checked so it can't run script | An operator (back office or `brand`), or the pilot setup | Shown on the sign-in page, in the app and as the tab icon |
 
@@ -120,7 +120,7 @@ mailbox, MFA prompt or Power BI license, and needs none: Microsoft documents tha
 | --- | --- | --- | --- |
 | Customer people (HiCRM sign-ins) | 8 | 8 | As many as the customers have |
 | Customer Entra accounts or licenses | 0 | 0 | 0 |
-| Platform service principals you create | 3 (platform identity + 2 service accounts) | 3 (platform identity + 2 service accounts) | 1 + N |
+| Platform service principals you create | 3 (platform identity + 2 service principals) | 3 (platform identity + 2 service principals) | 1 + N |
 | Fabric-managed workspace identities | 2 | 2 | N |
 | Entra groups | 0 | 1 or 2 | 1 or 2 |
 | Admin people | 1, holding every role | 1 to 4 | 3 to 4, roles separated |
@@ -130,7 +130,7 @@ mailbox, MFA prompt or Power BI license, and needs none: Microsoft documents tha
 | # | Step | Who | Why |
 | --- | --- | --- | --- |
 | 1 | Get a Fabric capacity. Use F2 or larger for real use. A trial runs the CRM, models, reports and embedding, but Copilot in Power BI isn't supported on trials, and data agents are documented for F2 and up | Fabric or Azure admin | Customer workspaces and every Fabric item live on it |
-| 2 | Create the security group "HiCRM service principals"; add the platform identity now and every service account later | Entra admin | Scopes the tenant settings below to HiCRM's identities |
+| 2 | Create the security group "HiCRM service principals"; add the platform identity now and every service principal later | Entra admin | Scopes the tenant settings below to HiCRM's identities |
 | 3 | Turn on the tenant settings in the next table, each for that security group | Fabric administrator | Without them, service principals can't reach Fabric |
 | 4 | Register the platform identity: an app registration with a certificate (REQUIREMENTS.md, section 8). In production, a federated credential that trusts the app's user-assigned managed identity, so nothing is secret. Add it to the group | Entra admin (Application Administrator) | The control plane |
 | 5 | Give the platform identity **Contributor** on the capacity | Capacity administrator | To create workspaces on the capacity and assign them to it. Without it an admin creates each workspace, makes the platform identity Admin, and setup adopts it (`--workspace Name=<id>`) |
@@ -142,8 +142,8 @@ mailbox, MFA prompt or Power BI license, and needs none: Microsoft documents tha
 
 | Setting | Section | Default (per Microsoft Learn) | Needed for |
 | --- | --- | --- | --- |
-| Service principals can call Fabric public APIs (formerly "Allow service principals to use Power BI APIs") | Developer | On for new tenants | Every Fabric and Power BI call by the platform identity and the service accounts: items, the SQL database, semantic models, embed tokens, the data agent |
-| Service principals can create workspaces, connections, and deployment pipelines | Developer | **Off** for new tenants | Creating customer workspaces (platform identity) and each model's cloud connection (service account) |
+| Service principals can call Fabric public APIs (formerly "Allow service principals to use Power BI APIs") | Developer | On for new tenants | Every Fabric and Power BI call by the platform identity and the service principals: items, the SQL database, semantic models, embed tokens, the data agent |
+| Service principals can create workspaces, connections, and deployment pipelines | Developer | **Off** for new tenants | Creating customer workspaces (platform identity) and each model's cloud connection (service principal) |
 | Embed content in apps | Developer | Not stated | Embed tokens for customers' people |
 | Users can use Copilot and other features powered by Azure OpenAI | Copilot and Azure OpenAI Service | On for tenants with paid capacities (F2 or larger) | The data agent, and Copilot in Power BI for report authors |
 | Data sent to Azure OpenAI can be processed (and stored) outside your capacity's geographic region | Copilot and Azure OpenAI Service | Not stated | Only when the capacity is outside the US and the EU Data Boundary |
@@ -164,7 +164,7 @@ Sources:
 `npm run setup` adds each customer and runs provisioning. The same steps run from the back office or with
 `npm run cli -- add <name> --domain <domain>`.
 
-**Before provisioning, without automatic service accounts:** an Entra admin creates `<customer>sa`. The script creates
+**Before provisioning, without automatic service principals:** an Entra admin creates `<customer>sa`. The script creates
 the app and service principal and, by default, a certificate (one year): Entra ID keeps its public part, the private
 key goes into the platform's encrypted credential store (or Key Vault), and the clear-text file is deleted. With
 `-Credential Federated` the app trusts the platform's managed identity instead, and nothing is stored at all;
@@ -183,18 +183,18 @@ ship:
 | --- | --- | --- | --- | --- |
 | 1 | Create the workspace | Platform identity | Creates `saas-<customer>-<id>` on the capacity, or adopts a workspace an admin created | Tenant setting "create workspaces", Contributor on the capacity; it becomes workspace Admin |
 | 2 | Assign the Fabric capacity | Platform identity | Assigns the workspace to the shared or the customer's own capacity | Contributor on the capacity, workspace Admin |
-| 3 | Set up the customer service account | Platform identity (+ Microsoft Graph when automatic) | Adds `<customer>sa` as Admin | Workspace Admin |
+| 3 | Set up the customer service principal | Platform identity (+ Microsoft Graph when automatic) | Adds `<customer>sa` as Admin | Workspace Admin |
 | 4 | Give the support team read access | Platform identity | Adds the support group as Viewer (optional) | Workspace Admin |
-| 5 | Create the CRM database | Service account | Creates the SQL database `hicrm_db` | Workspace role |
-| 6 | Create or upgrade the CRM tables | Service account, over TDS with a Microsoft Entra token | Applies the schema (version 3: account territories) and the calendar | Its workspace role gives it the database; there are no SQL logins or passwords |
-| 7 | Load sample CRM data | Service account | 8 reps, 120 accounts across three territories, deals and activities, dated from the setup day (demo customers only) | Same |
-| 8 | Set up the workspace identity | Service account | Provisions it and gives it Contributor | Workspace Admin |
-| 9 | Publish HiCRM Insights | Service account | The semantic model from generated TMDL, with roles **All territories**, **Texas**, **New Mexico** and **Georgia** | Workspace role |
-| 10 | Connect the model to the CRM data | Service account | Creates the cloud connection (workspace identity, no SSO), takes the model over, binds it and frames it | Tenant setting "create connections" |
-| 11 | Create the starter report, or copy template reports | Service account | "Sales overview", bound to HiCRM Insights | Workspace role |
-| 12 | Publish the assistant's model | Service account | "HiCRM Insights - Assistant": the same model without roles, on the same connection | Workspace role |
-| 13 | Set up the assistant | Service account | The data agent "HiCRM Assistant" over the assistant's model | Tenant setting for Copilot and Azure OpenAI |
-| 14 | Release the platform identity | Service account | Removes the platform identity's role (production, `PLATFORM_WORKSPACE_ACCESS=release`) | Workspace Admin |
+| 5 | Create the CRM database | Service principal | Creates the SQL database `hicrm_db` | Workspace role |
+| 6 | Create or upgrade the CRM tables | Service principal, over TDS with a Microsoft Entra token | Applies the schema (version 3: account territories) and the calendar | Its workspace role gives it the database; there are no SQL logins or passwords |
+| 7 | Load sample CRM data | Service principal | 8 reps, 120 accounts across three territories, deals and activities, dated from the setup day (demo customers only) | Same |
+| 8 | Set up the workspace identity | Service principal | Provisions it and gives it Contributor | Workspace Admin |
+| 9 | Publish HiCRM Insights | Service principal | The semantic model from generated TMDL, with roles **All territories**, **Texas**, **New Mexico** and **Georgia** | Workspace role |
+| 10 | Connect the model to the CRM data | Service principal | Creates the cloud connection (workspace identity, no SSO), takes the model over, binds it and frames it | Tenant setting "create connections" |
+| 11 | Create the starter report, or copy template reports | Service principal | "Sales overview", bound to HiCRM Insights | Workspace role |
+| 12 | Publish the assistant's model | Service principal | "HiCRM Insights - Assistant": the same model without roles, on the same connection | Workspace role |
+| 13 | Set up the assistant | Service principal | The data agent "HiCRM Assistant" over the assistant's model | Tenant setting for Copilot and Azure OpenAI |
+| 14 | Release the platform identity | Service principal | Removes the platform identity's role (production, `PLATFORM_WORKSPACE_ACCESS=release`) | Workspace Admin |
 
 **Sign-ins.** Setup adds the four people with their role and territories. Each generated password is shown once and
 written to `pilot-logins.md` in the data folder; nothing else keeps it. Later changes:
@@ -208,12 +208,12 @@ written to `pilot-logins.md` in the data folder; nothing else keeps it. Later ch
 | Action | Runs as | What limits it |
 | --- | --- | --- |
 | A person signs in | HiCRM, at their company's own address | Their password; only that company's people sign in there. Their role and territories are read on every request |
-| The CRM screens | The customer's service account, over TDS | SQL scoped to the person's territories (`accounts.state IN (...)`). Another territory's record answers "not found" |
-| View the standard report | The service account requests a 30-minute V2 embed token for that one report and its model | The token names the person's email and their row-level security roles. Power BI filters every visual. The embedding identity must be workspace Admin or Member ([source](https://learn.microsoft.com/power-bi/guidance/powerbi-implementation-planning-usage-scenario-embed-for-your-customers)). Only the platform's standard reports open; editing and building reports wait for `REPORT_AUTHORING` (next phase) |
-| Ask a question (sales manager) | The service account calls the data agent's MCP server, `https://api.fabric.microsoft.com/v1/mcp/workspaces/{workspace}/dataagents/{agent}/agent`; the agent queries the assistant's model | Managers see every territory anyway. A chart of the same question comes from the CRM data |
-| Ask a question (sales rep) | The service account queries the CRM database (quick answers, with charts) | SQL scoped to the rep's territories. The data agent never answers reps: it runs as the service account, and Power BI doesn't apply row-level security to a service principal ("Service principals can't be added to an RLS role", [source](https://learn.microsoft.com/fabric/security/service-admin-row-level-security#considerations-and-limitations)) |
+| The CRM screens | The customer's service principal, over TDS | SQL scoped to the person's territories (`accounts.state IN (...)`). Another territory's record answers "not found" |
+| View the standard report | The service principal requests a 30-minute V2 embed token for that one report and its model | The token names the person's email and their row-level security roles. Power BI filters every visual. The embedding identity must be workspace Admin or Member ([source](https://learn.microsoft.com/power-bi/guidance/powerbi-implementation-planning-usage-scenario-embed-for-your-customers)). Only the platform's standard reports open; editing and building reports wait for `REPORT_AUTHORING` (next phase) |
+| Ask a question (sales manager) | The service principal calls the data agent's MCP server, `https://api.fabric.microsoft.com/v1/mcp/workspaces/{workspace}/dataagents/{agent}/agent`; the agent queries the assistant's model | Managers see every territory anyway. A chart of the same question comes from the CRM data |
+| Ask a question (sales rep) | The service principal queries the CRM database (quick answers, with charts) | SQL scoped to the rep's territories. The data agent never answers reps: it runs as the service principal, and Power BI doesn't apply row-level security to a service principal ("Service principals can't be added to an RLS role", [source](https://learn.microsoft.com/fabric/security/service-admin-row-level-security#considerations-and-limitations)) |
 | Every question | HiCRM | Logged per customer with its answer (up to 4,000 characters): who, their scope, who answered and why the agent didn't (the last 200). Operators read it in the back office or with `questions`, and that is recorded. Other places chats are kept, such as Purview audit: [ARCHITECTURE.md](ARCHITECTURE.md), "Where questions and answers are kept" |
-| Operator support | The operator, through the back office, as the service account | Every look at customer data is written to that customer's activity log |
+| Operator support | The operator, through the back office, as the service principal | Every look at customer data is written to that customer's activity log |
 
 ## 5. Credentials
 
@@ -223,8 +223,8 @@ from the environment where nobody can answer ([REQUIREMENTS.md](REQUIREMENTS.md)
 | Credential | Where it's kept | Rotation |
 | --- | --- | --- |
 | Platform identity's certificate (development: or a client secret) | A PEM file outside the project, whose path is asked for at start (or `AZURE_CLIENT_CERTIFICATE_PATH`). A secret is asked for with hidden input and never saved. Production: none, a federated credential | Upload a new certificate to the app registration |
-| Service account credentials | Certificates in `secrets.json` in the data folder, encrypted with `SECRETS_KEY`; Key Vault in production. Federated service accounts have nothing stored | One year; re-run the bootstrap script, or `npm run cli -- identity-rotate <customer>` for accounts the platform created |
-| `SECRETS_KEY` | Asked for at start (chosen the first time), or the environment. Never the data folder | Re-register the service accounts |
+| Service principal credentials | Certificates in `secrets.json` in the data folder, encrypted with `SECRETS_KEY`; Key Vault in production. Federated service principals have nothing stored | One year; re-run the bootstrap script, or `npm run cli -- identity-rotate <customer>` for accounts the platform created |
+| `SECRETS_KEY` | Asked for at start (chosen the first time), or the environment. Never the data folder | Re-register the service principals |
 | `ADMIN_KEY` | Asked for at start, or made for the run and shown once | Each start |
 | `SESSION_SECRET` | Made at each start in development; the environment in production | Each start |
 | People's passwords | scrypt hashes in `tenants.json`. Plain text only in the setup output and `pilot-logins.md` | `user-reset` |
@@ -262,7 +262,7 @@ Graph permissions. For least privilege, give HiCRM a dedicated platform app with
   | Principal | Role |
   | --- | --- |
   | The admin who created the workspace (a person) | Admin |
-  | The customer's service account | Admin |
+  | The customer's service principal | Admin |
   | The workspace identity | Contributor |
   | The platform identity | None: it removed its own role after the hand-over |
 
@@ -297,7 +297,7 @@ Their passwords are in `.data/pilot-logins.md`.
 
 **Verified live on 2026-10-03:**
 
-- **Isolation.** Each service account lists only its own workspace. Against the other customer's: the workspace
+- **Isolation.** Each service principal lists only its own workspace. Against the other customer's: the workspace
   answers 403, its items 401, an embed token for its report 404, and its data agent "User is not authorized". The
   platform identity gets 403 on both workspaces, from the Fabric and the Power BI APIs.
 - **Release takes time.** The role lists stopped showing the platform identity on `saas-contoso` at 01:21 UTC, but it
@@ -308,7 +308,7 @@ Their passwords are in `.data/pilot-logins.md`.
   sign-in, the embedded "Sales overview" with 30-minute embed tokens, and the rep's answers scoped to Texas. A session
   from one customer gets 401 at the other's address, and Fabrikam's manager can't sign in at Contoso's. Checked on
   2026-10-02: the back office answers 404 at a customer's address, and an unknown host name gets 421.
-- **The data agent** refuses both service accounts on this trial capacity (`-32003 FT1 SKU Not Supported`), so
+- **The data agent** refuses both service principals on this trial capacity (`-32003 FT1 SKU Not Supported`), so
   managers get quick answers, and the question log says why. It had answered over MCP earlier in the build, and a
   person (the admin) could still use it. Data agents are documented for paid F2 and up.
 - **The question log** recorded every question: who asked, their scope, the answer and who answered.
@@ -342,11 +342,11 @@ person would hide permission gaps.
   Take it out of that group; if the tenant-settings check should keep running, give the validator its own identity
   with read-only admin access.
 - The platform app has access to unrelated workspaces (above).
-- On the trial capacity the data agent refuses the service accounts, and there's no Copilot in Power BI or code
+- On the trial capacity the data agent refuses the service principals, and there's no Copilot in Power BI or code
   interpreter. A paid F2 or larger capacity covers all three.
-- The platform identity uses a client secret (the service accounts moved to certificates on 2026-10-06). Give it a
-  certificate, or a federated credential once the app runs in Azure. The service accounts' unused client secrets can be
-  deleted (`az ad app credential delete`).
+- The platform identity uses a client secret (the service principals moved to certificates on 2026-10-06). Give it a
+  certificate, or a federated credential once the app runs in Azure. The service principals' unused client secrets can
+  be deleted (`az ad app credential delete`).
 - The question log lives in the tenant registry. In production, send it to a log store with a retention policy.
 
 ## 7. Repeat it from scratch
@@ -369,7 +369,7 @@ npm run cli -- reseed Fabrikam --confirm    # fresh sample data, dated from toda
 npm run pilot:remove                        # deletes what setup created, including the workspaces
 ```
 
-### Service accounts and a second customer
+### Service principals and a second customer
 
 Done in this build on 2026-10-03: a Global Administrator's Azure CLI session did steps 1 and 2, then step 3 ran as
 shown. To repeat it, three steps need admin rights in your tenant. The platform app can't do them:
@@ -378,7 +378,7 @@ shown. To repeat it, three steps need admin rights in your tenant. The platform 
    - Workspaces → New workspace → `saas-contoso` → Advanced → the trial capacity → Apply.
    - Then Manage access → add the platform app as **Admin**, the same as `saas-fabrikam`.
    - This step goes away once the platform app has Contributor on a paid F capacity.
-2. **Service accounts** (Privileged Role Administrator or Global Administrator), one of:
+2. **Service principals** (Privileged Role Administrator or Global Administrator), one of:
    - Grant the platform app the Microsoft Graph application permission `Application.ReadWrite.OwnedBy`, then grant
      admin consent: Entra admin center → App registrations → All applications → the platform app → API permissions →
      Add a permission → Microsoft Graph → Application permissions. The platform then creates `fabrikamsa` and
@@ -397,13 +397,13 @@ shown. To repeat it, three steps need admin rights in your tenant. The platform 
    ```
 
    Provisioning then, for each customer:
-   - creates its service account and makes it Admin of that workspace only;
+   - creates its service principal and makes it Admin of that workspace only;
    - for a workspace the platform app built, like Fabrikam's, gives that account its own OneLake connection and takes
      over both models;
    - has the platform app delete the connection it no longer uses, then remove its own role. The data agent and the
-     reports keep working: the agent runs as whoever calls it, now the service account.
+     reports keep working: the agent runs as whoever calls it, now the service principal.
 
-   After that, `audit` should show just the service account (Admin) and the workspace identity (Contributor), plus
+   After that, `audit` should show just the service principal (Admin) and the workspace identity (Contributor), plus
    the person who created the workspace. Remove that person, or keep them as a documented break-glass admin.
 
 Then walk through the story in [PILOT.md](PILOT.md).

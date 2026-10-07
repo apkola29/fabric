@@ -1,5 +1,7 @@
 import { QUICK_EXAMPLES, describeVisual } from '../crm/insights.js';
 import { fieldCatalog, rolesFor } from '../crm/model.js';
+import { TERRITORIES } from '../crm/workload.js';
+import { isLoopbackHost } from '../config.js';
 import { clientAddress } from '../http/limits.js';
 import { HttpError, readBody, readJson, sendJson } from '../http/router.js';
 import { brandOf, logoUrl, sendLogo, themeOf } from '../platform/branding.js';
@@ -12,6 +14,9 @@ import { customerUrl, platformUrl } from '../platform/tenancy.js';
 import { recordUsage, usageEntry } from '../platform/usage.js';
 import { ROLES, accessOf, findUser, normalizeEmail, rejectSlowly, reportRightsOf, usersOf, verifyPassword } from '../platform/users.js';
 import { decodeHeader } from './admin.js';
+
+// A request from this computer: IPv4 loopback, IPv6 loopback, or IPv4 loopback written as IPv6.
+const isLoopbackAddress = (address) => /^(127\.|::1$|::ffff:127\.)/.test(String(address || ''));
 
 // The end customer's app. The tenant always comes from the session, never from the request, and responses use the
 // product's language: accounts, deals, reports and questions. No workspaces, editions or Fabric item names reach the
@@ -247,6 +252,61 @@ export function registerCustomerRoutes(router, { config, fabric, store, sessions
     sendJson(res, 200, { signedIn: false });
   });
 
+  // "View as": switch between a company's people without a password, to show what each one sees. For local demos and
+  // testing only: PERSONA_SWITCHER (never in production, nor behind a proxy), only from this computer, not relayed by a
+  // proxy, and only at a local address, so a web page elsewhere can't reach it through DNS rebinding. A session still
+  // works only at its own company's address, so another company's people are signed in at theirs.
+  function personaSite(req) {
+    const host = String(req.headers.host || '').toLowerCase().replace(/:\d+$/, '').replace(/^\[|\]$/g, '');
+    const localHost = isLoopbackHost(host) || host.endsWith('.localhost');
+    const relayed = Boolean(req.headers['x-forwarded-for'] || req.headers['x-forwarded-host'] || req.headers.forwarded);
+    const site = req.site || { kind: 'single' };
+    if (!config.personaSwitcher || relayed || !isLoopbackAddress(clientAddress(req, config)) || !localHost || site.kind === 'unknown') throw new HttpError(404, 'Not found.');
+    return site;
+  }
+
+  const personaOf = (user) => {
+    const access = accessOf(user);
+    return { email: user.email, name: user.name || user.email, role: access.role, roleName: ROLES[access.role], territories: access.territories };
+  };
+  // The manager first, then the reps in territory order.
+  const personasOf = (tenant) => {
+    const rank = (p) => (p.role === 'manager' ? -1 : TERRITORIES.indexOf(p.territories?.[0]));
+    return usersOf(tenant).map(personaOf).sort((a, b) => rank(a) - rank(b) || a.name.localeCompare(b.name));
+  };
+  // Who signs in at this address: the company's own people at its address, everyone's at a shared address.
+  const signsInHere = (site, tenant) => site.kind === 'single' || (site.kind === 'customer' && tenant.id === site.tenant.id);
+
+  router.get('/api/personas', ({ req, res }) => {
+    const site = personaSite(req);
+    let signedIn = null;
+    try {
+      signedIn = current(req).session.email;
+    } catch {
+      signedIn = null;
+    }
+    const companies = store
+      .list()
+      .filter((t) => usersOf(t).length)
+      .map((t) => {
+        const here = signsInHere(site, t);
+        return { company: t.name, here, url: site.kind === 'single' ? null : customerUrl(config, t), personas: here ? personasOf(t) : [] };
+      })
+      .sort((a, b) => Number(b.here) - Number(a.here) || a.company.localeCompare(b.company));
+    sendJson(res, 200, { current: signedIn, companies });
+  });
+
+  router.post('/api/persona', async ({ req, res }) => {
+    const site = personaSite(req);
+    const { email } = await readJson(req, 4096);
+    const domain = emailDomain(email);
+    const tenant = site.kind === 'customer' ? site.tenant : site.kind === 'single' ? store.list().find((t) => (t.domains || []).includes(domain)) : null;
+    const user = tenant && signsInHere(site, tenant) ? findUser(tenant, email) : null;
+    if (!user) throw new HttpError(404, "There's no such person at this address.");
+    res.setHeader('set-cookie', sessions.issue({ tenantId: tenant.id, email: user.email, sv: user.sessionVersion }));
+    sendJson(res, 200, { signedIn: true, persona: personaOf(user) });
+  });
+
   router.get('/api/me', ({ req, res }) => {
     const context = current(req);
     sendJson(res, 200, {
@@ -262,6 +322,7 @@ export function registerCustomerRoutes(router, { config, fabric, store, sessions
       reportPermissions: context.reportPermissions,
       examples: QUICK_EXAMPLES,
       demo: fabric.kind === 'mock',
+      personaSwitcher: Boolean(config.personaSwitcher),
     });
   });
 

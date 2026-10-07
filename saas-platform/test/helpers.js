@@ -1,7 +1,8 @@
 import { Readable, Writable } from 'node:stream';
 
-// Calls the HTTP handler in-process with fake request/response objects (no sockets needed).
-export async function inject(handler, { method = 'GET', url, headers = {}, body } = {}) {
+// Calls the HTTP handler in-process with fake request/response objects (no sockets needed). `remoteAddress` is the
+// caller's network address, when a test needs one.
+export async function inject(handler, { method = 'GET', url, headers = {}, body, remoteAddress } = {}) {
   let payload = [];
   const requestHeaders = Object.fromEntries(Object.entries(headers).map(([key, value]) => [key.toLowerCase(), value]));
   if (body !== undefined) {
@@ -13,6 +14,7 @@ export async function inject(handler, { method = 'GET', url, headers = {}, body 
   }
   const req = Readable.from(payload);
   Object.assign(req, { method, url, headers: requestHeaders });
+  if (remoteAddress) req.socket = { remoteAddress };
 
   const chunks = [];
   const res = new Writable({

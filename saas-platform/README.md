@@ -33,13 +33,13 @@ customers.
 
 | Name | Who they are | What they own |
 | --- | --- | --- |
-| **HiCRM** (blue) | The SaaS provider: it builds, sells and runs the CRM. "You" in [REQUIREMENTS.md](REQUIREMENTS.md), [BUILDOUT.md](BUILDOUT.md) and [DEPLOYMENT-ARCHITECTURES.md](DEPLOYMENT-ARCHITECTURES.md) | Everything in Azure and Fabric: the app, its own Microsoft Entra tenant and every identity in it, the Fabric capacity, and a workspace and a service account for each customer. It pays for all of it |
+| **HiCRM** (blue) | The SaaS provider: it builds, sells and runs the CRM. "You" in [REQUIREMENTS.md](REQUIREMENTS.md), [BUILDOUT.md](BUILDOUT.md) and [DEPLOYMENT-ARCHITECTURES.md](DEPLOYMENT-ARCHITECTURES.md) | Everything in Azure and Fabric: the app, its own Microsoft Entra tenant and every identity in it, the Fabric capacity, and a workspace and a service principal for each customer. It pays for all of it |
 | **Fabrikam** (orange), **Contoso** (green) | Customers: two fictional companies that subscribe to HiCRM | Their people (a sales manager and three reps each), their business data and their own Microsoft Entra tenant. Their people need no account in HiCRM's tenant and no Fabric or Power BI license |
 | **Microsoft** (grey) | The cloud provider | Runs Microsoft Entra ID, Fabric and Power BI, which HiCRM uses |
 
 Two phrases to read with care:
 - **"Fabrikam's workspace"** is the workspace HiCRM runs for Fabrikam: HiCRM owns it, and it holds only Fabrikam's
-  data. Likewise `fabrikamsa` is HiCRM's service account for Fabrikam's work.
+  data. Likewise `fabrikamsa` is HiCRM's service principal for Fabrikam's work.
 - **"Tenant"**, in the code and in [FRAMEWORK.md](FRAMEWORK.md), is one of HiCRM's customers (the registry is
   `tenants.json`), not a Microsoft Entra tenant. Each company has an Entra tenant of its own. Today every identity
   HiCRM runs as lives in HiCRM's. A customer's own tenant takes part only if the customer opts in: to let its people
@@ -68,9 +68,9 @@ flowchart TB
     APP["HiCRM app and back office<br/>one deployment for every customer<br/>fabrikam.hicrm… · contoso.hicrm…"]
     subgraph IDS["HiCRM's Microsoft Entra tenant · HiCRM's own identities"]
       direction LR
-      FSA["fabrikamsa<br/>HiCRM's service account<br/>for Fabrikam's work"]
+      FSA["fabrikamsa<br/>HiCRM's service principal<br/>for Fabrikam's work"]
       PID["Platform identity<br/>builds workspaces,<br/>then lets go"]
-      CSA["contososa<br/>HiCRM's service account<br/>for Contoso's work"]
+      CSA["contososa<br/>HiCRM's service principal<br/>for Contoso's work"]
     end
     subgraph CAP["HiCRM's Fabric capacity"]
       direction LR
@@ -142,7 +142,7 @@ flowchart TB
       EMB["Embed token<br/>service"]
       AST["Assistant"]
     end
-    SA["fabrikamsa · HiCRM's service account for Fabrikam<br/>signs in with a certificate, through MSAL"]
+    SA["fabrikamsa · HiCRM's service principal for Fabrikam<br/>signs in with a certificate, through MSAL"]
     subgraph WS["Workspace for Fabrikam · on HiCRM's Fabric capacity · only Fabrikam's data"]
       direction TB
       subgraph NOW["Today"]
@@ -216,7 +216,7 @@ flowchart TB
 
 1. **Sign in.** Fabrikam's manager and reps sign in to HiCRM at Fabrikam's address. HiCRM knows each person's role
    and territories; nobody needs a Microsoft account.
-2. **Run as Fabrikam's service account.** Every call HiCRM makes for Fabrikam runs as `fabrikamsa`, which gets its
+2. **Run as Fabrikam's service principal.** Every call HiCRM makes for Fabrikam runs as `fabrikamsa`, which gets its
    tokens from Microsoft Entra ID with a certificate, through MSAL. It's Admin of Fabrikam's workspace and of nothing
    else, so a bug that mixes up customers is refused by Fabric.
 3. **CRM data.** The app reads and writes the CRM records in the SQL database. Fabric copies them to OneLake
@@ -254,8 +254,10 @@ prints each person's sign-in (also saved to `pilot-logins.md` in the data folder
 - Contoso: http://contoso.localhost:3000
 - The back office: http://localhost:3000/admin
 
-[PILOT.md](PILOT.md) walks through the story: a manager and a rep see different numbers in the same report, and the
-assistant answers in each customer's own data.
+On a customer sign-in page, pick a person with the local **View as** cards, or use the email and password from
+`pilot-logins.md`. Demo mode uses a report placeholder and scoped CRM quick answers, not a live Power BI report or
+data agent. [PILOT.md](PILOT.md) walks through the live story: a manager and reps see different numbers in the same
+embedded report.
 
 ## Run it on Microsoft Fabric
 
@@ -263,7 +265,7 @@ assistant answers in each customer's own data.
    tenant settings, the capacity, and the exact rules for each customer's workspace.
 2. **Create the identities** (an Entra admin):
    - the platform app registration, with a certificate (REQUIREMENTS.md, section 8, step 4);
-   - one service account per customer, with a certificate, made Admin of the customer's workspace and registered with
+   - one service principal per customer, with a certificate, made Admin of the customer's workspace and registered with
      the platform:
      ```powershell
      az login --tenant <tenant-id>
@@ -279,8 +281,8 @@ assistant answers in each customer's own data.
    | The key to the customers' stored credentials | `SECRETS_KEY`, or Key Vault (`SECRETS_PROVIDER=keyvault`) |
    | A back-office key (or press Enter to make one for the run) | `ADMIN_KEY` |
 
-5. **Validate:** `npm run validate -- --live --browser` checks every control against the deployment, read-only, including
-   what each person sees in the report.
+5. **Validate:** `npm run validate -- --live --browser` runs the validator controls against the deployment, read-only.
+   It checks the report as one manager and one rep per distinct territory set, covering all four seeded pilot people.
 
 In production (`APP_ENV=production`), the app refuses settings that are only safe on a laptop: a client secret for the
 platform identity, a shared identity for customer work, standing platform access to customer workspaces, credentials
@@ -290,6 +292,14 @@ outside Key Vault, or a back office without sign-in. [.env.example](.env.example
 **Licenses and capacity.** Service principals and the customers' people need no license. You need a Fabric F capacity
 (F2 or larger for the data agent); a trial capacity runs everything else. On a trial, the data agent refuses with
 `FT1 SKU Not Supported`, and the assistant answers managers from the CRM database instead.
+
+## Diagrams
+
+The diagrams page is [published on GitHub Pages](https://apkola29.github.io/fabric/saas-platform/); its source is
+[site/index.html](site/index.html). It uses only HTML and three SVG images, with no scripts:
+[who-sees-what.svg](site/who-sees-what.svg), [credential-flow.svg](site/credential-flow.svg) and
+[all-in-one.svg](site/all-in-one.svg), a design in which a customer runs its own Fabric. The SVGs are drawn by
+[site/diagrams.mjs](site/diagrams.mjs): edit a diagram there, then run `node site/diagrams.mjs`.
 
 ## Operate it from the command line
 
@@ -377,7 +387,7 @@ the project in CI.
 | `src/auth/tokens.js` | Microsoft Entra tokens through MSAL Node: per identity and scope, cached, long enough for embed tokens |
 | `src/auth/credential-types.js`, `certificates.js` | Credential types (federated, certificate, secret), certificate bundles and self-signed certificates |
 | `src/auth/runtime-secrets.js` | Asks for credentials at start (hidden input) instead of reading them from files |
-| `src/platform/identities.js`, `secrets.js` | One service account per customer, its credential, and the encrypted credential store or Key Vault |
+| `src/platform/identities.js`, `secrets.js` | One service principal per customer, its credential, and the encrypted credential store or Key Vault |
 | `src/platform/provisioner.js` | Idempotent provisioning steps, hand-over and release, upgrades and removal |
 | `src/platform/reporting.js`, `usage.js` | Generate Token V2 with effective identities and per-person rights; the report usage log |
 | `src/platform/assistant.js`, `agent.js`, `src/fabric/mcp.js` | The data agent over MCP, quick answers scoped to territories, the question log |
@@ -388,7 +398,8 @@ the project in CI.
 | `src/routes/`, `public/` | The customer and back-office APIs; the HiCRM app and the back office |
 | `src/util/publishing.js`, `scripts/check-publish.js` | The pre-publish check for credentials and environment IDs |
 | `scripts/` | Setup, CLI, identity bootstrap, preflight check and validator |
+| `site/` | The static diagrams page, published to GitHub Pages: HTML, three SVG diagrams and `diagrams.mjs`, which draws them |
 
 ## License
 
-MIT, as the rest of [this repository](../LICENSE).
+MIT, as the rest of [this repository](https://github.com/apkola29/fabric/blob/master/LICENSE).

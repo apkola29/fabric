@@ -28,7 +28,7 @@ Everything below happens in the workspace HiCRM runs for Fabrikam, and the same 
 | --- | --- | --- |
 | The source systems: ERP, SaaS apps, files, and Fabrikam's own Fabric if it has one | **Fabrikam**, in its own Entra tenant | Fabrikam decides what HiCRM may read, grants the access, and can withdraw it |
 | An on-premises data gateway, for sources on Fabrikam's network | **Fabrikam**, installed by its IT | Registered to HiCRM's tenant by a HiCRM engineer (registering needs a person's account), so HiCRM's connections can use it |
-| The connections, pipeline, notebooks, lakehouse and schedules | **HiCRM** | In the workspace HiCRM runs for Fabrikam, owned by `fabrikamsa`, HiCRM's service account for Fabrikam |
+| The connections, pipeline, notebooks, lakehouse and schedules | **HiCRM** | In the workspace HiCRM runs for Fabrikam, owned by `fabrikamsa`, HiCRM's service principal for Fabrikam |
 | `fabrikamreader`, HiCRM's reader for Fabrikam | **HiCRM** owns the app registration; **Fabrikam** admits its service principal | The identity that the connections to Fabrikam's systems sign in as. Its service principal in Fabrikam's tenant reads only what Fabrikam grants, and Fabrikam can remove it at any time |
 | The copied data | **Fabrikam's data**, held by HiCRM | Only in Fabrikam's workspace; Contoso's never meets it |
 
@@ -116,7 +116,7 @@ Identities, isolation and row-level security work the same either way.
 
 ## Identities and isolation
 
-- **Inside HiCRM's tenant, everything runs as the customer's service account.** Provisioning creates the items as
+- **Inside HiCRM's tenant, everything runs as the customer's service principal.** Provisioning creates the items as
   `fabrikamsa`, and the platform starts and schedules runs as `fabrikamsa`. Fabric's Items API and Job Scheduler API
   support service principals ([notebook APIs](https://learn.microsoft.com/fabric/data-engineering/notebook-public-api)),
   and a service principal can run a pipeline on a schedule or through the API
@@ -150,13 +150,13 @@ bronze short-lived; keep gold as long as the customer's contract says.
 1. **The add-on's resources** (`src/platform/plans.js`): pipelines and notebooks, besides the lakehouse.
 2. **Cross-tenant access** ([IDENTITIES.md](IDENTITIES.md)): the customer's Entra tenant ID in its record; a reader
    per customer (`fabrikamreader`), created by the platform, with its secret written straight into the connections and
-   rotated; and accepting external data shares as the customer's service account.
+   rotated; and accepting external data shares as the customer's service principal.
 3. **Provisioning steps**, idempotent and from code like the model and the report: the connections, the pipeline and
    notebook definitions, the schedule (created as `fabrikamsa`), the gold tables in the model definition, and the
    data agent's sources.
 4. **The back office:** each customer's sources, run history and failures, and a way to run again.
 5. **Controls** in [FRAMEWORK.md](FRAMEWORK.md), with validator checks: the add-on's items are created and run as the
-   customer's service account; each connection signs in to that customer's own Entra tenant, as that customer's
+   customer's service principal; each connection signs in to that customer's own Entra tenant, as that customer's
    reader; gold tables are filtered by the same roles (in the browser, like RLS-03).
 6. **Tests** against the Fabric emulator for each of these.
 

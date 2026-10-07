@@ -106,6 +106,10 @@ export function loadConfig(env = process.env) {
     dataAgentCodeInterpreter: flag(env.DATA_AGENT_CODE_INTERPRETER),
     // Customers building and editing their own reports (the next phase). Off: the standard reports, view only.
     reportAuthoring: flag(env.REPORT_AUTHORING),
+    // "View as": sign in as one of a company's people without a password, to show what each one sees. For local demos
+    // and testing only: never in production, and off behind a proxy (TRUST_PROXY or PUBLIC_ORIGIN), where any visitor
+    // can look local. The routes also refuse anyone who isn't on this computer (routes/customer.js).
+    personaSwitcher: env.PERSONA_SWITCHER ? flag(env.PERSONA_SWITCHER) : !production && !flag(env.TRUST_PROXY) && !publicOrigin,
     sampleDataDefault: env.SAMPLE_DATA_DEFAULT ? flag(env.SAMPLE_DATA_DEFAULT) : !production,
     limits: parseLimits(env.RATE_LIMITS, errors),
     provisioning: { maxConcurrent: int(env.PROVISIONING_CONCURRENCY, 4) },
@@ -200,6 +204,8 @@ export function loadConfig(env = process.env) {
   if (!isLoopbackHost(config.host) && !config.adminKey) errors.push(`HOST=${config.host} exposes the back office. Set ADMIN_KEY (24+ characters) or keep HOST on 127.0.0.1.`);
   // A reverse proxy in front of a loopback HOST still publishes the back office.
   else if ((config.trustProxy || publicOrigin) && !config.adminKey) errors.push('TRUST_PROXY or PUBLIC_ORIGIN means the app is reachable through a proxy. Set ADMIN_KEY (24+ characters) so the back office needs a sign-in.');
+  if (production && config.personaSwitcher) errors.push('PERSONA_SWITCHER signs people in without a password; it is for local demos and testing only, not APP_ENV=production.');
+  else if (config.personaSwitcher && (config.trustProxy || publicOrigin)) errors.push('PERSONA_SWITCHER signs people in without a password, so it only runs without TRUST_PROXY and PUBLIC_ORIGIN: behind a proxy, any visitor can look like this computer.');
   // The tenant ID is passed to the Azure CLI, so only allow GUIDs or domain names.
   if (config.tenantId && !TENANT.test(config.tenantId)) errors.push('AZURE_TENANT_ID must be a tenant GUID or domain name.');
   if (authMode === 'sp') {
@@ -247,6 +253,7 @@ export function loadConfig(env = process.env) {
   }
   if (!config.adminKey) config.warnings.push('ADMIN_KEY is not set: the back office has no sign-in and only works because HOST is a loopback address.');
   if (!config.sessionSecret) config.warnings.push('SESSION_SECRET is not set, so customer sessions end when the server restarts.');
+  if (live && config.personaSwitcher) config.warnings.push('PERSONA_SWITCHER is on: on this computer, "View as" signs in as any of a company\'s people without a password. Set PERSONA_SWITCHER=false to turn it off.');
   if (production && flag(env.ALLOW_DEMO_SIGNIN)) config.warnings.push('ALLOW_DEMO_SIGNIN=true: anyone who knows a customer email domain can sign in as that customer. Staging only.');
   if (production && !appDomain) config.warnings.push('APP_DOMAIN is not set, so every customer signs in at the same address. Give each customer its own: APP_DOMAIN=hicrm.example.com gives https://<customer>.hicrm.example.com.');
   return Object.freeze(config);
