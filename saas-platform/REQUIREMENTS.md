@@ -4,6 +4,9 @@ What has to exist before HiCRM runs against Microsoft Fabric, who creates it, an
 setting up an environment: each table says which role does what, and section 5 says exactly what goes into each
 customer's workspace.
 
+**Who's who.** "You" is the provider that runs the platform: HiCRM in the sample. "Customers" are the companies that
+subscribe, such as Fabrikam and Contoso; they need none of this ([README.md](README.md#whos-who)).
+
 **Demo mode needs none of this.** `npm install`, `npm run setup -- --mode demo --yes` and `npm start` run everything on
 your computer against a Fabric emulator: no Azure, no credentials.
 

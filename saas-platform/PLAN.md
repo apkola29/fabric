@@ -182,6 +182,9 @@ Tabs appear only when the customer's edition includes them. Error messages are p
 
 ### 6.2 Phase 2: warehouse gold layer and pipeline
 
+> The data integration add-on's design ([DATA-INTEGRATION.md](DATA-INTEGRATION.md)) builds silver and gold in a
+> lakehouse with Spark notebooks instead of a warehouse. D4 stays open until one is chosen.
+
 1. `hicrm_wh` schema `gold`: `dim_account`, `dim_owner`, `dim_date`, `fact_opportunity`, `fact_activity`, plus views over customer data sets.
 2. Procedure `gold.refresh` reads `hicrm_db` and `hicrm_lake` through cross-database queries (V3).
 3. Pipeline `pl_refresh`: copy scheduled sources, then run `gold.refresh`; hourly schedule. Customer uploads trigger a refresh.
@@ -208,6 +211,8 @@ Tabs appear only when the customer's edition includes them. Error messages are p
 ### 6.5 Phase 5: integrations
 
 - **Done:** file and Excel uploads, one-off web pulls, connection requests recorded for the HiCRM team.
+- **Design:** the future state, with Data Factory pipelines, Spark notebooks and medallion layers, all running as the
+  customer's service account, is in [DATA-INTEGRATION.md](DATA-INTEGRATION.md).
 - **Next:** scheduled web sources (a Fabric connection and a pipeline copy per source).
 - **Next:** systems on the customer's network, through an on-premises data gateway. The customer's IT installs it, registered to the HiCRM tenant; registration can be scripted with a service principal (F17). The platform then creates the connection and the pipeline.
 

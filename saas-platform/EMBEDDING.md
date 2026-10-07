@@ -19,14 +19,25 @@ deployment.
 
 ## 2. The flow
 
+Fabrikam is the customer. HiCRM, the SaaS provider, runs the server, owns the identities and owns the workspace that
+holds Fabrikam's data ([who's who](README.md#whos-who)).
+
 ```mermaid
 sequenceDiagram
   autonumber
-  participant P as Person (browser)
-  participant A as HiCRM server
-  participant E as Microsoft Entra ID
-  participant PBI as Power BI service
-  participant OL as OneLake (customer workspace)
+  box rgb(253,236,224) FABRIKAM · the customer
+    participant P as Person, in a browser<br/>a Fabrikam manager or rep
+  end
+  box rgb(231,240,250) HICRM · the SaaS provider
+    participant A as HiCRM server
+  end
+  box rgb(238,238,238) MICROSOFT
+    participant E as Microsoft Entra ID<br/>HiCRM's tenant
+    participant PBI as Power BI service
+  end
+  box rgb(231,240,250) HICRM · the SaaS provider
+    participant OL as OneLake, in the workspace<br/>HiCRM runs for Fabrikam
+  end
 
   P->>A: Sign in at the customer's address (session cookie)
   P->>A: POST /api/me/embed { reportId }

@@ -6,6 +6,10 @@ services), and web sources, plus what's built on top of them: integration pipeli
 agents. Every product statement was checked against Microsoft Learn on that date. Preview features are marked, and
 the things to prove before committing are listed in [section 7](#7-proofs-of-concept-before-committing).
 
+**Who's who.** "You" and "your" are HiCRM, the SaaS provider that builds and runs the platform. "Customers" are the
+companies that subscribe to it, such as Fabrikam and Contoso ([README.md](README.md#whos-who)). The future data
+integration add-on, with Data Factory pipelines and Spark notebooks, is designed in [DATA-INTEGRATION.md](DATA-INTEGRATION.md).
+
 | | Plan 1: hybrid | Plan 2: Azure | Plan 3: all on-premises |
 | --- | --- | --- | --- |
 | App and control plane | Your datacenter (or the customer's) | Azure Container Apps behind Front Door | Your datacenter (or the customer's) |

@@ -9,6 +9,9 @@ The build record for the HiCRM pilot. It covers:
 
 Section 6 records the reference environment as it was built on 2026-10-03.
 
+**Who's who.** "You" and "the platform" are HiCRM, the SaaS provider, which owns every identity, the capacity and the
+workspaces. "The customer" is Fabrikam or Contoso, which bring only their people ([README.md](README.md#whos-who)).
+
 Related documents:
 
 | Document | Covers |
@@ -29,20 +32,26 @@ Fabric runs as identities the platform owns.
 
 ```mermaid
 flowchart TB
-  PEOPLE["Customer's people<br/>manager and reps<br/>no Entra account<br/>or license"]
-  subgraph APP["HiCRM app"]
-    STORE["Sign-in store<br/>role and territories"]
+  %% Orange: the customer, Fabrikam or Contoso. Blue: HiCRM, the SaaS provider, which owns everything in its box.
+  subgraph CUST["THE CUSTOMER · Fabrikam or Contoso · brings people, nothing else"]
+    PEOPLE["The customer's people<br/>manager and reps<br/>no Entra account<br/>or license"]
   end
-  subgraph ENTRA["Your Microsoft Entra tenant"]
-    direction LR
-    PSP["Platform identity<br/>1 in total"]
-    SA["Service account<br/>1 per customer"]
-    WI["Workspace identity<br/>1 per customer<br/>Fabric-managed"]
-  end
-  subgraph FAB["Microsoft Fabric"]
-    direction LR
-    CAP["Capacity"]
-    WS["Customer workspace<br/>database, models,<br/>reports, agent"]
+  subgraph HI["HICRM · the SaaS provider · everything in this box is HiCRM's"]
+    direction TB
+    subgraph APP["HiCRM app"]
+      STORE["Sign-in store<br/>role and territories"]
+    end
+    subgraph ENTRA["HiCRM's Microsoft Entra tenant"]
+      direction LR
+      PSP["Platform identity<br/>1 in total"]
+      SA["Service account<br/>1 per customer"]
+      WI["Workspace identity<br/>1 per customer<br/>Fabric-managed"]
+    end
+    subgraph FABRIC["HiCRM's Microsoft Fabric"]
+      direction LR
+      CAP["Capacity"]
+      WS["Workspace for the customer<br/>database, models,<br/>reports, agent"]
+    end
   end
   PEOPLE -->|"sign in"| STORE
   STORE -->|"calls for the<br/>customer run as"| SA
@@ -50,6 +59,16 @@ flowchart TB
   PSP -.->|"Admin until<br/>hand-over"| WS
   SA ==>|"Admin"| WS
   WI -->|"Contributor;<br/>the connection<br/>signs in as it"| WS
+
+  classDef customer fill:#FDECE0,stroke:#C55A11,color:#4A1F00
+  classDef hicrm fill:#E7F0FA,stroke:#1F5AA6,color:#0B2545
+  class PEOPLE customer
+  class STORE,PSP,SA,WI,CAP,WS hicrm
+  style CUST fill:#FFF7F1,stroke:#C55A11,stroke-width:2px,color:#4A1F00
+  style HI fill:#F5F9FE,stroke:#1F5AA6,stroke-width:2px,color:#0B2545
+  style APP fill:#FFFFFF,stroke:#1F5AA6,color:#0B2545
+  style ENTRA fill:#FFFFFF,stroke:#1F5AA6,color:#0B2545
+  style FABRIC fill:#FFFFFF,stroke:#1F5AA6,color:#0B2545
 ```
 
 ### Customer side, per customer

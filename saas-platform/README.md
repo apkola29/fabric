@@ -14,6 +14,213 @@ They need no Microsoft Entra account and no Power BI license.
 > **Disclaimer.** This is a sample for learning and experimentation, provided as-is with no warranty. Review it before
 > using it for real customers ([MULTITENANCY.md](MULTITENANCY.md), section 5, lists what's left for production).
 
+## Who's who
+
+The documents name three companies. HiCRM is the provider that runs everything; Fabrikam and Contoso are two of its
+customers.
+
+| Name | Who they are | What they own |
+| --- | --- | --- |
+| **HiCRM** (blue) | The SaaS provider: it builds, sells and runs the CRM. "You" in [REQUIREMENTS.md](REQUIREMENTS.md), [BUILDOUT.md](BUILDOUT.md) and [DEPLOYMENT-ARCHITECTURES.md](DEPLOYMENT-ARCHITECTURES.md) | Everything in Azure and Fabric: the app, the Microsoft Entra tenant and every identity in it, the Fabric capacity, and a workspace and a service account for each customer. It pays for all of it |
+| **Fabrikam** (orange), **Contoso** (green) | Customers: two fictional companies that subscribe to HiCRM | Their people (a sales manager and three reps each) and their business data. They need no Entra accounts and no Fabric or Power BI licenses |
+| **Microsoft** (grey) | The cloud provider | Runs Microsoft Entra ID, Fabric and Power BI, which HiCRM uses |
+
+Two phrases to read with care:
+- **"Fabrikam's workspace"** is the workspace HiCRM runs for Fabrikam: HiCRM owns it, and it holds only Fabrikam's
+  data. Likewise `fabrikamsa` is HiCRM's service account for Fabrikam's work.
+- **"Tenant"**, in the code and in [FRAMEWORK.md](FRAMEWORK.md), is one of HiCRM's customers (the registry is
+  `tenants.json`), not a Microsoft Entra tenant. There's only one Entra tenant: HiCRM's.
+
+```mermaid
+flowchart TB
+  %% Who owns what. Orange: Fabrikam, green: Contoso (two customers of HiCRM). Blue: HiCRM, the SaaS provider.
+  %% Grey: Microsoft. Dashed: the future data integration add-on.
+
+  subgraph FAB["FABRIKAM · customer 1 · owns its people and its business data"]
+    direction LR
+    FPPL["Fabrikam's people<br/>a sales manager and three reps<br/>no Microsoft account, no license"]
+    FSYS[("Fabrikam's own systems<br/>ERP, spreadsheets, SaaS apps")]
+  end
+
+  subgraph CON["CONTOSO · customer 2 · owns its people and its business data"]
+    direction LR
+    CPPL["Contoso's people<br/>a sales manager and three reps<br/>no Microsoft account, no license"]
+    CSYS[("Contoso's own systems<br/>ERP, spreadsheets, SaaS apps")]
+  end
+
+  subgraph HI["HICRM · the SaaS provider · owns, runs and pays for everything in this box"]
+    direction TB
+    APP["HiCRM app and back office<br/>one deployment for every customer<br/>fabrikam.hicrm… · contoso.hicrm…"]
+    subgraph IDS["HiCRM's Microsoft Entra tenant · the only Entra tenant involved"]
+      direction LR
+      FSA["fabrikamsa<br/>HiCRM's service account<br/>for Fabrikam's work"]
+      PID["Platform identity<br/>builds workspaces,<br/>then lets go"]
+      CSA["contososa<br/>HiCRM's service account<br/>for Contoso's work"]
+    end
+    subgraph CAP["HiCRM's Fabric capacity"]
+      direction LR
+      FWS["Workspace for Fabrikam<br/>owned by HiCRM<br/>holds only Fabrikam's data"]
+      CWS["Workspace for Contoso<br/>owned by HiCRM<br/>holds only Contoso's data"]
+    end
+  end
+
+  subgraph MS["MICROSOFT · runs the cloud services HiCRM uses"]
+    direction LR
+    MEID["Microsoft Entra ID<br/>signs HiCRM's identities in"]
+    MFAB["Microsoft Fabric and Power BI<br/>run the capacity and the reports"]
+  end
+
+  FPPL -->|"sign in at Fabrikam's address"| APP
+  CPPL -->|"sign in at Contoso's address"| APP
+  APP -->|"Fabrikam's requests run as"| FSA
+  APP -->|"Contoso's requests run as"| CSA
+  FSA ==>|"Admin"| FWS
+  CSA ==>|"Admin"| CWS
+  PID -.->|"creates, then keeps no access"| FWS
+  PID -.->|"creates, then keeps no access"| CWS
+  FSYS -.->|"future add-on: copies Fabrikam allows"| FWS
+  CSYS -.->|"future add-on: copies Contoso allows"| CWS
+  IDS -.->|"sign in through"| MEID
+  CAP -.->|"runs on"| MFAB
+
+  classDef fabrikam fill:#FDECE0,stroke:#C55A11,color:#4A1F00
+  classDef contoso fill:#E7F4EA,stroke:#2E7D32,color:#123D1B
+  classDef hicrm fill:#E7F0FA,stroke:#1F5AA6,color:#0B2545
+  classDef microsoft fill:#EEEEEE,stroke:#5F5F5F,color:#1F1F1F
+  classDef future fill:#FFFFFF,stroke:#6B6B6B,stroke-dasharray:5 5,color:#333333
+  class FPPL fabrikam
+  class CPPL contoso
+  class FSYS,CSYS future
+  class APP,FSA,PID,CSA,FWS,CWS hicrm
+  class MEID,MFAB microsoft
+  style FAB fill:#FFF7F1,stroke:#C55A11,stroke-width:2px,color:#4A1F00
+  style CON fill:#F3FAF4,stroke:#2E7D32,stroke-width:2px,color:#123D1B
+  style HI fill:#F5F9FE,stroke:#1F5AA6,stroke-width:2px,color:#0B2545
+  style IDS fill:#FFFFFF,stroke:#1F5AA6,color:#0B2545
+  style CAP fill:#FFFFFF,stroke:#1F5AA6,color:#0B2545
+  style MS fill:#FAFAFA,stroke:#5F5F5F,color:#1F1F1F
+```
+
+Orange: Fabrikam. Green: Contoso. Blue: HiCRM. Grey: Microsoft. Dashed: the future data integration add-on.
+
+## How it works
+
+One customer's data, end to end. Fabrikam is shown; Contoso works the same way, in its own workspace, as `contososa`.
+
+```mermaid
+flowchart LR
+  %% One customer's data, end to end: Fabrikam. Contoso works the same way, in its own workspace, as contososa.
+  %% Orange: Fabrikam (the customer). Blue: HiCRM (the SaaS provider). Grey: Microsoft. Dashed: future add-on.
+
+  subgraph FAB["FABRIKAM · the customer"]
+    direction LR
+    MGR["Sales manager<br/>sees every territory"]
+    REP["Sales rep<br/>sees Texas only"]
+    SYS[("Fabrikam's own systems<br/>ERP, spreadsheets, SaaS apps")]
+  end
+
+  subgraph HI["HICRM · the SaaS provider · everything in this box is HiCRM's"]
+    direction TB
+    subgraph APP["HiCRM app"]
+      direction LR
+      WEB["Web app and API<br/>knows each person's<br/>role and territories"]
+      EMB["Embed token<br/>service"]
+      AST["Assistant"]
+    end
+    SA["fabrikamsa · HiCRM's service account for Fabrikam<br/>signs in with a certificate, through MSAL"]
+    subgraph WS["Workspace for Fabrikam · on HiCRM's Fabric capacity · only Fabrikam's data"]
+      direction TB
+      subgraph NOW["Today"]
+        direction LR
+        DB[("SQL database hicrm_db<br/>CRM records")]
+        OL[("OneLake<br/>Delta copy")]
+        SM["Semantic model<br/>HiCRM Insights<br/>one role per territory"]
+        RPT["Report<br/>Sales overview"]
+        AM["HiCRM Insights - Assistant<br/>the same model, no roles"]
+        AG["Data agent<br/>HiCRM Assistant"]
+      end
+      subgraph NEXT["Future add-on · data integration"]
+        direction LR
+        PL["Data Factory<br/>pipeline"]
+        BR[("Lakehouse<br/>bronze: raw")]
+        NB["Spark notebooks<br/>Data Engineering"]
+        SV[("Lakehouse<br/>silver: cleaned")]
+        GD[("Lakehouse<br/>gold: business tables")]
+      end
+    end
+  end
+
+  subgraph MS["MICROSOFT"]
+    direction LR
+    ENTRA["Entra ID<br/>tokens for fabrikamsa"]
+    PBI["Power BI service<br/>renders the report"]
+  end
+
+  MGR -->|"1 sign in"| WEB
+  REP -->|"1 sign in"| WEB
+  WEB -->|"2 every call runs as"| SA
+  SA -.->|"MSAL"| ENTRA
+  WEB -->|"3 CRM reads and writes"| DB
+  DB -->|"automatic"| OL
+  OL -->|"Direct Lake, fixed identity"| SM
+  SM --> RPT
+  OL --> AM
+  AM --> AG
+  WEB --> EMB
+  EMB -->|"4 Generate Token V2:<br/>this report, the person's roles"| PBI
+  PBI -->|"5 reads"| RPT
+  REP <-->|"6 the browser loads the report<br/>from Power BI: only the person's rows"| PBI
+  WEB --> AST
+  AST -->|"7 MCP: managers' questions"| AG
+
+  SYS -.->|"future: scheduled copies Fabrikam allows"| PL
+  PL -.-> BR
+  BR -.-> NB
+  NB -.-> SV
+  NB -.-> GD
+  OL -.->|"CRM tables, shortcut"| NB
+  GD -.->|"joins the model, same roles"| SM
+  GD -.->|"more answers"| AM
+
+  classDef fabrikam fill:#FDECE0,stroke:#C55A11,color:#4A1F00
+  classDef hicrm fill:#E7F0FA,stroke:#1F5AA6,color:#0B2545
+  classDef microsoft fill:#EEEEEE,stroke:#5F5F5F,color:#1F1F1F
+  classDef future fill:#FFFFFF,stroke:#6B6B6B,stroke-dasharray:5 5,color:#333333
+  class MGR,REP fabrikam
+  class SYS,PL,BR,NB,SV,GD future
+  class WEB,EMB,AST,SA,DB,OL,SM,RPT,AM,AG hicrm
+  class ENTRA,PBI microsoft
+  style FAB fill:#FFF7F1,stroke:#C55A11,stroke-width:2px,color:#4A1F00
+  style HI fill:#F5F9FE,stroke:#1F5AA6,stroke-width:2px,color:#0B2545
+  style APP fill:#FFFFFF,stroke:#1F5AA6,color:#0B2545
+  style WS fill:#FFFFFF,stroke:#1F5AA6,color:#0B2545
+  style NOW fill:#F5F9FE,stroke:#1F5AA6,color:#0B2545
+  style NEXT fill:#FFFFFF,stroke:#6B6B6B,stroke-dasharray:5 5,color:#333333
+  style MS fill:#FAFAFA,stroke:#5F5F5F,color:#1F1F1F
+```
+
+1. **Sign in.** Fabrikam's manager and reps sign in to HiCRM at Fabrikam's address. HiCRM knows each person's role
+   and territories; nobody needs a Microsoft account.
+2. **Run as Fabrikam's service account.** Every call HiCRM makes for Fabrikam runs as `fabrikamsa`, which gets its
+   tokens from Microsoft Entra ID with a certificate, through MSAL. It's Admin of Fabrikam's workspace and of nothing
+   else, so a bug that mixes up customers is refused by Fabric.
+3. **CRM data.** The app reads and writes the CRM records in the SQL database. Fabric copies them to OneLake
+   automatically, and the semantic model reads them there (Direct Lake, through a fixed identity).
+4. **Embed token.** To show a report, the app asks Power BI for an embed token (Generate Token V2) for that one report,
+   with the person's row-level security roles: every territory for the manager, Texas for this rep.
+5. **Render.** Power BI renders the report from the model and applies those roles.
+6. **Show.** The browser loads the report straight from Power BI with the token. Each person sees only their rows,
+   and report filters can't widen that. The token lasts 30 minutes and is renewed before it runs out.
+7. **Ask.** Managers' questions go to Fabrikam's data agent through its MCP server, as `fabrikamsa`. The agent reads a
+   role-free twin of the model, so reps never reach it. Everyone also gets quick answers that the app computes in SQL
+   for their own territories.
+
+**Future add-on (dashed).** The data integration add-on would bring in Fabrikam's other data, only what Fabrikam
+allows. A Data Factory pipeline copies it from Fabrikam's systems into a lakehouse (bronze); Spark notebooks clean it
+(silver) and shape business tables keyed by account (gold); the gold tables join the same semantic model, under the
+same roles, and the assistant's model. All of it runs as `fabrikamsa`, in Fabrikam's workspace. The design, with its
+own diagram, is in [DATA-INTEGRATION.md](DATA-INTEGRATION.md).
+
 ## What it shows
 
 | Area | How |
@@ -150,6 +357,7 @@ the project in CI.
 | [FRAMEWORK.md](FRAMEWORK.md) | The framework: principles, reference architecture, building blocks, design decisions, 34 controls, validation |
 | [EMBEDDING.md](EMBEDDING.md) | How the embedded reports work: every credential, the token request, row-level security, refresh, best practices, and a comparison with Microsoft's App-Owns-Data samples |
 | [ARCHITECTURE.md](ARCHITECTURE.md) | Diagrams of the system, identities, provisioning and the runtime flows |
+| [DATA-INTEGRATION.md](DATA-INTEGRATION.md) | The future data integration add-on: Data Factory pipelines, Spark notebooks and lakehouse layers, who owns what, and the identities they run as |
 | [MULTITENANCY.md](MULTITENANCY.md) | The multitenancy, least-privilege and robustness review, with evidence |
 | [BUILDOUT.md](BUILDOUT.md) | How the pilot was built: identities and their counts, permissions, and the as-built record |
 | [PILOT.md](PILOT.md) | The two pilot customers and the story to walk through |

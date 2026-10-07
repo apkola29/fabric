@@ -4,6 +4,11 @@ One application, many customers ("tenants"). Each tenant gets its own data, repo
 isolated by Fabric itself rather than by application code alone. The tenants' people sign in to the application and
 need no Microsoft Entra account and no Power BI license.
 
+**Who's who in the sample.** HiCRM is the provider: it owns and runs the application, the Microsoft Entra tenant and
+every identity in it, the capacity, and a workspace for each tenant. Its tenants, Fabrikam and Contoso, are customer
+companies that own only their people and their data. "Tenant" in this document always means such a customer, never a
+Microsoft Entra tenant: the whole deployment uses one Entra tenant, the provider's ([README.md](README.md#whos-who)).
+
 This repository is the framework, plus a sample built on it: **HiCRM**, a small CRM whose customers each have a SQL
 database, a semantic model with row-level security, an embedded Power BI report and a data agent. The framework
 defines its rules as **controls** (section 6) and checks them with one command:
@@ -35,6 +40,8 @@ Related documents:
 - [MULTITENANCY.md](MULTITENANCY.md): the security review.
 - [BUILDOUT.md](BUILDOUT.md): the build record, with every identity and permission.
 - [DEPLOYMENT-ARCHITECTURES.md](DEPLOYMENT-ARCHITECTURES.md): production designs.
+- [DATA-INTEGRATION.md](DATA-INTEGRATION.md): the future data integration add-on (Data Factory, Spark notebooks, a
+  lakehouse).
 
 ## 1. What the framework gives you
 
@@ -74,35 +81,38 @@ Related documents:
 
 ```mermaid
 flowchart LR
-  subgraph PEOPLE["Tenants' people"]
-    direction TB
+  %% The framework's reference architecture, with the sample's names. Orange: Fabrikam. Green: Contoso. They are
+  %% HiCRM's customers, the "tenants". Blue: HiCRM, the provider, which owns and runs every blue box.
+  subgraph FAB["FABRIKAM · tenant 1"]
     U1["Fabrikam's people"]
+  end
+  subgraph CON["CONTOSO · tenant 2"]
     U2["Contoso's people"]
   end
-  subgraph APP["Application (one deployment)"]
+  subgraph APP["HICRM · application, one deployment"]
     direction TB
     WEB["Web app and API<br/>sign-in, tenant by address"]
     EMB["Embed token service"]
     ASK["Assistant"]
     REG[("Tenant registry")]
-    SEC[("Secrets<br/>Key Vault")]
+    SEC[("Credentials<br/>Key Vault")]
   end
-  subgraph CP["Control plane"]
+  subgraph CP["HICRM · control plane"]
     direction TB
     PROV["Provisioning engine"]
     PSP["Platform identity"]
     VAL["Audit and validator"]
   end
-  subgraph T1["Tenant plane: Fabrikam"]
+  subgraph T1["HICRM · tenant plane for Fabrikam<br/>only Fabrikam's data"]
     direction TB
     SA1["fabrikamsa<br/>service principal"]
     WS1["Workspace: SQL database, OneLake,<br/>model with RLS, role-free model,<br/>report, data agent"]
     WI1["Workspace identity"]
   end
-  subgraph T2["Tenant plane: Contoso"]
+  subgraph T2["HICRM · tenant plane for Contoso<br/>only Contoso's data"]
     direction TB
-    SA2["contososa"]
-    WS2["Workspace"]
+    SA2["contososa<br/>service principal"]
+    WS2["Workspace<br/>the same items"]
     WI2["Workspace identity"]
   end
   U1 --> WEB
@@ -112,14 +122,30 @@ flowchart LR
   EMB -->|"as fabrikamsa"| WS1
   ASK -->|"MCP, as fabrikamsa"| WS1
   EMB -->|"as contososa"| WS2
+  ASK -->|"MCP, as contososa"| WS2
+  REG -->|"tenants to build"| PROV
+  PROV -->|"uses"| PSP
   PSP -->|"creates, hands over,<br/>then releases"| WS1
   PSP --> WS2
   SA1 ==>|"Admin"| WS1
   SA2 ==>|"Admin"| WS2
   WI1 -->|"Contributor;<br/>Direct Lake reads as it"| WS1
   WI2 --> WS2
-  SEC -.->|"secrets of"| SA1
+  SEC -.->|"credentials of"| SA1
   SEC -.-> SA2
+
+  classDef fabrikam fill:#FDECE0,stroke:#C55A11,color:#4A1F00
+  classDef contoso fill:#E7F4EA,stroke:#2E7D32,color:#123D1B
+  classDef hicrm fill:#E7F0FA,stroke:#1F5AA6,color:#0B2545
+  class U1 fabrikam
+  class U2 contoso
+  class WEB,EMB,ASK,REG,SEC,PROV,PSP,VAL,SA1,WS1,WI1,SA2,WS2,WI2 hicrm
+  style FAB fill:#FFF7F1,stroke:#C55A11,stroke-width:2px,color:#4A1F00
+  style CON fill:#F3FAF4,stroke:#2E7D32,stroke-width:2px,color:#123D1B
+  style APP fill:#F5F9FE,stroke:#1F5AA6,stroke-width:2px,color:#0B2545
+  style CP fill:#F5F9FE,stroke:#1F5AA6,stroke-width:2px,color:#0B2545
+  style T1 fill:#F5F9FE,stroke:#1F5AA6,stroke-width:2px,color:#0B2545
+  style T2 fill:#F5F9FE,stroke:#1F5AA6,stroke-width:2px,color:#0B2545
 ```
 
 - **Control plane.** The platform identity, the provisioning engine, the audit and the validator. It builds tenants
@@ -127,7 +153,8 @@ flowchart LR
 - **Application.** One deployment serves every tenant. It works out the tenant from the address, and the person from
   the session. Each call for a tenant runs as that tenant's service principal.
 - **Tenant planes.** One Fabric workspace per tenant, on a shared or a dedicated capacity. Each holds the tenant's
-  items and has its own workspace identity.
+  items and has its own workspace identity. The provider owns and runs each workspace; the tenant owns only the data
+  in it.
 
 ## 4. Building blocks
 
