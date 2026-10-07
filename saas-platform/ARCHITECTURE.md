@@ -92,7 +92,7 @@ flowchart TB
 `contososa`. [README.md](README.md#how-it-works) walks through the numbered steps.
 
 ```mermaid
-flowchart LR
+flowchart TB
   %% One customer's data, end to end: Fabrikam. Contoso works the same way, in its own workspace, as contososa.
   %% Orange: Fabrikam (the customer). Blue: HiCRM (the SaaS provider). Grey: Microsoft. Dashed: future add-on.
 
@@ -115,7 +115,7 @@ flowchart LR
     subgraph WS["Workspace for Fabrikam · on HiCRM's Fabric capacity · only Fabrikam's data"]
       direction TB
       subgraph NOW["Today"]
-        direction LR
+        direction TB
         DB[("SQL database hicrm_db<br/>CRM records")]
         OL[("OneLake<br/>Delta copy")]
         SM["Semantic model<br/>HiCRM Insights<br/>one role per territory"]
@@ -124,7 +124,7 @@ flowchart LR
         AG["Data agent<br/>HiCRM Assistant"]
       end
       subgraph NEXT["Future add-on · data integration"]
-        direction LR
+        direction TB
         PL["Data Factory<br/>pipeline"]
         BR[("Lakehouse<br/>bronze: raw")]
         NB["Spark notebooks<br/>Data Engineering"]
