@@ -1,13 +1,13 @@
-# HiCRM deployment architectures: hybrid, Azure and fully on-premises
+# Platform app deployment architectures: hybrid, Azure and fully on-premises
 
-Architecture session, 2 October 2026. Three ways to run HiCRM securely, with everything it has to serve: the app and
-its CRM database, databases that customers bring, flat files and unstructured documents (on-premises or in third-party
-services), and web sources, plus what's built on top of them: integration pipelines, transformations, reports and data
-agents. Every product statement was checked against Microsoft Learn on that date. Preview features are marked, and
-the things to prove before committing are listed in [section 7](#7-proofs-of-concept-before-committing).
+Architecture session, 2 October 2026. Three ways to run the platform app securely, with everything it has to serve: the
+app and its CRM database, databases that customers bring, flat files and unstructured documents (on-premises or in
+third-party services), and web sources, plus what's built on top of them: integration pipelines, transformations,
+reports and data agents. Every product statement was checked against Microsoft Learn on that date. Preview features are
+marked, and the things to prove before committing are listed in [section 7](#7-proofs-of-concept-before-committing).
 
-**Who's who.** "You" and "your" are HiCRM, the SaaS provider that builds and runs the platform. "Customers" are the
-companies that subscribe to it, such as Fabrikam and Contoso ([README.md](README.md#whos-who)). The future data
+**Who's who.** "You" and "your" are the platform, the SaaS provider that builds and runs the platform app. "Customers"
+are the companies that subscribe to it, such as Fabrikam and Contoso ([README.md](README.md#whos-who)). The future data
 integration add-on, with Data Factory pipelines and Spark notebooks, is designed in
 [DATA-INTEGRATION.md](DATA-INTEGRATION.md).
 
@@ -33,8 +33,8 @@ flowchart LR
     SAAS["Third-party SaaS"]
     WEB["Web and REST APIs"]
   end
-  subgraph CP["HiCRM control plane: shared"]
-    APP["HiCRM app and API"]
+  subgraph CP["Platform app control plane: shared"]
+    APP["Platform app and API"]
     PROV["Tenant catalog,<br/>provisioning"]
   end
   subgraph DP["Data plane: one per customer"]
@@ -88,7 +88,7 @@ Principles, from Zero Trust ([segmentation guidance](https://learn.microsoft.com
 5. **Separable per customer**: data, keys, logs and connections can be exported or destroyed for one customer.
 6. **Assume breach**: segment, control egress, audit, and check for drift (`platform-cli audit`).
 
-## 2. Plan 1: HiCRM in your datacenter, Fabric for data and AI
+## 2. Plan 1: the platform app in your datacenter, Fabric for data and AI
 
 The application tier (web app, API, control plane) runs in a private datacenter; data, models, reports and agents stay
 in Fabric. There are two variants: **1A**, a multi-tenant platform you host for many customers whose users come from
@@ -124,7 +124,7 @@ flowchart LR
     AGW["Application Gateway<br/>private, origin relay"]
   end
   subgraph DC["Your datacenter"]
-    APP["HiCRM app and<br/>control plane"]
+    APP["Platform app and<br/>control plane"]
     EGR["Egress proxy<br/>FQDN allowlist"]
     KEYS[("Keys: TPM, HSM<br/>or Key Vault")]
   end
@@ -167,7 +167,7 @@ flowchart LR
   gets workspace-level Private Link and outbound access protection, so only your network and the customer's own
   network can reach it, and its code can only reach approved destinations
   ([outbound access protection](https://learn.microsoft.com/fabric/security/workspace-outbound-access-protection-overview)).
-  Today HiCRM uses one workspace per customer; the split is the next step.
+  Today the platform app uses one workspace per customer; the split is the next step.
 - **No secrets in the datacenter.** Managed-identity federation needs a user-assigned identity, and Azure Arc-enabled
   servers only have a system-assigned one
   ([Arc managed identity](https://learn.microsoft.com/azure/azure-arc/servers/managed-identity-authentication),
@@ -189,7 +189,7 @@ sequenceDiagram
   autonumber
   actor U as User's browser
   participant FD as Front Door (WAF)
-  participant A as HiCRM app
+  participant A as Platform app
   participant K as Key store (HSM or Key Vault)
   participant E as Entra ID
   participant P as Power BI and Fabric
@@ -212,7 +212,7 @@ sequenceDiagram
 
 - **Reports**: the browser talks to Power BI directly; the app only mints tokens for named items. For per-user filtering,
   put RLS roles in the model and pass the user as the effective identity. This works with Direct Lake when the
-  connection uses a fixed identity with single sign-on off, which is how HiCRM binds its models
+  connection uses a fixed identity with single sign-on off, which is how the platform app binds its models
   ([Direct Lake security](https://learn.microsoft.com/fabric/fundamentals/direct-lake-security-integration),
   [embed with RLS](https://learn.microsoft.com/power-bi/developer/embedded/cloud-rls)).
 - **The agent** runs inside Fabric. The app calls it as the customer's service principal; service-principal access to
@@ -224,20 +224,20 @@ sequenceDiagram
 - **AI data boundary**: data agents use Azure OpenAI. Outside the EU and US boundaries, a tenant setting must allow
   processing outside the capacity's geography, which is a disclosure for those customers
   ([data agent tenant settings](https://learn.microsoft.com/fabric/data-science/data-agent-tenant-settings)).
-- **Evidence**: Entra sign-in logs per customer service principal, Fabric audit events, HiCRM's per-customer activity
-  log, and the `audit` command for role drift.
+- **Evidence**: Entra sign-in logs per customer service principal, Fabric audit events, the platform app's per-customer
+  activity log, and the `audit` command for role drift.
 
 ### 1B. Dedicated, fully private install
 
 For one enterprise customer whose users are on their own network, everything can be private. Use a Fabric tenant
-dedicated to that deployment, ideally the customer's own, with HiCRM consented as a multi-tenant app. Enable tenant-level
-Private Link and block public access. Use VNet data gateways instead of on-premises gateways.
+dedicated to that deployment, ideally the customer's own, with the platform app consented as a multi-tenant app. Enable
+tenant-level Private Link and block public access. Use VNet data gateways instead of on-premises gateways.
 
 ```mermaid
 flowchart LR
   subgraph CORP["Customer datacenter and offices"]
     U["Employees"]
-    APP["HiCRM app<br/>dedicated install"]
+    APP["Platform app<br/>dedicated install"]
     ODNS["Corporate DNS<br/>forwarders"]
     SRC[("Source systems")]
   end
@@ -545,7 +545,7 @@ flowchart LR
     RP["Reverse proxy, WAF<br/>or Entra app proxy"]
   end
   subgraph APPZ["Application zone"]
-    APP["HiCRM app<br/>Windows or AKS Arc"]
+    APP["Platform app<br/>Windows or AKS Arc"]
     AGT["Agent service<br/>Agent Framework"]
     MCP["SQL MCP Server<br/>Data API builder"]
     LLM["Local models<br/>Foundry Local, ONNX"]
@@ -602,14 +602,14 @@ flowchart LR
 
 - **Reports**: Power BI Report Server shows Power BI and paginated reports in an iframe (`?rs:embed=true`). Users sign in
   with Windows or Kerberos, or through a **custom authentication extension**, which is supported for Report Server. One
-  can trust HiCRM's own sign-in, so customers' users need no domain accounts. A folder per tenant with role assignments
-  and RLS in the models (`USERNAME()`) keep tenants apart
+  can trust the platform app's own sign-in, so customers' users need no domain accounts. A folder per tenant with role
+  assignments and RLS in the models (`USERNAME()`) keep tenants apart
   ([embed](https://learn.microsoft.com/power-bi/report-server/quickstart-embed),
   [custom security extensions](https://learn.microsoft.com/sql/reporting-services/extensions/security-extension/how-to-install-custom-security-extensions),
   [authentication](https://learn.microsoft.com/sql/reporting-services/security/authentication-with-the-report-server)).
 - **Build your own reports**: not in the browser. Either give customers' power users Power BI Desktop for Report
-  Server and the Publisher role on their folder, or let HiCRM draw charts itself from the Analysis Services model
-  (HiCRM's demo mode already draws charts from query results).
+  Server and the Publisher role on their folder, or let the platform app draw charts itself from the Analysis Services
+  model (the platform app's demo mode already draws charts from query results).
 - **Licensing for reports**: SQL Server 2025 Standard or Enterprise core licenses now include Power BI Report Server,
   with no Software Assurance needed ([licensing](https://learn.microsoft.com/power-bi/report-server/get-started#licensing-power-bi-report-server)).
 - **The agent is something you build**:
@@ -667,8 +667,8 @@ applied to SQL Server:
 Partner and analyst reports say SPLA can't be used on the large public clouds ("Listed Providers") from 1 October 2025;
 on your own hardware it still applies. Neither that date nor Power BI Report Server's coverage under SPLA is confirmed
 in Microsoft's public documentation, so check both with a licensing specialist
-([SPLA](https://www.microsoft.com/licensing/licensing-programs/spla-program)). A customer installing HiCRM on their own
-premises licenses SQL Server 2025 themselves, which includes Report Server.
+([SPLA](https://www.microsoft.com/licensing/licensing-programs/spla-program)). A customer installing the platform app on
+their own premises licenses SQL Server 2025 themselves, which includes Report Server.
 
 ## 5. How multitenancy is solved in each plan
 
@@ -676,7 +676,7 @@ premises licenses SQL Server 2025 themselves, which includes Report Server.
 | --- | --- | --- | --- |
 | Tenant boundary | Fabric workspaces per customer (serving and integration) | Same | Databases per customer (SQL Server, Analysis Services); folders in Report Server and SSIS |
 | Runtime identity | Service principal per customer, certificate key in a TPM, HSM or Key Vault | Service principal per customer, federated to the app's managed identity: no secrets | gMSA per tenant for background work; the app account limited to API procedures; Entra service principals with Arc |
-| End users | External ID or the customer's Entra ID; embed tokens, RLS with effective identity | Same | HiCRM sign-in through a Report Server custom authentication extension; RLS on `USERNAME()` |
+| End users | External ID or the customer's Entra ID; embed tokens, RLS with effective identity | Same | Platform app sign-in through a Report Server custom authentication extension; RLS on `USERNAME()` |
 | Network | Front Door to your datacenter; egress allowlist; private link on integration workspaces; customer gateways dial out | Front Door Private Link to Container Apps; firewall egress; private endpoints; cross-tenant private endpoints | Zoned network; data zone has no internet; customer links per site |
 | Noisy neighbours | Capacity per tier; per-customer rate limits | Same, plus stamps | Resource Governor per tenant; separate instances for big tenants |
 | Keys | Microsoft-managed; customer-managed per workspace for Premium | Same | TDE key per tenant database in an HSM |
@@ -727,7 +727,8 @@ flowchart TD
 4. On-premises certificate signing: the Arc server identity asking Key Vault to sign client assertions, or keys in a
    TPM.
 5. A VNet data gateway reaching on-premises sources over ExpressRoute (Plan 1B).
-6. A Report Server custom authentication extension trusting HiCRM sign-in, with RLS in Power BI reports (Plan 3).
+6. A Report Server custom authentication extension trusting the platform app's sign-in, with RLS in Power BI reports
+   (Plan 3).
 7. Licensing: Power BI Report Server under SPLA, and SPLA versus customer-owned licences (Plan 3).
 
 ## Sources

@@ -12,9 +12,9 @@ const CONFIG = { authMode: 'sp', tenantId: 'contoso.onmicrosoft.com', clientId: 
 const decode = (part) => JSON.parse(Buffer.from(part, 'base64url').toString('utf8'));
 
 test('a self-signed certificate made here is a valid X.509 certificate whose key signs it', () => {
-  const made = createSelfSignedCertificate({ commonName: 'HiCRM fabrikamsa', days: 365 });
+  const made = createSelfSignedCertificate({ commonName: 'Platform app fabrikamsa', days: 365 });
   const certificate = new X509Certificate(made.bundle.slice(made.bundle.indexOf('-----BEGIN CERTIFICATE-----')));
-  assert.equal(certificate.subject, 'CN=HiCRM fabrikamsa');
+  assert.equal(certificate.subject, 'CN=Platform app fabrikamsa');
   assert.equal(certificate.verify(certificate.publicKey), true, 'self-signed');
   const parsed = parseCertificateBundle(made.bundle);
   assert.equal(parsed.thumbprintSha256, made.thumbprintSha256);
@@ -30,7 +30,7 @@ test('a self-signed certificate made here is a valid X.509 certificate whose key
 });
 
 test('a certificate signs a short client assertion (PS256, x5t#S256) and no secret is sent', async () => {
-  const made = createSelfSignedCertificate({ commonName: 'HiCRM test' });
+  const made = createSelfSignedCertificate({ commonName: 'Platform app test' });
   const { fetchImpl, calls } = scriptedFetch([{ match: '/oauth2/v2.0/token', respond: json(200, { access_token: 'cert-token', expires_in: 3600, token_type: 'Bearer' }) }]);
   const tokens = createTokenProvider(CONFIG, { fetchImpl, credential: certificateCredential(made.bundle) });
   assert.equal(await tokens.getToken('https://analysis.windows.net/powerbi/api/.default'), 'cert-token');

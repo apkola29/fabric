@@ -235,7 +235,7 @@ async function main() {
     }
   }
 
-  say('HiCRM pilot setup: creates demo customers, each with its own Fabric workspace, CRM database, semantic model');
+  say('Platform app pilot setup: creates demo customers, each with its own Fabric workspace, CRM database, semantic model');
   say('with row-level security, starter report and assistant, and four people per customer.\n');
   const { values, write } = await settings();
   // Credentials for this run: asked for now (hidden input), never saved. The setup's own questions share the

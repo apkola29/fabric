@@ -2,8 +2,8 @@ import { isLoopbackHost } from '../config.js';
 import { slugify } from './store.js';
 
 // Each customer has its own address. With APP_DOMAIN=localhost, Fabrikam is http://fabrikam.localhost:3000 and Contoso
-// http://contoso.localhost:3000 (browsers send *.localhost to this computer); with APP_DOMAIN=hicrm.example.com, they're
-// https://fabrikam.hicrm.example.com and https://contoso.hicrm.example.com.
+// http://contoso.localhost:3000 (browsers send *.localhost to this computer); with APP_DOMAIN=platform.example.com,
+// they're https://fabrikam.platform.example.com and https://contoso.platform.example.com.
 //
 // - A customer's address shows that customer's name and logo, and signs in only that customer's people.
 // - A session works only at the address that issued it: the browser keeps each address's cookie to itself, and the

@@ -5,7 +5,7 @@ import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 
 // The documentation: shared diagrams stay identical, diagrams color owners consistently and keep to what Mermaid
-// parses, and every link between the documents resolves.
+// parses, every link between the documents resolves, and old names don't come back.
 
 const ROOT = path.join(path.dirname(fileURLToPath(import.meta.url)), '..');
 const DOCS = readdirSync(ROOT).filter((f) => f.endsWith('.md'));
@@ -33,7 +33,7 @@ test('IDENTITIES.md maps every identity across Entra tenants, and the other docu
   const doc = read('IDENTITIES.md');
   const map = diagrams('IDENTITIES.md').filter((d) => d.includes('%% Where each identity lives.'));
   assert.equal(map.length, 1, 'one map of where each identity lives');
-  for (const tenant of ["HICRM'S ENTRA TENANT", "FABRIKAM'S ENTRA TENANT", "CONTOSO'S ENTRA TENANT"]) assert.ok(map[0].includes(tenant), tenant);
+  for (const tenant of ["THE PLATFORM'S ENTRA TENANT", "FABRIKAM'S ENTRA TENANT", "CONTOSO'S ENTRA TENANT"]) assert.ok(map[0].includes(tenant), tenant);
   for (const identity of ['fabrikamsa', 'contososa', 'Workspace identity', 'Platform identity', 'sign-in app', 'fabrikamreader', 'contosoreader']) assert.ok(map[0].includes(identity), identity);
   assert.equal(diagrams('IDENTITIES.md').filter((d) => /^\s*sequenceDiagram/.test(d)).length, 3, 'work-account sign-in, calls to Fabric, the add-on');
   assert.match(doc, /## 8\. Checked, and to test/);
@@ -43,11 +43,22 @@ test('IDENTITIES.md maps every identity across Entra tenants, and the other docu
   for (const part of ['fabrikamsa', 'fabrikamreader', "Fabrikam's workspace identity", '"Workspace identity"', '"Service principal"', '"OAuth"', '"Basic or Windows"']) assert.ok(connections[0].includes(part), part);
   const section = doc.slice(doc.indexOf('## 4. Connections'), doc.indexOf('## 5.'));
   assert.match(section, /\| The semantic models' OneLake connection \(Direct Lake\) \| Built \| `fabrikamsa`/);
-  // The reader is an identity, not a Fabric connector: the old name mustn't come back.
-  for (const file of DOCS) assert.doesNotMatch(read(file), /connector for (Fabrikam|Contoso)|Customer connector|HiCRM connector/i, file);
+  // The reader is an identity, not a Fabric connector: the old names mustn't come back, before or after the rename.
+  for (const file of DOCS) assert.doesNotMatch(read(file), /connector for (Fabrikam|Contoso)|(Customer|HiCRM|platform( app)?) connector/i, file);
   for (const file of ['README.md', 'DATA-INTEGRATION.md', 'REQUIREMENTS.md', 'FRAMEWORK.md', 'ARCHITECTURE.md']) assert.match(read(file), /\]\(IDENTITIES\.md(#[\w-]+)?\)/, `${file} links IDENTITIES.md`);
   // Each company has its own Entra tenant: no document may say otherwise again.
   for (const file of DOCS) assert.doesNotMatch(read(file), /only (one )?Entra tenant|one Entra tenant, the provider/i, file);
+});
+
+test('no document uses the old name HiCRM, except the PLAN.md finding that records the rename (F74)', () => {
+  const problems = [];
+  for (const file of DOCS) {
+    read(file).split('\n').forEach((line, i) => {
+      const at = line.search(/hicrm/i);
+      if (at >= 0 && !(file === 'PLAN.md' && line.includes('F74'))) problems.push(`${file}:${i + 1}: ${line.slice(Math.max(0, at - 50), at + 50).trim()}`);
+    });
+  }
+  assert.deepEqual(problems, []);
 });
 
 test('diagrams color each owner the same way everywhere and style every box they draw', () => {
@@ -55,19 +66,19 @@ test('diagrams color each owner the same way everywhere and style every box they
   const problems = [];
   for (const file of DOCS) {
     for (const d of diagrams(file)) {
-      for (const [, owner, style] of d.matchAll(/^\s*classDef (fabrikam|contoso|hicrm|microsoft) (.+)$/gm)) {
+      for (const [, owner, style] of d.matchAll(/^\s*classDef (fabrikam|contoso|platform|microsoft) (.+)$/gm)) {
         palette[owner] ??= style;
         if (style !== palette[owner]) problems.push(`${file}: classDef ${owner} ${style}`);
       }
       // Without a style, a box falls back to Mermaid's default yellow, which reads as a fourth owner.
-      if (/^\s*classDef (fabrikam|contoso|hicrm|customer) /m.test(d)) {
+      if (/^\s*classDef (fabrikam|contoso|platform|customer) /m.test(d)) {
         const styled = new Set([...d.matchAll(/^\s*style (\w+) /gm)].map((m) => m[1]));
         for (const [, box] of d.matchAll(/^\s*subgraph (\w+)/gm)) if (!styled.has(box)) problems.push(`${file}: subgraph ${box} has no style`);
       }
     }
   }
   assert.deepEqual(problems, []);
-  assert.deepEqual(Object.keys(palette).sort(), ['contoso', 'fabrikam', 'hicrm', 'microsoft']);
+  assert.deepEqual(Object.keys(palette).sort(), ['contoso', 'fabrikam', 'microsoft', 'platform']);
 });
 
 test('sequence diagram messages avoid the characters Mermaid misreads', () => {

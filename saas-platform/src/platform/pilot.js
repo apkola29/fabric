@@ -122,7 +122,7 @@ export async function removePilot({ store, provisioner, keepWorkspaces = false, 
 // `urlOf(tenant)` is where that customer's people sign in.
 export function loginsMarkdown(results, { urlOf, adminUrl, generatedAt = new Date() }) {
   const lines = [
-    '# HiCRM pilot sign-ins',
+    '# Platform app pilot sign-ins',
     '',
     `Created ${generatedAt.toISOString().slice(0, 16).replace('T', ' ')} UTC by \`npm run setup\`. Passwords are stored only as hashes in the app,`,
     'so this file is the only copy: keep them somewhere safe, then delete this file.',

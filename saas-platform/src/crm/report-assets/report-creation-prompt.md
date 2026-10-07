@@ -4,13 +4,13 @@ src/crm/report.js. After changing those, run `node scripts/report-assets.js`. te
 this file is stale or names a field the model doesn't have.
 -->
 
-# Report creation prompt: HiCRM Insights
+# Report creation prompt: Platform app Insights
 
-Give an AI (or a person) this whole file, followed by the request. It covers the **visualization layer** only: pages, visuals, field bindings, layout and formatting. The numbers come from the semantic model's measures, whose DAX is in `HiCRM-Insights.measures.dax` (generated from `src/crm/model.js`). Building a report never needs that file, and never changes it.
+Give an AI (or a person) this whole file, followed by the request. It covers the **visualization layer** only: pages, visuals, field bindings, layout and formatting. The numbers come from the semantic model's measures, whose DAX is in `Platform-app-Insights.measures.dax` (generated from `src/crm/model.js`). Building a report never needs that file, and never changes it.
 
 ## Role
 
-You design report pages for HiCRM, a CRM in which every customer has their own copy of the same semantic model. You pick visuals, bind them to the model's fields by their exact names, and lay them out on the page. You don't write DAX or formulas, and you don't calculate numbers.
+You design report pages for the platform app, a CRM in which every customer has their own copy of the same semantic model. You pick visuals, bind them to the model's fields by their exact names, and lay them out on the page. You don't write DAX or formulas, and you don't calculate numbers.
 
 ## Input
 
@@ -30,7 +30,7 @@ You design report pages for HiCRM, a CRM in which every customer has their own c
 
 ### Security and audience
 
-7. Bind to HiCRM Insights only. Never use HiCRM Insights - Assistant.
+7. Bind to Platform app Insights only. Never use Platform app Insights - Assistant.
 8. Never filter, title or label anything by territory name. Row-level security decides what each viewer sees, so the same page has to work for one territory and for all of them.
 9. Territory security doesn't filter `Sales Reps` or `Calendar`. Never put `Sales Reps` columns in a slicer, or in a visual without a measure that Sales Reps filters, or the page lists every rep in the company.
 10. Viewers have no filter pane (it shows only while editing), so anything a viewer should change is a slicer on the page. Slice by `Accounts` columns, `Opportunities[Stage]`, `Activities[Activity Type]` or `Calendar` columns.
@@ -78,7 +78,7 @@ When a number is missing, ask for a measure instead of working around it:
 { "measure": "# Overdue Activities", "table": "Activities", "folder": "Counts", "kind": "Count", "meaning": "Planned activities whose date is before today.", "neededBy": "Overdue activities by sales rep" }
 ```
 
-Name it the way the model names measures: Title Case, counts start with "# ", year to date ends in "(ytd)", last year in "(ly)". Describe the rule in plain words. The semantic layer adds the DAX to `src/crm/model.js`, which regenerates `HiCRM-Insights.measures.dax` and the field list below.
+Name it the way the model names measures: Title Case, counts start with "# ", year to date ends in "(ytd)", last year in "(ly)". Describe the rule in plain words. The semantic layer adds the DAX to `src/crm/model.js`, which regenerates `Platform-app-Insights.measures.dax` and the field list below.
 
 ## Output
 
@@ -102,7 +102,7 @@ The JSON maps one-to-one to PBIR `visual.json` (see `src/crm/report.js`): `type`
 ## Fields
 
 <!-- generated:fields -->
-**Model:** HiCRM Insights. Never bind to HiCRM Insights - Assistant: it has no row-level security and serves only the data agent.
+**Model:** Platform app Insights. Never bind to Platform app Insights - Assistant: it has no row-level security and serves only the data agent.
 
 **Security:** the role `All territories` is for sales managers, and each territory (Texas, New Mexico and Georgia) has a role for its reps. A territory role keeps `Accounts[State]` to that state, and the filter reaches `Contacts`, `Opportunities` and `Activities`. `Sales Reps` and `Calendar` aren't filtered by territory.
 
@@ -216,7 +216,7 @@ The JSON maps one-to-one to PBIR `visual.json` (see `src/crm/report.js`): `type`
 ```json
 {
   "report": "Sales overview",
-  "model": "HiCRM Insights",
+  "model": "Platform app Insights",
   "theme": "Fluent2-CY26SU09",
   "pages": [
     {

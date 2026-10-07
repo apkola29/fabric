@@ -44,7 +44,7 @@ function scriptedMssql({ connects = [], requests = [] } = {}) {
 const sqlError = (name, code, message, number) => Object.assign(new Error(message), { name, code, ...(number ? { number } : {}) });
 
 test('SQL database in Fabric pauses when idle: connecting is retried until it resumes, reads retry transient errors, writes never run twice', async () => {
-  const resuming = sqlError('ConnectionError', 'ELOGIN', "Database 'hicrm_db' on server 'x' is not currently available. Please retry the connection later.");
+  const resuming = sqlError('ConnectionError', 'ELOGIN', "Database 'platform_app_db' on server 'x' is not currently available. Please retry the connection later.");
   const timedOut = sqlError('ConnectionError', 'ETIMEOUT', 'Failed to connect to x:1433 in 30000ms');
   const refused = sqlError('ConnectionError', 'ELOGIN', "Login failed for user '<token-identified principal>'.");
   const busy = sqlError('RequestError', 'EREQUEST', 'The service is currently busy.', 40501);
@@ -56,7 +56,7 @@ test('SQL database in Fabric pauses when idle: connecting is retried until it re
   assert.ok(SQL_RETRY_DELAYS_MS.reduce((sum, ms) => sum + ms) >= 60_000, 'retries cover the minute a database can take to resume');
 
   const open = (driver, onRetry = null) =>
-    createFabricSqlStore({ server: 'x.database.fabric.microsoft.com,1433', database: 'hicrm_db', tokens: { getToken: async () => 't' }, sqlModule: driver.sql, retryDelaysMs: [0, 0, 0, 0, 0], onRetry });
+    createFabricSqlStore({ server: 'x.database.fabric.microsoft.com,1433', database: 'platform_app_db', tokens: { getToken: async () => 't' }, sqlModule: driver.sql, retryDelaysMs: [0, 0, 0, 0, 0], onRetry });
 
   const retries = [];
   let driver = scriptedMssql({ connects: [timedOut, resuming, 'ok'] });
@@ -352,8 +352,8 @@ test('the semantic model is generated from the schema: Direct Lake, hidden keys,
 });
 
 test('the data agent sees the semantic model with measures and descriptions, but not hidden keys', () => {
-  const { parts } = buildSemanticModelAgentDefinition({ workspaceId: 'ws', semanticModelId: 'model', semanticModelName: 'HiCRM Insights', tables: agentTables(), instructions: 'x', description: 'y' });
-  const published = parts.find((p) => p.path === 'Files/Config/published/semantic_model-HiCRM Insights/datasource.json');
+  const { parts } = buildSemanticModelAgentDefinition({ workspaceId: 'ws', semanticModelId: 'model', semanticModelName: 'Platform app Insights', tables: agentTables(), instructions: 'x', description: 'y' });
+  const published = parts.find((p) => p.path === 'Files/Config/published/semantic_model-Platform app Insights/datasource.json');
   const source = JSON.parse(decodePayload(published.payload));
   assert.equal(source.type, 'semantic_model');
   const opportunities = source.elements.find((e) => e.display_name === 'Opportunities');

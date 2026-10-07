@@ -1,59 +1,59 @@
-# HiCRM on Microsoft Fabric: architecture
+# The platform app on Microsoft Fabric: architecture
 
-HiCRM is a CRM sold as SaaS. Each customer (the first is **Fabrikam**) gets a Microsoft Fabric workspace that HiCRM
-owns and runs for that customer alone. The customer only ever sees HiCRM: accounts, opportunities, activities, a
-standard report (building their own is the next phase), and an assistant that answers questions. Fabric, workspaces
-and editions never appear in the app.
+The platform app is a CRM sold as SaaS. Each customer (the first is **Fabrikam**) gets a Microsoft Fabric workspace that
+the platform owns and runs for that customer alone. The customer only ever sees the platform app: accounts,
+opportunities, activities, a standard report (building their own is the next phase), and an assistant that answers
+questions. Fabric, workspaces and editions never appear in the app.
 
 Everything below is built and was verified against a live tenant (see [What was verified live](#what-was-verified-live)).
-HiCRM is the sample for a reusable framework: [FRAMEWORK.md](FRAMEWORK.md) describes the framework, its controls and
-the validator that checks them.
+The platform app is the sample for a reusable framework: [FRAMEWORK.md](FRAMEWORK.md) describes the framework, its
+controls and the validator that checks them.
 
 ## 1. The big picture
 
-**Who's who.** HiCRM is the SaaS provider: it owns and runs everything in blue, including a workspace and a service
-account for each customer. Fabrikam (orange) and Contoso (green) are its customers and own only their people and their
-data; Microsoft (grey) runs the cloud services. "Fabrikam's workspace" always means the workspace HiCRM runs for
-Fabrikam. Dashed parts are the future data integration add-on ([DATA-INTEGRATION.md](DATA-INTEGRATION.md)).
+**Who's who.** The platform is the SaaS provider: it owns and runs everything in blue, including a workspace and a
+service account for each customer. Fabrikam (orange) and Contoso (green) are its customers and own only their people and
+their data; Microsoft (grey) runs the cloud services. "Fabrikam's workspace" always means the workspace the platform
+runs for Fabrikam. Dashed parts are the future data integration add-on ([DATA-INTEGRATION.md](DATA-INTEGRATION.md)).
 
 **Who owns what**
 
 ```mermaid
 flowchart TB
-  %% Who owns what. Orange: Fabrikam, green: Contoso (two customers of HiCRM). Blue: HiCRM, the SaaS provider.
-  %% Grey: Microsoft. Dashed: the future data integration add-on.
+  %% Who owns what. Orange: Fabrikam, green: Contoso (two customers of the platform).
+  %% Blue: the platform, the SaaS provider. Grey: Microsoft. Dashed: the future data integration add-on.
 
   subgraph FAB["FABRIKAM · customer 1 · owns its people, its data and its own Entra tenant"]
     direction LR
-    FPPL["Fabrikam's people<br/>a sales manager and three reps<br/>no account in HiCRM's tenant, no license"]
+    FPPL["Fabrikam's people<br/>a sales manager and three reps<br/>no account in the platform's tenant, no license"]
     FSYS[("Fabrikam's own systems<br/>ERP, spreadsheets, SaaS apps")]
   end
 
   subgraph CON["CONTOSO · customer 2 · owns its people, its data and its own Entra tenant"]
     direction LR
-    CPPL["Contoso's people<br/>a sales manager and three reps<br/>no account in HiCRM's tenant, no license"]
+    CPPL["Contoso's people<br/>a sales manager and three reps<br/>no account in the platform's tenant, no license"]
     CSYS[("Contoso's own systems<br/>ERP, spreadsheets, SaaS apps")]
   end
 
-  subgraph HI["HICRM · the SaaS provider · owns, runs and pays for everything in this box"]
+  subgraph HI["THE PLATFORM · the SaaS provider · owns, runs and pays for everything in this box"]
     direction TB
-    APP["HiCRM app and back office<br/>one deployment for every customer<br/>fabrikam.hicrm… · contoso.hicrm…"]
-    subgraph IDS["HiCRM's Microsoft Entra tenant · HiCRM's own identities"]
+    APP["Platform app and back office<br/>one deployment for every customer<br/>fabrikam.platform… · contoso.platform…"]
+    subgraph IDS["The platform's Microsoft Entra tenant · the platform's own identities"]
       direction LR
-      FSA["fabrikamsa<br/>HiCRM's service principal<br/>for Fabrikam's work"]
+      FSA["fabrikamsa<br/>the platform's service principal<br/>for Fabrikam's work"]
       PID["Platform identity<br/>builds workspaces,<br/>then lets go"]
-      CSA["contososa<br/>HiCRM's service principal<br/>for Contoso's work"]
+      CSA["contososa<br/>the platform's service principal<br/>for Contoso's work"]
     end
-    subgraph CAP["HiCRM's Fabric capacity"]
+    subgraph CAP["The platform's Fabric capacity"]
       direction LR
-      FWS["Workspace for Fabrikam<br/>owned by HiCRM<br/>holds only Fabrikam's data"]
-      CWS["Workspace for Contoso<br/>owned by HiCRM<br/>holds only Contoso's data"]
+      FWS["Workspace for Fabrikam<br/>owned by the platform<br/>holds only Fabrikam's data"]
+      CWS["Workspace for Contoso<br/>owned by the platform<br/>holds only Contoso's data"]
     end
   end
 
-  subgraph MS["MICROSOFT · runs the cloud services HiCRM uses"]
+  subgraph MS["MICROSOFT · runs the cloud services the platform uses"]
     direction LR
-    MEID["Microsoft Entra ID<br/>signs HiCRM's identities in"]
+    MEID["Microsoft Entra ID<br/>signs the platform's identities in"]
     MFAB["Microsoft Fabric and Power BI<br/>run the capacity and the reports"]
   end
 
@@ -72,13 +72,13 @@ flowchart TB
 
   classDef fabrikam fill:#FDECE0,stroke:#C55A11,color:#4A1F00
   classDef contoso fill:#E7F4EA,stroke:#2E7D32,color:#123D1B
-  classDef hicrm fill:#E7F0FA,stroke:#1F5AA6,color:#0B2545
+  classDef platform fill:#E7F0FA,stroke:#1F5AA6,color:#0B2545
   classDef microsoft fill:#EEEEEE,stroke:#5F5F5F,color:#1F1F1F
   classDef future fill:#FFFFFF,stroke:#6B6B6B,stroke-dasharray:5 5,color:#333333
   class FPPL fabrikam
   class CPPL contoso
   class FSYS,CSYS future
-  class APP,FSA,PID,CSA,FWS,CWS hicrm
+  class APP,FSA,PID,CSA,FWS,CWS platform
   class MEID,MFAB microsoft
   style FAB fill:#FFF7F1,stroke:#C55A11,stroke-width:2px,color:#4A1F00
   style CON fill:#F3FAF4,stroke:#2E7D32,stroke-width:2px,color:#123D1B
@@ -94,7 +94,7 @@ flowchart TB
 ```mermaid
 flowchart TB
   %% One customer's data, end to end: Fabrikam. Contoso works the same way, in its own workspace, as contososa.
-  %% Orange: Fabrikam (the customer). Blue: HiCRM (the SaaS provider). Grey: Microsoft. Dashed: future add-on.
+  %% Orange: Fabrikam (the customer). Blue: the platform (the SaaS provider). Grey: Microsoft. Dashed: future add-on.
 
   subgraph FAB["FABRIKAM · the customer"]
     direction LR
@@ -103,25 +103,25 @@ flowchart TB
     SYS[("Fabrikam's own systems<br/>ERP, spreadsheets, SaaS apps")]
   end
 
-  subgraph HI["HICRM · the SaaS provider · everything in this box is HiCRM's"]
+  subgraph HI["THE PLATFORM · the SaaS provider · everything in this box is the platform's"]
     direction TB
-    subgraph APP["HiCRM app"]
+    subgraph APP["Platform app"]
       direction LR
       WEB["Web app and API<br/>knows each person's<br/>role and territories"]
       EMB["Embed token<br/>service"]
       AST["Assistant"]
     end
-    SA["fabrikamsa · HiCRM's service principal for Fabrikam<br/>signs in with a certificate, through MSAL"]
-    subgraph WS["Workspace for Fabrikam · on HiCRM's Fabric capacity · only Fabrikam's data"]
+    SA["fabrikamsa · the platform's service principal for Fabrikam<br/>signs in with a certificate, through MSAL"]
+    subgraph WS["Workspace for Fabrikam · on the platform's Fabric capacity · only Fabrikam's data"]
       direction TB
       subgraph NOW["Today"]
         direction TB
-        DB[("SQL database hicrm_db<br/>CRM records")]
+        DB[("SQL database platform_app_db<br/>CRM records")]
         OL[("OneLake<br/>Delta copy")]
-        SM["Semantic model<br/>HiCRM Insights<br/>one role per territory"]
+        SM["Semantic model<br/>Platform app Insights<br/>one role per territory"]
         RPT["Report<br/>Sales overview"]
-        AM["HiCRM Insights - Assistant<br/>the same model, no roles"]
-        AG["Data agent<br/>HiCRM Assistant"]
+        AM["Platform app Insights - Assistant<br/>the same model, no roles"]
+        AG["Data agent<br/>Platform app Assistant"]
       end
       subgraph NEXT["Future add-on · data integration"]
         direction TB
@@ -167,12 +167,12 @@ flowchart TB
   GD -.->|"more answers"| AM
 
   classDef fabrikam fill:#FDECE0,stroke:#C55A11,color:#4A1F00
-  classDef hicrm fill:#E7F0FA,stroke:#1F5AA6,color:#0B2545
+  classDef platform fill:#E7F0FA,stroke:#1F5AA6,color:#0B2545
   classDef microsoft fill:#EEEEEE,stroke:#5F5F5F,color:#1F1F1F
   classDef future fill:#FFFFFF,stroke:#6B6B6B,stroke-dasharray:5 5,color:#333333
   class MGR,REP fabrikam
   class SYS,PL,BR,NB,SV,GD future
-  class WEB,EMB,AST,SA,DB,OL,SM,RPT,AM,AG hicrm
+  class WEB,EMB,AST,SA,DB,OL,SM,RPT,AM,AG platform
   class ENTRA,PBI microsoft
   style FAB fill:#FFF7F1,stroke:#C55A11,stroke-width:2px,color:#4A1F00
   style HI fill:#F5F9FE,stroke:#1F5AA6,stroke-width:2px,color:#0B2545
@@ -184,15 +184,16 @@ flowchart TB
 ```
 
 Not drawn:
-- HiCRM's back office and CLI, where operators sign in. Opening a customer's reports, asking its assistant or loading
-  its data is written to that customer's activity log.
+- The platform app's back office and CLI, where operators sign in. Opening a customer's reports, asking its assistant or
+  loading its data is written to that customer's activity log.
 - The customer registry, and the identity broker, which signs in as each customer's service principal with its
   credential from the encrypted store (Key Vault in production).
 - The cloud connection through which the model reads OneLake as the workspace identity (section 2).
 
-- **The CRM is the source of truth.** HiCRM writes to a Fabric SQL database (`hicrm_db`). Fabric replicates every
-  table with a primary key to OneLake as Delta, so no pipeline or ETL job sits between the app and the analytics.
-- **One semantic model, generated from the schema.** `HiCRM Insights` is a Direct Lake model built from the same
+- **The CRM is the source of truth.** The platform app writes to a Fabric SQL database (`platform_app_db`). Fabric
+  replicates every table with a primary key to OneLake as Delta, so no pipeline or ETL job sits between the app and the
+  analytics.
+- **One semantic model, generated from the schema.** `Platform app Insights` is a Direct Lake model built from the same
   table definitions as the database (`src/crm/schema.js` produces both the DDL and the TMDL). Reports, the
   describe-a-chart box and the assistant all use its measures, so "Win Rate" means the same thing everywhere.
 - **Customers never hold a Fabric identity.** Reports are embedded with short-lived V2 embed tokens that only cover
@@ -202,23 +203,23 @@ Not drawn:
 
 ```mermaid
 flowchart TB
-  %% The identities for one customer, Fabrikam. Orange: Fabrikam. Blue: HiCRM, which owns every identity here.
+  %% The identities for one customer, Fabrikam. Orange: Fabrikam. Blue: the platform, which owns every identity here.
   subgraph FAB["FABRIKAM · the customer"]
-    EU["Fabrikam's people<br/>sign in to HiCRM,<br/>no Fabric identity"]
+    EU["Fabrikam's people<br/>sign in to the platform app,<br/>no Fabric identity"]
   end
-  subgraph HI["HICRM · the SaaS provider · everything in this box is HiCRM's"]
+  subgraph HI["THE PLATFORM · the SaaS provider · everything in this box is the platform's"]
     direction TB
-    subgraph IDS["HiCRM's Microsoft Entra tenant"]
+    subgraph IDS["The platform's Microsoft Entra tenant"]
       direction LR
       PSP["Platform identity<br/>service principal"]
       SA["fabrikamsa<br/>service principal,<br/>one per customer"]
       WI["Workspace identity<br/>Fabric-managed, no secret"]
-      OPS["Support group<br/>HiCRM's staff, optional"]
+      OPS["Support group<br/>the platform's staff, optional"]
     end
-    CAP["HiCRM's Fabric capacity"]
-    CONN["Connection to the<br/>OneLake path of hicrm_db,<br/>owned by fabrikamsa,<br/>signs in as the<br/>workspace identity"]
+    CAP["The platform's Fabric capacity"]
+    CONN["Connection to the<br/>OneLake path of platform_app_db,<br/>owned by fabrikamsa,<br/>signs in as the<br/>workspace identity"]
     subgraph WS["Workspace for Fabrikam: saas-fabrikam · only Fabrikam's data"]
-      ITEMS["hicrm_db, HiCRM Insights,<br/>reports, HiCRM Assistant"]
+      ITEMS["platform_app_db, Platform app Insights,<br/>reports, Platform app Assistant"]
     end
   end
 
@@ -231,9 +232,9 @@ flowchart TB
   EU -.->|"30-minute embed tokens,<br/>named items only"| ITEMS
 
   classDef fabrikam fill:#FDECE0,stroke:#C55A11,color:#4A1F00
-  classDef hicrm fill:#E7F0FA,stroke:#1F5AA6,color:#0B2545
+  classDef platform fill:#E7F0FA,stroke:#1F5AA6,color:#0B2545
   class EU fabrikam
-  class PSP,SA,WI,OPS,CAP,CONN,ITEMS hicrm
+  class PSP,SA,WI,OPS,CAP,CONN,ITEMS platform
   style FAB fill:#FFF7F1,stroke:#C55A11,stroke-width:2px,color:#4A1F00
   style HI fill:#F5F9FE,stroke:#1F5AA6,stroke-width:2px,color:#0B2545
   style IDS fill:#FFFFFF,stroke:#1F5AA6,color:#0B2545
@@ -247,10 +248,10 @@ flowchart TB
 | Workspace identity | Fabric-managed service principal of `saas-fabrikam` | Contributor of `saas-fabrikam` only | The credential of the model's cloud connection (Direct Lake fixed identity). Nobody holds a secret for it. Contributor is the least role that works: Direct Lake on OneLake needs Read and ReadAll, and Viewer has no OneLake data access. |
 | Support group | Entra group (`FABRIC_OPS_PRINCIPAL_ID`) | Viewer | Looking at the workspace in the Fabric portal. |
 | Operators | People using the back office | None in Fabric | Sign in with `ADMIN_KEY` (required whenever the server is reachable from other machines). Opening a customer's reports, asking their assistant or loading data is written to that customer's activity log. |
-| Fabrikam users | Signed in to HiCRM | None in Fabric | Embed tokens for their own reports and model, 30 minutes by default (`EMBED_TOKEN_MINUTES`, 5 to 60). |
+| Fabrikam users | Signed in to the platform app | None in Fabric | Embed tokens for their own reports and model, 30 minutes by default (`EMBED_TOKEN_MINUTES`, 5 to 60). |
 
-Every identity above lives in HiCRM's Entra tenant. What changes when a customer's own Entra tenant takes part (its
-people signing in with work accounts, or the data integration add-on reading its systems) is in
+Every identity above lives in the platform's Entra tenant. What changes when a customer's own Entra tenant takes part
+(its people signing in with work accounts, or the data integration add-on reading its systems) is in
 [IDENTITIES.md](IDENTITIES.md).
 
 `node scripts/platform-cli.js audit <customer>` (or **Check access** in the back office) compares the workspace with this
@@ -272,9 +273,9 @@ one-time setup with [scripts/bootstrap-identities.ps1](scripts/bootstrap-identit
   (the private key goes straight into the platform's encrypted store or Key Vault, and the file is deleted), and
   registers it. `-Credential Federated` makes the app trust the platform's managed identity instead: no secret and no
   certificate exist at all. Tokens are acquired with MSAL Node; a certificate signs a 10-minute assertion (PS256).
-- `-GrantPlatformAppCreation -PlatformAppId <id>` grants the platform app `Application.ReadWrite.OwnedBy`, after which
-  the platform creates `<customer>sa` for every new customer by itself (`TENANT_IDENTITY_AUTO_CREATE=true`). It uses
-  the Graph upsert keyed on the customer (`PATCH /applications(uniqueName='hicrm-tenant-<id>')` with
+- `-GrantPlatformAppCreation -PlatformAppId <id>` grants the platform identity `Application.ReadWrite.OwnedBy`, after
+  which the platform creates `<customer>sa` for every new customer by itself (`TENANT_IDENTITY_AUTO_CREATE=true`). It
+  uses the Graph upsert keyed on the customer (`PATCH /applications(uniqueName='platform-tenant-<id>')` with
   `Prefer: create-if-missing`), so a retry after a crash never leaves a second app behind.
 
 `TENANT_IDENTITY_MODE=required` (production) stops provisioning until the service principal exists, so nothing is ever
@@ -285,29 +286,29 @@ built with the shared identity. `preferred` (development) continues with the pla
 ```mermaid
 sequenceDiagram
   autonumber
-  box rgb(231,240,250) HICRM · the SaaS provider
-    actor Ops as HiCRM's platform team
+  box rgb(231,240,250) THE PLATFORM · the SaaS provider
+    actor Ops as The platform team
     participant P as Platform identity
   end
   box rgb(238,238,238) MICROSOFT
     participant G as Microsoft Graph
     participant F as Fabric and Power BI APIs
   end
-  box rgb(231,240,250) HICRM · the SaaS provider
-    participant SA as fabrikamsa<br/>HiCRM's service principal for Fabrikam
+  box rgb(231,240,250) THE PLATFORM · the SaaS provider
+    participant SA as fabrikamsa<br/>the platform's service principal for Fabrikam
   end
 
   Ops->>P: Add Fabrikam, Enterprise edition, sign-in domain fabrikam.com
   P->>F: Create workspace saas-fabrikam on the capacity, or adopt one an admin made
   P->>G: Create app and service principal fabrikamsa (Application.ReadWrite.OwnedBy)
   P->>F: Make fabrikamsa Admin of saas-fabrikam
-  SA->>F: Create SQL database hicrm_db
+  SA->>F: Create SQL database platform_app_db
   SA->>F: Apply the CRM schema and load sample data (TDS)
   SA->>F: Provision the workspace identity, give it Contributor
-  SA->>F: Publish HiCRM Insights from TMDL (Direct Lake on the OneLake replica)
+  SA->>F: Publish Platform app Insights from TMDL (Direct Lake on the OneLake replica)
   SA->>F: Create the cloud connection with the workspace identity, bind the model, frame it
   SA->>F: Copy approved template reports, re-pointed at this model
-  SA->>F: Publish HiCRM Assistant (data agent with the model as its source)
+  SA->>F: Publish Platform app Assistant (data agent with the model as its source)
   SA->>F: Remove the platform identity's role (release mode)
 ```
 
@@ -344,8 +345,8 @@ sequenceDiagram
   box rgb(253,236,224) FABRIKAM · the customer
     participant B as Browser<br/>a Fabrikam manager or rep
   end
-  box rgb(231,240,250) HICRM · the SaaS provider
-    participant A as HiCRM API
+  box rgb(231,240,250) THE PLATFORM · the SaaS provider
+    participant A as Platform app API
   end
   box rgb(238,238,238) MICROSOFT
     participant PBI as Power BI
@@ -386,8 +387,8 @@ sequenceDiagram
   box rgb(253,236,224) FABRIKAM · the customer
     participant B as Browser (embedded report)
   end
-  box rgb(231,240,250) HICRM · the SaaS provider
-    participant A as HiCRM API
+  box rgb(231,240,250) THE PLATFORM · the SaaS provider
+    participant A as Platform app API
   end
 
   B->>A: POST /api/me/reports/describe "won revenue by month"
@@ -408,16 +409,16 @@ sequenceDiagram
   box rgb(253,236,224) FABRIKAM · the customer
     participant B as Browser<br/>a Fabrikam manager or rep
   end
-  box rgb(231,240,250) HICRM · the SaaS provider, and its workspace for Fabrikam
-    participant A as HiCRM API
-    participant DA as HiCRM Assistant (data agent, MCP server)
-    participant DB as hicrm_db
+  box rgb(231,240,250) THE PLATFORM · the SaaS provider, and its workspace for Fabrikam
+    participant A as Platform app API
+    participant DA as Platform app Assistant (data agent, MCP server)
+    participant DB as platform_app_db
   end
 
   B->>A: POST /api/me/ask
   par Managers only
     A->>DA: tools/call with the question, as fabrikamsa
-    DA-->>A: Answer grounded in the measures of HiCRM Insights - Assistant
+    DA-->>A: Answer grounded in the measures of Platform app Insights - Assistant
   and Everyone
     A->>DB: Quick answer in SQL, scoped to the person's territories
     DB-->>A: Rows and a chart type (bars for categories, a line for months)
@@ -431,7 +432,7 @@ sequenceDiagram
 account token: `initialize`, then `tools/list`, then `tools/call` ([source](https://learn.microsoft.com/fabric/data-science/data-agent-mcp-server)).
 - MCP is the supported way to call a published agent. The older OpenAI Assistants API route was sunset on
   August 26, 2026.
-- No agent user interface is embedded. The assistant panel is HiCRM's own.
+- No agent user interface is embedded. The assistant panel is the platform app's own.
 
 **Who gets the agent.**
 - Managers' questions go to the agent, which reads the model without roles (see "Why each customer has two semantic
@@ -456,8 +457,8 @@ account token: `initialize`, then `tools/list`, then `tools/call` ([source](http
 **When the CRM database is paused or briefly unavailable.**
 - SQL database in Fabric is serverless: after 15 minutes without activity it releases its compute, and the next
   connection waits while it resumes ([source](https://learn.microsoft.com/fabric/database/sql/usage-reporting)).
-  HiCRM closes a customer's connection pool after the same 15 idle minutes, so a question after a quiet spell opens a
-  new connection to a paused database.
+  The platform app closes a customer's connection pool after the same 15 idle minutes, so a question after a quiet spell
+  opens a new connection to a paused database.
 - Connecting is retried with backoff (2, 4, 8, 16 and 32 seconds, at most 90 seconds in all), and so are reads that
   fail with an error Microsoft lists as transient for Azure SQL Database
   ([source](https://learn.microsoft.com/azure/azure-sql/database/troubleshoot-common-connectivity-issues)).
@@ -470,7 +471,7 @@ account token: `initialize`, then `tools/list`, then `tools/call` ([source](http
 | Where | What | Who sees it | How long |
 | --- | --- | --- | --- |
 | The assistant panel | The person's own conversation | That person | Until the page reloads; it's kept in the browser's memory only |
-| HiCRM's question log, in each customer's record (`.data/tenants.json`) | Every question: who asked and their scope; the answer (up to 4,000 characters); who answered (the data agent or a quick answer), why the agent wasn't used and, when nothing could answer, why the quick answer failed; whether a chart or image came with it; the time taken | Operators: back office → the customer → Overview → Assistant → "Show the questions and answers", or `npm run cli -- questions <customer> [--full]`. Each look is recorded in the customer's activity log | The last 200 per customer. Questions asked before answers were kept show no answer |
+| The platform app's question log, in each customer's record (`.data/tenants.json`) | Every question: who asked and their scope; the answer (up to 4,000 characters); who answered (the data agent or a quick answer), why the agent wasn't used and, when nothing could answer, why the quick answer failed; whether a chart or image came with it; the time taken | Operators: back office → the customer → Overview → Assistant → "Show the questions and answers", or `npm run cli -- questions <customer> [--full]`. Each look is recorded in the customer's activity log | The last 200 per customer. Questions asked before answers were kept show no answer |
 | Microsoft Purview audit (preview) | A "Copilot Interaction" record for each prompt and each response of a data agent: timestamp, user identity, app and agent details, the text | Purview administrators: Purview portal → DSPM → Activity Explorer, App "Fabric-Data Agent" | 180 days with Audit (Standard), longer with Audit (Premium). Records appear 30 minutes to 2 hours later |
 | The data agent's chat in the Fabric portal | Conversations of people who chat with the agent in the portal | Each person, their own | Up to 28 days unless they clear it ([source](https://learn.microsoft.com/fabric/data-science/data-agent-tenant-settings)) |
 
@@ -490,8 +491,8 @@ About these:
 
 - **Fabric IQ MCP** (`fabriciq.svc.cloud.microsoft`) only accepts delegated user sign-in; service principals and
   application-only tokens aren't supported, and it has no natural-language answering tool of its own. It suits a
-  Copilot-style client used by someone with a Fabric identity, not HiCRM's customers. The data agent's MCP endpoint
-  accepts service principals, so the assistant uses that.
+  Copilot-style client used by someone with a Fabric identity, not the platform's customers. The data agent's MCP
+  endpoint accepts service principals, so the assistant uses that.
 - **Copilot report creation** isn't available for "app owns data" embedding. The describe-a-chart box gives a similar
   "say what you want" experience with the report authoring API, and the full Power BI editor is there for everything
   else.
@@ -520,12 +521,12 @@ accident.
 
 Against the `saas-fabrikam` workspace on a trial capacity:
 
-- The service principal created `hicrm_db`, applied the schema (now version 2) and loaded 3,694 rows in 4 seconds;
-  Fabric replicated the tables to `Tables/dbo/<table>` in OneLake within a minute.
-- `HiCRM Insights` deployed from generated TMDL (compatibility level 1702), framed successfully, and was bound to a
-  ShareableCloud connection whose credential is the workspace identity (test connection passed, SSO off).
+- The service principal created `platform_app_db`, applied the schema (now version 2) and loaded 3,694 rows in 4
+  seconds; Fabric replicated the tables to `Tables/dbo/<table>` in OneLake within a minute.
+- `Platform app Insights` deployed from generated TMDL (compatibility level 1702), framed successfully, and was bound to
+  a ShareableCloud connection whose credential is the workspace identity (test connection passed, SSO off).
 - The data agent over the model answered "top 5 accounts by pipeline" and "win rate by sales rep this year" with the
-  model's measures, and the numbers matched SQL over `hicrm_db` exactly.
+  model's measures, and the numbers matched SQL over `platform_app_db` exactly.
 - A V2 embed token opened the report editor on the model; Save As created a report in the customer's workspace; the
   authoring API added a bar chart, a card and a line chart; the saved report rendered real numbers in view mode.
 - A schema upgrade (new `Calendar[Month Start]` column) went through migration, model update, framing (retried once

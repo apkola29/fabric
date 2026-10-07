@@ -3,6 +3,7 @@ import { createSelfSignedCertificate } from '../auth/certificates.js';
 import { certificateCredential, credentialFromStore, credentialLabel, storedCredential } from '../auth/credential-types.js';
 import { createTokenProvider } from '../auth/tokens.js';
 import { createFabricClient } from '../fabric/client.js';
+import { LEGACY_PRODUCT_NAMES, legacyTenantTags } from './legacy-names.js';
 
 // One service account per customer. The platform identity is the control plane: it creates the customer's workspace
 // and makes the customer's service account Admin of that workspace, and nothing else. Every customer-facing call
@@ -37,6 +38,12 @@ export class IdentityError extends Error {
 
 export const serviceAccountName = (tenant) => `${String(tenant.slug || tenant.name).toLowerCase().replace(/[^a-z0-9]/g, '')}sa`;
 export const secretNameFor = (tenant) => `tenant-${tenant.id}-service-account`;
+// How Microsoft Entra ID shows a customer's app registration and service principal.
+export const entraDisplayName = (config, tenant) => `${config.productName} service principal - ${tenant.name} (${serviceAccountName(tenant)})`;
+// Graph tags on the apps the platform creates: one keys the customer (it's also the app's uniqueName), one marks them all.
+const tenantTag = (tenant) => `platform-tenant-${tenant.id}`;
+const SERVICE_ACCOUNT_TAG = 'platform-service-account';
+const sameTags = (a = [], b = []) => a.length === b.length && b.every((tag) => a.includes(tag));
 
 function fakeGuid(seed) {
   const h = createHash('sha256').update(seed).digest('hex');
@@ -65,6 +72,17 @@ export function createIdentityBroker({ config, platformTokens, platformFabric, s
       throw error;
     }
     return json;
+  }
+
+  // The app registration that carries one of these tags, trying them in order. Listing apps works with
+  // Application.ReadWrite.OwnedBy (https://learn.microsoft.com/graph/api/application-list).
+  async function findApp(tags) {
+    for (const tag of tags) {
+      const filter = encodeURIComponent(`tags/any(t:t eq '${tag}')`);
+      const found = (await graph('GET', `/applications?$filter=${filter}&$select=id,appId,displayName,tags`))?.value?.[0];
+      if (found) return found;
+    }
+    return null;
   }
 
   // `retryDelaysMs`: how long to wait between token requests that fail because Entra ID hasn't replicated a new
@@ -114,7 +132,7 @@ export function createIdentityBroker({ config, platformTokens, platformFabric, s
         issuer: `${config.endpoints.login.replace(/\/$/, '')}/${config.tenantId}/v2.0`,
         subject: config.federated.managedIdentityObjectId,
         audiences: [config.federated.audience],
-        description: `${config.productName} platform runtime (managed identity)`,
+        description: `${config.productName} runtime (managed identity)`,
       };
       await graph('POST', `/applications/${app.id}/federatedIdentityCredentials`, body).catch((error) => {
         if (error.upstreamStatus !== 409 && !/already exist/i.test(error.message)) throw error;
@@ -123,7 +141,7 @@ export function createIdentityBroker({ config, platformTokens, platformFabric, s
     }
     const made = createSelfSignedCertificate({ commonName: `${config.productName} ${name}`, days: CERTIFICATE_LIFETIME_DAYS });
     await graph('PATCH', `/applications/${app.id}`, {
-      keyCredentials: [{ type: 'AsymmetricX509Cert', usage: 'Verify', key: made.certificateDer.toString('base64'), displayName: `${config.productName} platform` }],
+      keyCredentials: [{ type: 'AsymmetricX509Cert', usage: 'Verify', key: made.certificateDer.toString('base64'), displayName: `${config.productName} credential` }],
     });
     const credential = certificateCredential(made.bundle);
     return {
@@ -135,27 +153,25 @@ export function createIdentityBroker({ config, platformTokens, platformFabric, s
 
   async function createWithGraph(tenant) {
     const name = serviceAccountName(tenant);
-    const tag = `hicrm-tenant-${tenant.id}`;
-    const tags = [tag, 'hicrm-service-account'];
-    const displayName = `${config.productName} service account - ${tenant.name} (${name})`;
+    const tag = tenantTag(tenant);
+    const tags = [tag, SERVICE_ACCOUNT_TAG];
+    const displayName = entraDisplayName(config, tenant);
+    const notes = `Service account for ${tenant.name}: Admin of one Fabric workspace only. Managed by ${config.productName}; don't change it by hand.`;
     // Upserts keyed on the customer: the same request creates the app, or updates the one an interrupted run already
     // created, so a retry never leaves a second app behind. Both need only Application.ReadWrite.OwnedBy.
     // https://learn.microsoft.com/graph/api/application-upsert
     // https://learn.microsoft.com/graph/api/serviceprincipal-upsert
     const createIfMissing = { prefer: 'create-if-missing' };
-    let app = await graph(
-      'PATCH',
-      `/applications(uniqueName='${tag}')`,
-      {
-        displayName,
-        signInAudience: 'AzureADMyOrg',
-        tags,
-        notes: `Service account for ${tenant.name}: Admin of one Fabric workspace only. Managed by ${config.productName}; don't change it by hand.`,
-      },
-      createIfMissing,
-    );
-    // 204: it already existed, and Graph doesn't return it. uniqueName can't be filtered on; the tag can.
-    app ||= (await graph('GET', `/applications?$filter=${encodeURIComponent(`tags/any(t:t eq '${tag}')`)}&$select=id,appId`))?.value?.[0];
+    // An app an earlier version created is keyed on its earlier tag, and a uniqueName can't change: it's found by its tag
+    // (this version's or an earlier one's) and renamed in place instead of upserted under a new key.
+    let app = await findApp([tag, ...legacyTenantTags(tenant.id)]);
+    if (app) {
+      if (app.displayName !== displayName || !sameTags(app.tags, tags)) await graph('PATCH', `/applications/${app.id}`, { displayName, tags, notes });
+    } else {
+      app = await graph('PATCH', `/applications(uniqueName='${tag}')`, { displayName, signInAudience: 'AzureADMyOrg', tags, notes }, createIfMissing);
+      // 204: it already existed, and Graph doesn't return it. uniqueName can't be filtered on; the tag can.
+      app ||= await findApp([tag]);
+    }
     if (!app?.appId) throw new IdentityError(`The app for ${name} was created but can't be read back yet. Run provisioning again in a minute.`);
     let sp = await graph('PATCH', `/servicePrincipals(appId='${app.appId}')`, { displayName, tags }, createIfMissing);
     sp ||= await graph('GET', `/servicePrincipals(appId='${app.appId}')?$select=id,appId`);
@@ -188,7 +204,7 @@ export function createIdentityBroker({ config, platformTokens, platformFabric, s
     return {
       kind: 'servicePrincipal',
       name,
-      displayName: `${config.productName} service account - ${tenant.name} (${name})`,
+      displayName: entraDisplayName(config, tenant),
       appId: fakeGuid(`app:${tenant.id}`),
       objectId: fakeGuid(`sp:${tenant.id}`),
       secretName: secretNameFor(tenant),
@@ -245,6 +261,24 @@ export function createIdentityBroker({ config, platformTokens, platformFabric, s
       return tenant.identity;
     },
 
+    // Gives an account an earlier version named its current display name and tags, in place, and returns what changed.
+    // The platform renames the accounts it created; an Entra admin renames the others with
+    // scripts/bootstrap-identities.ps1, which registers the new name.
+    async rename(tenant) {
+      const identity = tenant.identity;
+      const displayName = entraDisplayName(config, tenant);
+      if (!identity?.appId || identity.createdBy !== 'platform' || identity.displayName === displayName) return null;
+      if (!mock) {
+        if (!settings.autoCreate || !identity.applicationObjectId) return null;
+        const tags = [tenantTag(tenant), SERVICE_ACCOUNT_TAG];
+        await graph('PATCH', `/applications/${identity.applicationObjectId}`, { displayName, tags });
+        await graph('PATCH', `/servicePrincipals(appId='${identity.appId}')`, { displayName, tags });
+      }
+      const from = identity.displayName;
+      identity.displayName = displayName;
+      return { from, to: displayName };
+    },
+
     // For accounts an Entra admin created with scripts/bootstrap-identities.ps1. Exactly one credential: `certificate`
     // (a PEM bundle with the private key), `federated: true` (the app trusts the platform's managed identity) or
     // `secret` (development).
@@ -256,11 +290,14 @@ export function createIdentityBroker({ config, platformTokens, platformFabric, s
       // stays, and the old credential's details go.
       const previous = tenant.identity?.appId === appId ? tenant.identity : null;
       const { secretKeyId, secretExpiresAt, credentialType, credentialExpiresAt, certificateThumbprint, disabled, ...kept } = previous || {};
+      // Names registration recorded before the rename ("<product> service account - <customer>") give way to the
+      // current one; a name of the admin's own stays.
+      const earlier = [...LEGACY_PRODUCT_NAMES, config.productName].some((product) => String(previous?.displayName).startsWith(`${product} service account - `));
       const identity = {
         ...kept,
         kind: 'servicePrincipal',
         name: serviceAccountName(tenant),
-        displayName: displayName || previous?.displayName || `${config.productName} service account - ${tenant.name}`,
+        displayName: displayName || (earlier ? null : previous?.displayName) || entraDisplayName(config, tenant),
         appId,
         objectId,
         secretName: secretNameFor(tenant),
@@ -292,7 +329,7 @@ export function createIdentityBroker({ config, platformTokens, platformFabric, s
         return identity;
       }
       const endDateTime = new Date(Date.now() + SECRET_LIFETIME_DAYS * 86_400_000).toISOString();
-      const password = await graph('POST', `/applications/${identity.applicationObjectId}/addPassword`, { passwordCredential: { displayName: `${config.productName} platform`, endDateTime } });
+      const password = await graph('POST', `/applications/${identity.applicationObjectId}/addPassword`, { passwordCredential: { displayName: `${config.productName} credential`, endDateTime } });
       const credential = { type: 'secret', secret: password.secretText };
       await waitUntilUsable(identity, credential);
       await secrets.set(identity.secretName, storedCredential(credential), { expiresOn: password.endDateTime || endDateTime });

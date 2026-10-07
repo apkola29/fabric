@@ -52,10 +52,12 @@ Customers
 Service accounts (one per customer, Admin of that customer's workspace only)
   identity <customer>                       Show the customer's service account and how it signs in
   identity-register <customer> --app-id <guid> --object-id <guid> (--certificate-file <pem> | --federated | --secret-env <VAR>)
+           [--display-name <name>]
                                             Register an account an Entra admin created (scripts/bootstrap-identities.ps1).
                                             --certificate-file: a PEM with the private key, kept encrypted (recommended);
                                             --federated: the app trusts the platform's managed identity (nothing stored);
-                                            --secret-env: a client secret in an environment variable (development)
+                                            --secret-env: a client secret in an environment variable (development);
+                                            --display-name: the app registration's name in Entra ID
   identity-rotate <customer>                New certificate or secret for an account the platform created
 
 Sign-ins for the customer's people (once a customer has any, only they can sign in)
@@ -115,6 +117,7 @@ const { values: options, positionals } = parseArgs({
     'object-id': { type: 'string' },
     'secret-env': { type: 'string' },
     'certificate-file': { type: 'string' },
+    'display-name': { type: 'string' },
     federated: { type: 'boolean', default: false },
     name: { type: 'string' },
     'password-env': { type: 'string' },
@@ -410,7 +413,7 @@ const commands = {
     else if (options['certificate-file']) credential.certificate = await readFile(options['certificate-file'], 'utf8').catch(() => fail(`Can't read ${options['certificate-file']}.`));
     else credential.secret = process.env[options['secret-env']] || fail(`The environment variable ${options['secret-env']} is empty.`);
     console.log('Checking that the service account can sign in…');
-    await identities.register(tenant, { appId: options['app-id'], objectId: options['object-id'], ...credential });
+    await identities.register(tenant, { appId: options['app-id'], objectId: options['object-id'], displayName: options['display-name'], ...credential });
     addActivity(tenant, `Service account ${tenant.identity.name} registered with a ${identities.describe(tenant).credential} (CLI)`);
     await store.save(tenant);
     console.log(`Registered ${tenant.identity.name} (${identities.describe(tenant).credential}). Run "provision ${tenant.name}" to make it Admin of the workspace and hand the work over to it.`);

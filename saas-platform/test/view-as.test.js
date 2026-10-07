@@ -114,8 +114,8 @@ test('"View as" works only on this computer, at a local address, with the app he
   assert.equal((await call({ url: '/api/personas', headers: { ...WEB, host: '[::1]:3000' }, remoteAddress: '::1' })).status, 200, 'over IPv6 too');
 
   // A real domain: the company's address isn't local, so a page anywhere can't use it through DNS rebinding.
-  const hosted = await pilot({ APP_DOMAIN: 'hicrm.example.com', ADMIN_KEY: 'k'.repeat(32) });
-  refused(await hosted.call({ url: '/api/personas', headers: { ...WEB, host: 'fabrikam.hicrm.example.com' }, remoteAddress: LOOPBACK }), 'a public host name');
+  const hosted = await pilot({ APP_DOMAIN: 'platform.example.com', ADMIN_KEY: 'k'.repeat(32) });
+  refused(await hosted.call({ url: '/api/personas', headers: { ...WEB, host: 'fabrikam.platform.example.com' }, remoteAddress: LOOPBACK }), 'a public host name');
 
   const off = await pilot({ PERSONA_SWITCHER: 'false' });
   refused(await off.local('fabrikam', { url: '/api/personas' }), 'switched off');
@@ -123,7 +123,7 @@ test('"View as" works only on this computer, at a local address, with the app he
 
   assert.equal(loadConfig({ FABRIC_AUTH_MODE: 'mock' }).personaSwitcher, true, 'on by default for local runs');
   assert.equal(loadConfig({ FABRIC_AUTH_MODE: 'mock', TRUST_PROXY: 'true', ADMIN_KEY: 'k'.repeat(24) }).personaSwitcher, false, 'off by default behind a proxy');
-  assert.equal(loadConfig({ FABRIC_AUTH_MODE: 'mock', PUBLIC_ORIGIN: 'https://hicrm.example.com', ADMIN_KEY: 'k'.repeat(24) }).personaSwitcher, false, 'off by default at a public address');
+  assert.equal(loadConfig({ FABRIC_AUTH_MODE: 'mock', PUBLIC_ORIGIN: 'https://platform.example.com', ADMIN_KEY: 'k'.repeat(24) }).personaSwitcher, false, 'off by default at a public address');
   assert.throws(() => loadConfig({ FABRIC_AUTH_MODE: 'mock', TRUST_PROXY: 'true', ADMIN_KEY: 'k'.repeat(24), PERSONA_SWITCHER: 'true' }), /PERSONA_SWITCHER signs people in without a password, so it only runs without TRUST_PROXY/);
   assert.throws(() => loadConfig({ FABRIC_AUTH_MODE: 'mock', APP_ENV: 'production', PERSONA_SWITCHER: 'true' }), /PERSONA_SWITCHER signs people in without a password; it is for local demos and testing only/);
   assert.equal((await off.local('fabrikam', { method: 'POST', url: '/api/session', body: { email, password: 'wrong' } })).status, 401, 'password sign-in still works as before');

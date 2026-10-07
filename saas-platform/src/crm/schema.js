@@ -1,5 +1,5 @@
-// One description of HiCRM's tables. It generates the database schema (Fabric SQL and SQLite) and the semantic model,
-// so the CRM, the reports and the assistant always agree on names, types and relationships.
+// One description of the platform app's tables. It generates the database schema (Fabric SQL and SQLite) and the
+// semantic model, so the CRM, the reports and the assistant always agree on names, types and relationships.
 
 export const CRM_SCHEMA_VERSION = 3;
 

@@ -19,8 +19,8 @@ const SCHEMA = 'lakehouse_tables.schema';
 
 export function agentInstructions(companyName, { charts = false } = {}) {
   return [
-    `You are the HiCRM assistant for ${companyName}. You answer questions about their CRM data: accounts, contacts, opportunities (deals), activities and sales reps.`,
-    'Always use the measures in the HiCRM Insights model instead of adding up columns yourself:',
+    `You are the Platform app assistant for ${companyName}. You answer questions about their CRM data: accounts, contacts, opportunities (deals), activities and sales reps.`,
+    'Always use the measures in the Platform app Insights model instead of adding up columns yourself:',
     '- Pipeline Value and # Open Opportunities cover open deals only (every stage except Closed Won and Closed Lost).',
     '- Won Revenue and # Won Deals cover stage Closed Won. Lost Amount and # Lost Deals cover Closed Lost.',
     '- Win Rate is won deals divided by won plus lost deals. Average Deal Size is Won Revenue divided by # Won Deals.',
@@ -52,7 +52,7 @@ export function buildSemanticModelAgentDefinition({ workspaceId, semanticModelId
     workspaceId,
     displayName: semanticModelName,
     type: 'semantic_model',
-    userDescription: 'HiCRM Insights: the CRM pipeline, revenue and activity model the reports use.',
+    userDescription: 'Platform app Insights: the CRM pipeline, revenue and activity model the reports use.',
     dataSourceInstructions: 'Prefer the model measures (Pipeline Value, Won Revenue, Win Rate and so on) over aggregating columns.',
     elements: tables.map((table) => ({
       id: elementId(`table:${table.name}`),

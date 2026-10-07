@@ -1,4 +1,4 @@
-# Plan: HiCRM with Fabric behind the scenes
+# Plan: Platform app with Fabric behind the scenes
 
 Last updated: 2026-10-02. This file is the source of truth for decisions, architecture, phases and verified findings.
 The architecture, identities and runtime flows are drawn in [ARCHITECTURE.md](ARCHITECTURE.md); how to run it is in
@@ -21,8 +21,8 @@ Out of scope:
 
 | Area | Status |
 | --- | --- |
-| CRM on SQL database in Fabric (`hicrm_db`), schema v3 (territories), sample data dated from the setup day | **Done** [Tenant] |
-| HiCRM Insights: Direct Lake on OneLake over `hicrm_db`, generated TMDL, 42 measures, 8 relationships, 4 roles | **Done** [Tenant] |
+| CRM on SQL database in Fabric (`platform_app_db`), schema v3 (territories), sample data dated from the setup day | **Done** [Tenant] |
+| Platform app Insights: Direct Lake on OneLake over `platform_app_db`, generated TMDL, 42 measures, 8 relationships, 4 roles | **Done** [Tenant] |
 | The twin model without roles for the data agent (service principals can't query a model with roles) | **Done** [Tenant] |
 | Fixed identity: cloud connection with the workspace identity, bound to the model | **Done** [Tenant] |
 | Standard report "Sales overview" (generated PBIR), embedded view-only with V2 tokens carrying each person's territory role | **Done** [Tenant] |
@@ -56,14 +56,16 @@ Answers to the questions asked for this build:
 
 ## 1. Goal
 
-**HiCRM** is a home-grown CRM sold as SaaS. Each customer company (the first one is **Fabrikam**) gets:
+**The platform app** is a home-grown CRM sold as SaaS. Each customer company (the first one is **Fabrikam**) gets:
 
 - **The CRM itself:** accounts, contacts, opportunities and activities.
 - **Data:** bring in their own data (files, Excel, web sources, systems on their network) next to their CRM data.
 - **Reports:** a Reports tab with embedded Power BI reports over their data.
 - **Assistant:** an AI tab that answers questions about their data.
 
-Fabric does all the data work: the CRM database, ingestion, warehousing, querying, the data agent and reporting. The **HiCRM team** runs Fabric. Fabrikam's users only ever see the HiCRM web app. They never see Fabric, workspaces, capacities or plans.
+Fabric does all the data work: the CRM database, ingestion, warehousing, querying, the data agent and reporting. The
+**platform team** runs Fabric. Fabrikam's users only ever see the platform app. They never see Fabric, workspaces,
+capacities or plans.
 
 ## 2. Verdict: hosting the CRM database on Fabric SQL
 
@@ -80,55 +82,60 @@ Yes, it makes sense, and it's the cleanest story: the CRM writes to a **SQL data
 
 **Decision D2:** use Fabric SQL database. The app talks to the database through one data-access layer, so a move to Azure SQL with mirroring stays cheap if capacity coupling becomes a problem. Everything downstream (warehouse, reports, data agent) is the same either way, because both land as Delta tables in OneLake.
 
-**Fabric Apps (Rayfin) is not the right host for the customer-facing CRM.** Deployed Fabric Apps sign users in with Fabric SSO inside the Fabric portal only, so Fabrikam's users would need identities in the HiCRM tenant (finding F15). HiCRM stays our own web app.
+**Fabric Apps (Rayfin) is not the right host for the customer-facing CRM.** Deployed Fabric Apps sign users in with
+Fabric SSO inside the Fabric portal only, so Fabrikam's users would need identities in the platform's Entra tenant
+(finding F15). The platform app stays our own web app.
 
 ## 3. Architecture
 
 ```text
 Fabrikam users (browser)
-   │  sign in to HiCRM (never to Fabric)
+   │  sign in to the platform app (never to Fabric)
    ▼
-HiCRM web app  ── run and hosted by the HiCRM team (local now, Azure later)
+Platform app  ── run and hosted by the platform team (local now, Azure later)
    ├─ CRM tabs: Accounts · Contacts · Opportunities · Activities
    ├─ Data tab: uploads, web sources, "connect a system on our network" requests
    ├─ Reports tab: embedded Power BI (view; edit and new reports in higher editions)
    └─ Assistant tab: questions in plain language
    │
-   │  every call below uses the HiCRM platform identity (service principal), scoped to the signed-in customer
-   ├─ CRM reads and writes ── TDS + Entra token ─────────▶ hicrm_db       (SQL database)
-   ├─ Uploads and web pulls ── OneLake API + Load Table ──▶ hicrm_lake     (lakehouse)
-   ├─ Report access ── Power BI GenerateToken (V2) ───────▶ report + HiCRM Insights model
-   └─ Assistant ── MCP endpoint ──────────────────────────▶ HiCRM Assistant (data agent)
+   │  every call below uses the platform identity (service principal), scoped to the signed-in customer
+   ├─ CRM reads and writes ── TDS + Entra token ─────────▶ platform_app_db    (SQL database)
+   ├─ Uploads and web pulls ── OneLake API + Load Table ──▶ platform_app_lake  (lakehouse)
+   ├─ Report access ── Power BI GenerateToken (V2) ───────▶ report + Platform app Insights model
+   └─ Assistant ── MCP endpoint ──────────────────────────▶ Platform app Assistant (data agent)
 
-Workspace "hicrm-fabrikam" (one per customer, managed by the HiCRM team)
-   hicrm_db         SQL database: the CRM's own tables. Replicates to OneLake automatically.
-   hicrm_lake       Lakehouse: data the customer brings (files, Excel, web, on-premises via pipelines)
-   hicrm_wh         Warehouse: gold layer (dimensions, facts) built with T-SQL from hicrm_db + hicrm_lake
-   pl_refresh       Pipeline: scheduled sources, then the warehouse refresh procedure
-   HiCRM Insights   Semantic model: Direct Lake on hicrm_wh, bound to a fixed-identity connection
-   Reports          Pipeline overview, Account health, Team activity
-   HiCRM Assistant  Data agent over hicrm_wh (and hicrm_db), published, called through MCP
+Workspace "platform-app-fabrikam" (one per customer, managed by the platform team)
+   platform_app_db         SQL database: the CRM's own tables. Replicates to OneLake automatically.
+   platform_app_lake       Lakehouse: data the customer brings (files, Excel, web, on-premises via pipelines)
+   platform_app_wh         Warehouse: gold layer (dimensions, facts) built with T-SQL
+                           from platform_app_db + platform_app_lake
+   pl_refresh              Pipeline: scheduled sources, then the warehouse refresh procedure
+   Platform app Insights   Semantic model: Direct Lake on platform_app_wh, bound to a fixed-identity connection
+   Reports                 Pipeline overview, Account health, Team activity
+   Platform app Assistant  Data agent over platform_app_wh (and platform_app_db), published, called through MCP
 
-Workspace "hicrm-template" (golden copies, stamped into every customer workspace with IDs remapped)
+Workspace "platform-app-template" (golden copies, stamped into every customer workspace with IDs remapped)
 Control plane (CLI + /admin back office): customers, editions, provisioning, stamping, health
 ```
 
-**Tenancy:** one workspace per customer, in the HiCRM team's Fabric tenant, on capacities the HiCRM team owns. The browser never chooses a customer: the server resolves it from the signed-in user, and every Fabric call is scoped to that customer's workspace.
+**Tenancy:** one workspace per customer, in the platform's Fabric tenant, on capacities the platform owns. The browser
+never chooses a customer: the server resolves it from the signed-in user, and every Fabric call is scoped to that
+customer's workspace.
 
 **Identities:**
 
 | Who | Identity | Used for |
 |---|---|---|
-| Fabrikam users | HiCRM sign-in (MVP: email domain; production: Entra External ID or multi-tenant Entra, mapped by tenant ID) | The HiCRM app only |
-| HiCRM backend | Platform service principal `<platform-app-id>` (object ID `<platform-object-id>`) | SQL, OneLake, Fabric REST, Power BI embed tokens, MCP |
-| HiCRM team | Their own Entra accounts | Fabric portal, back office |
+| Fabrikam users | Platform app sign-in (MVP: email domain; production: Entra External ID or multi-tenant Entra, mapped by tenant ID) | The platform app only |
+| The platform app's server | Platform service principal `<platform-app-id>` (object ID `<platform-object-id>`) | SQL, OneLake, Fabric REST, Power BI embed tokens, MCP |
+| Platform team | Their own Entra accounts | Fabric portal, back office |
 
 ## 4. What Fabrikam sees
 
 | Tab | What it does | Behind it |
 |---|---|---|
-| Accounts, Contacts, Opportunities, Activities | Everyday CRM: lists, details, create and edit | `hicrm_db` |
-| Data | Their data sets with source, rows and last update; upload files and Excel; connect web sources; request a connection to a system on their network | `hicrm_lake`, pipelines, requests in the back office |
+| Accounts, Contacts, Opportunities, Activities | Everyday CRM: lists, details, create and edit | `platform_app_db` |
+| Data | Their data sets with source, rows and last update; upload files and Excel; connect web sources; request a connection to a system on their network | `platform_app_lake`, pipelines, requests in the back office |
 | Reports | Ready-made reports; edit and create in higher editions | Power BI embedding, per-customer V2 tokens |
 | Assistant | Ask questions; answers come from their own data | Per-customer data agent over MCP |
 
@@ -138,12 +145,12 @@ Tabs appear only when the customer's edition includes them. Error messages are p
 
 | ID | Decision | Status |
 |---|---|---|
-| D1 | Product **HiCRM**; first customer **Fabrikam**; workspaces named `hicrm-<customer>`; rename `saas-fabrikam` to `hicrm-fabrikam` | Proposed. Owner to confirm the customer spelling ("fabikram" in chat). |
+| D1 | Product **Platform app**; first customer **Fabrikam**; workspaces named `platform-app-<customer>`; rename `saas-fabrikam` to `platform-app-fabrikam` | Proposed. Owner to confirm the customer spelling ("fabikram" in chat). |
 | D2 | CRM database: Fabric SQL database per customer, behind a data-access layer (fallback: Azure SQL + mirroring) | Proposed |
-| D3 | Customer app: our own HiCRM web app (not Fabric Apps) | Proposed (finding F15) |
-| D4 | Gold layer: Fabric Warehouse `hicrm_wh`, T-SQL procedures reading `hicrm_db` and `hicrm_lake` through cross-database queries | Proposed |
-| D5 | Capacity: a paid F SKU (F2 minimum) for HiCRM, on 24×7 while the CRM is in use. The data agent doesn't run on the trial capacity (finding F8). Fabric items can't move across regions (F19), and `saas-fabrikam` is in West US 3. Options: a new West US 3 F2 for HiCRM (recommended), resume a paused F8 capacity (shared with another team), or recreate the workspace in another region. | **Owner decision** (cost) |
-| D6 | Project location: move the repo out of OneDrive into git (for example `C:\src\hicrm`); the TDS driver adds the first npm dependency (`mssql`) | **Owner decision** |
+| D3 | Customer app: the platform app, our own web app (not Fabric Apps) | Proposed (finding F15) |
+| D4 | Gold layer: Fabric Warehouse `platform_app_wh`, T-SQL procedures reading `platform_app_db` and `platform_app_lake` through cross-database queries | Proposed |
+| D5 | Capacity: a paid F SKU (F2 minimum) for the platform, on 24×7 while the CRM is in use. The data agent doesn't run on the trial capacity (finding F8). Fabric items can't move across regions (F19), and `saas-fabrikam` is in West US 3. Options: a new West US 3 F2 for the platform (recommended), resume a paused F8 capacity (shared with another team), or recreate the workspace in another region. | **Owner decision** (cost) |
+| D6 | Project location: move the repo out of OneDrive into git (for example `C:\src\platform-app`); the TDS driver adds the first npm dependency (`mssql`) | **Owner decision** |
 | D7 | End-user sign-in: email-domain sign-in for the MVP; Entra External ID or multi-tenant Entra in production | Proposed |
 | D8 | Platform identity: one service principal for the MVP; rotate its secret now (it was shared in chat), keep it in Key Vault or use a managed identity when hosted; shard service principals before 1,000 workspaces | Proposed. Rotation: **Owner, now**. |
 | D9 | Editions (internal only): Standard = CRM + reports; Professional = + data integration + report authoring; Enterprise = + Assistant | Proposed |
@@ -153,7 +160,7 @@ Tabs appear only when the customer's edition includes them. Error messages are p
 | Phase | Outcome | Status |
 |---|---|---|
 | 0 | Foundations: platform identity, workspace, control plane, customer app shell | **Done** (see 6.0) |
-| 1 | HiCRM core on Fabric SQL, seeded with Fabrikam data | Next |
+| 1 | Platform app core on Fabric SQL, seeded with Fabrikam data | Next |
 | 2 | Warehouse gold layer and refresh pipeline | Not started |
 | 3 | Reports tab | Not started |
 | 4 | Assistant tab | Not started (needs D5) |
@@ -168,7 +175,7 @@ Tabs appear only when the customer's edition includes them. Error messages are p
 - Customer app shell (sign-in, Reports, Data, Ask), back office at `/admin`, operator CLI, preflight check, 58 automated tests.
 - Live in tenant: lakehouse, warehouse, SQL database and data agent created by the service principal; data loaded and read back (F5 to F9).
 
-### 6.1 Phase 1: HiCRM core on Fabric SQL
+### 6.1 Phase 1: Platform app core on Fabric SQL
 
 1. **Schema** (versioned migrations, applied by a new provisioning step `crm-schema`): `users`, `accounts`, `contacts`, `opportunities`, `activities`, with `created_at` and `updated_at` everywhere so the warehouse can load incrementally.
 2. **Data-access layer** with two drivers:
@@ -176,26 +183,29 @@ Tabs appear only when the customer's edition includes them. Error messages are p
    - `sqlite`: `node:sqlite` (built into Node), for local development and tests without Fabric.
 3. **Seed:** a deterministic Fabrikam data set (about 80 accounts, 250 contacts, 300 opportunities, 1,200 activities and 6 sales reps), loaded by a provisioning step on first setup.
 4. **CRM tabs** in the customer app: lists with search and sort, a detail view, create and edit forms.
-5. **Data tab:** CRM tables show as "HiCRM, live" (the sample "Sync now" loader goes away).
+5. **Data tab:** CRM tables show as "Platform app, live" (the sample "Sync now" loader goes away).
 
-**Exit:** create, edit and delete round-trip in `hicrm_db` as the service principal (V1); a new opportunity shows up in OneLake within two minutes (V2); tests pass for both drivers.
+**Exit:** create, edit and delete round-trip in `platform_app_db` as the service principal (V1); a new opportunity shows
+up in OneLake within two minutes (V2); tests pass for both drivers.
 
 ### 6.2 Phase 2: warehouse gold layer and pipeline
 
 > The data integration add-on's design ([DATA-INTEGRATION.md](DATA-INTEGRATION.md)) builds silver and gold in a
 > lakehouse with Spark notebooks instead of a warehouse. D4 stays open until one is chosen.
 
-1. `hicrm_wh` schema `gold`: `dim_account`, `dim_owner`, `dim_date`, `fact_opportunity`, `fact_activity`, plus views over customer data sets.
-2. Procedure `gold.refresh` reads `hicrm_db` and `hicrm_lake` through cross-database queries (V3).
+1. `platform_app_wh` schema `gold`: `dim_account`, `dim_owner`, `dim_date`, `fact_opportunity`, `fact_activity`, plus
+   views over customer data sets.
+2. Procedure `gold.refresh` reads `platform_app_db` and `platform_app_lake` through cross-database queries (V3).
 3. Pipeline `pl_refresh`: copy scheduled sources, then run `gold.refresh`; hourly schedule. Customer uploads trigger a refresh.
-4. Authored once in `hicrm-template` and stamped per customer.
+4. Authored once in `platform-app-template` and stamped per customer.
 
 **Exit:** gold row counts match the source counts; the pipeline run succeeds as the service principal.
 
 ### 6.3 Phase 3: Reports tab
 
-1. Semantic model `HiCRM Insights` (Direct Lake on `gold`) with measures: pipeline value, win rate, average deal size, activities per rep.
-2. Three reports, built by the HiCRM team in the template workspace and stamped per customer.
+1. Semantic model `Platform app Insights` (Direct Lake on `gold`) with measures: pipeline value, win rate, average deal
+   size, activities per rep.
+2. Three reports, built by the platform team in the template workspace and stamped per customer.
 3. A fixed-identity cloud connection (service principal, SSO off), bound to each customer's semantic model. Embedding a Direct Lake model as a service principal requires this (F11, V5).
 4. Reports tab: view; edit and new reports for the Professional edition and up; token refresh.
 
@@ -203,21 +213,22 @@ Tabs appear only when the customer's edition includes them. Error messages are p
 
 ### 6.4 Phase 4: Assistant tab (needs a paid capacity, D5)
 
-1. Data agent `HiCRM Assistant` over `gold` (and `hicrm_db`), with instructions and example questions. It's stamped from the template and synced when data sets are added (already built).
+1. Data agent `Platform app Assistant` over `gold` (and `platform_app_db`), with instructions and example questions.
+   It's stamped from the template and synced when data sets are added (already built).
 2. Assistant tab: conversation history per user, suggested questions, plain errors. Every question is logged per customer.
 
 **Exit:** answers to five reference questions match SQL results (V4).
 
 ### 6.5 Phase 5: integrations
 
-- **Done:** file and Excel uploads, one-off web pulls, connection requests recorded for the HiCRM team.
+- **Done:** file and Excel uploads, one-off web pulls, connection requests recorded for the platform team.
 - **Design:** the future state, with Data Factory pipelines, Spark notebooks and medallion layers, all running as the
   customer's service principal, is in [DATA-INTEGRATION.md](DATA-INTEGRATION.md).
 - **Next:** scheduled web sources (a Fabric connection and a pipeline copy per source).
 - **Next:** systems on the customer's network, through an on-premises data gateway. The customer's IT installs it, and a
-  HiCRM engineer registers it to the HiCRM tenant, since registering needs a person's account (F67). The platform then
-  creates the connection, as the customer's service principal with permission on the gateway, and the pipeline.
-  Identities across the two Entra tenants: [IDENTITIES.md](IDENTITIES.md).
+  platform engineer registers it to the platform's Entra tenant, since registering needs a person's account (F67). The
+  platform then creates the connection, as the customer's service principal with permission on the gateway, and the
+  pipeline. Identities across the two Entra tenants: [IDENTITIES.md](IDENTITIES.md).
 
 ### 6.6 Phase 6: production
 
@@ -227,12 +238,12 @@ Real end-user sign-in (D7); hosting on Azure App Service or Container Apps with 
 
 | ID | Assumption | How to test | Passes when | Fallback | Result |
 |---|---|---|---|---|---|
-| V1 | The service principal can open a TDS session to `hicrm_db` and run DDL and DML | `mssql` with an access token; create, insert and select | All statements succeed | Grant the database role explicitly; or a workspace identity | Passed live: provisioning creates the schema and sample data, and the CRM reads and writes as each customer's service principal (DAT-01) |
+| V1 | The service principal can open a TDS session to `platform_app_db` and run DDL and DML | `mssql` with an access token; create, insert and select | All statements succeed | Grant the database role explicitly; or a workspace identity | Passed live: provisioning creates the schema and sample data, and the CRM reads and writes as each customer's service principal (DAT-01) |
 | V2 | CRM changes reach OneLake quickly | Insert a row, then poll the Delta log | Visible within 2 minutes | Accept the delay, or refresh on demand | Not run |
-| V3 | `hicrm_wh` can read `hicrm_db` and `hicrm_lake` in the same workspace | Cross-database `SELECT` as the service principal | Rows return | Lakehouse shortcuts to the `hicrm_db` tables | Not run |
-| V4 | The data agent answers over MCP as the service principal on a paid capacity | Five reference questions | Answers match SQL | Agent over `hicrm_db` or the semantic model | Blocked on the trial capacity (finding F8) |
+| V3 | `platform_app_wh` can read `platform_app_db` and `platform_app_lake` in the same workspace | Cross-database `SELECT` as the service principal | Rows return | Lakehouse shortcuts to the `platform_app_db` tables | Not run |
+| V4 | The data agent answers over MCP as the service principal on a paid capacity | Five reference questions | Answers match SQL | Agent over `platform_app_db` or the semantic model | Blocked on the trial capacity (finding F8) |
 | V5 | A Direct Lake model can be created and bound to a fixed-identity connection through the API, then embedded | TMDL definition, connection, bind, V2 token, render | The report renders | Import-mode model with scheduled refresh | Passed live: "Sales overview" renders from V2 tokens with each person's rows (F50; RLS-03, RLS-05) |
-| V6 | Template stamping works for pipeline, model, report and agent in the tenant | Stamp from `hicrm-template`, then open each item | Items open; IDs point at the customer copies | Generate definitions in code | Mock only |
+| V6 | Template stamping works for pipeline, model, report and agent in the tenant | Stamp from `platform-app-template`, then open each item | Items open; IDs point at the customer copies | Generate definitions in code | Mock only |
 | V7 | F2 carries one customer (CRM, refresh, Assistant) without throttling | Scripted usage for a day, then read the Capacity Metrics app | No throttling | F4 | Not run |
 | V8 | Load Table (preview) is reliable enough | 50 mixed uploads | All load | Pipeline copy or a notebook | 5 of 5 OK |
 | V9 | The data agent writes good SQL over `gold` | Reference questions with example queries | 4 of 5 correct | More examples; the semantic model as source | Not run |
@@ -260,12 +271,12 @@ Real end-user sign-in (D7); hosting on Azure App Service or Container Apps with 
 | F17 | **[Docs]** `Connect-DataGatewayServiceAccount` can sign in with a service principal, but registering a gateway needs a user credential (corrected in F67). Customers can restrict which tenants their gateways register to. | [Gateway PowerShell](https://learn.microsoft.com/powershell/gateway/overview), [Tenant restrictions](https://learn.microsoft.com/data-integration/gateway/service-gateway-tenant-registration) |
 | F18 | **[Tenant]** In this sandbox, loopback and the Azure CLI profile are blocked, so live checks run in-process through the CLI | 2026-10-01 |
 | F19 | **[Docs]** Only Power BI item types (reports, small semantic models, dashboards, and similar) move across regions. A workspace with a lakehouse, warehouse, SQL database or data agent can only move to a capacity in the same region. | [Capacity reassignment restrictions](https://learn.microsoft.com/fabric/admin/portal-workspace-capacity-reassignment#restrictions-on-moving-workspaces-around) |
-| F20 | **[Tenant]** The service principal connects to `hicrm_db` over TDS with an Entra token (scope `https://database.windows.net/.default`), runs DDL and bulk-loads 3,694 rows in about 4 s | live `hicrm_db`, 2026-10-01 |
+| F20 | **[Tenant]** The service principal connects to `platform_app_db` over TDS with an Entra token (scope `https://database.windows.net/.default`), runs DDL and bulk-loads 3,694 rows in about 4 s | live `platform_app_db`, 2026-10-01 |
 | F21 | **[Tenant]** A SQL database replicates to OneLake at `<workspace>/<sqlDatabaseId>/Tables/dbo/<table>` within about a minute; only tables with a primary key | Delta logs read back, 2026-10-01 |
 | F22 | **[Tenant]** Direct Lake on OneLake works over a SQL database item: TMDL with `AzureStorage.DataLake` on the item path plus `schemaName: dbo` deploys (compatibility level 1702) and frames | live model, 2026-10-01 |
 | F23 | **[Tenant]** A new Direct Lake model's data source is `AzureDataLakeStorage` with path `https://onelake.dfs.fabric.microsoft.com/<ws>/<item>/` (trailing slash) and `Automatic` (SSO) connectivity; a ShareableCloud connection with `WorkspaceIdentity` credentials, created with `server` + `path` parameters, matches it exactly and binds. List Item Connections shows the binding about 20 s later. | live bind, 2026-10-01 |
 | F24 | **[Tenant]** A workspace identity gets no workspace role by default; Direct Lake on OneLake needs Read and ReadAll, so it is made Contributor of its own workspace | live, 2026-10-01 |
-| F25 | **[Tenant]** The data agent with a **semantic model** source answers over MCP on the trial capacity (FT1), unlike the lakehouse-source agent (F8). Its answers matched SQL over `hicrm_db` exactly. | CLI `ask`, 2026-10-02 |
+| F25 | **[Tenant]** The data agent with a **semantic model** source answers over MCP on the trial capacity (FT1), unlike the lakehouse-source agent (F8). Its answers matched SQL over `platform_app_db` exactly. | CLI `ask`, 2026-10-02 |
 | F26 | **[Tenant]** `executeQueries` returns 401 `PowerBINotAuthorizedException` for the service principal (tenant setting "Dataset Execute Queries REST API" for service principals); nothing in the app depends on it | 2026-10-01 |
 | F27 | **[Tenant]** `powerbi.createReport()` returns a `Create` object without page APIs: a new report must be saved (`saveAs`) and reopened in edit mode before the authoring API can add visuals | live embed, 2026-10-02 |
 | F28 | **[Tenant]** `page.createVisual` without `displayState: { mode: 0 }` creates hidden visuals; `visual.sortBy` fails with `FailedSortingVisual` in edit mode, so time axes use a date column (`Calendar[Month Start]`) instead of a text one | live embed, 2026-10-02 |
@@ -286,17 +297,17 @@ Real end-user sign-in (D7); hosting on Azure App Service or Container Apps with 
 | F43 | **[Tenant]** A new client secret was refused with `AADSTS7000215`, on and off for minutes, before Microsoft Entra ID accepted it everywhere. Token requests now retry it | CLI `provision`, 2026-10-03 |
 | F44 | **[Tenant]** Removing a workspace role took about an hour to take effect: from 01:21 UTC the role list and the admin API showed no role for the platform identity on `saas-contoso`, but it could open the workspace until about 02:31 | Isolation check, 2026-10-03 |
 | F45 | **[Tenant]** On the trial capacity the data agent's MCP endpoint refuses the service principals (`-32003 FT1 SKU Not Supported`), while a person can still use it. Moving both workspaces to the F8 capacity didn't help: that capacity was paused minutes later (SQL databases answered 404 `CapacityNotActive`), so they went back to the trial | CLI `ask`, capacity assignment, 2026-10-03 |
-| F46 | **[Docs]** SQL database in Fabric is serverless: after 15 minutes without activity its compute is released, and the next connection waits while it resumes. HiCRM now retries connections and reads on transient errors. Live, the first question after a capacity move had failed after 38 seconds | [Billing](https://learn.microsoft.com/fabric/database/sql/usage-reporting), [limitations](https://learn.microsoft.com/fabric/database/sql/limitations), `test/crm.test.js`, 2026-10-03 |
+| F46 | **[Docs]** SQL database in Fabric is serverless: after 15 minutes without activity its compute is released, and the next connection waits while it resumes. The platform app now retries connections and reads on transient errors. Live, the first question after a capacity move had failed after 38 seconds | [Billing](https://learn.microsoft.com/fabric/database/sql/usage-reporting), [limitations](https://learn.microsoft.com/fabric/database/sql/limitations), `test/crm.test.js`, 2026-10-03 |
 | F47 | **[Docs]** Microsoft Purview (preview) records a data agent's prompts and responses as "Copilot Interaction" audit records, shown in DSPM Activity Explorer. It needs Audit on, the DSPM setup task "Secure interactions in Microsoft Copilot experiences" and the tenant setting "Allow Microsoft Purview to secure AI interactions" (on in this tenant). The portal keeps each person's chats up to 28 days. Whether calls by a service principal over MCP are recorded isn't documented | [Purview for data agents](https://learn.microsoft.com/fabric/data-science/data-agent-purview-governance), [tenant settings](https://learn.microsoft.com/fabric/data-science/data-agent-tenant-settings), 2026-10-03 |
 | F48 | **[Tenant]** The data agents on the trial capacity now refuse people too: the admin user's MCP `initialize` returns `-32003 FT1 SKU Not Supported`, where on 2026-10-03 it worked. A made-up agent ID returns `-32601 The entity could not be found`, so the endpoint the app calls does reach the published agents | Direct MCP probe, 2026-10-06 |
 | F49 | **[Docs]** An embed token expires no later than the Microsoft Entra token used to create it. GenerateToken asks the token provider for the embed lifetime plus 5 minutes of remaining validity, capped at 55 minutes; a recently acquired token with more than 5 minutes left can be reused for one minute, so this is not a guaranteed minimum lifetime. Microsoft's refresh sample checks every 30 seconds, refreshes with 10 minutes left, and checks again when the tab becomes visible; the app does the same, or uses a third of the lifetime for shorter tokens (it previously refreshed 2 minutes before expiry, on a timer that stalls during sleep). It counts from when the token arrived (`expiresInSeconds`), so a wrong device clock can't cause late or repeated refreshes; checked live in Edge with the page clock moved 21 minutes ahead | [Generate an embed token](https://learn.microsoft.com/power-bi/developer/embedded/generate-embed-token#considerations-and-limitations), [Refresh the access token](https://learn.microsoft.com/javascript/api/overview/powerbi/refresh-token), `src/auth/tokens.js`, `src/fabric/client.js`, `public/embed-token.js`, `test/fabric-client.test.js`, `test/mcp-and-tokens.test.js` |
 | F50 | **[Tenant]** Row-level security holds in the rendered report: the validator opened "Sales overview" in Edge as each customer's manager and Texas rep, with the tokens the app issues; the reps saw Texas only, and every number matched the database | `npm run validate -- --live --browser`, 2026-10-06 |
 | F51 | **[Docs]** Service principal profiles work with the Power BI REST API, SDK and XMLA endpoint only, so they can't isolate Fabric items such as a SQL database, a cloud connection or a data agent. A service principal per tenant stays the framework's default | [Profiles: limitations](https://learn.microsoft.com/power-bi/developer/embedded/embed-multi-tenancy#considerations-and-limitations) |
-| F52 | **[Docs]** Compared with Microsoft's App-Owns-Data samples (the Starter Kit, AppOwnsDataWithRLS, NetCore-AppOwnsData). HiCRM already matched them on client credentials kept on the server, Generate Token V2 with an effective identity, roles decided on the server, and expiring the cached Entra token early enough for a whole embed token. Gaps found: per-person edit and create rights, a usage log, a refresh bug for short tokens, a security group for the service principal tenant settings, and reopening a report after "Save as" (F53 to F57). Deliberate differences: a service principal per tenant instead of profiles (F51), one token per report, and refresh timing: the Starter Kit's React client refreshes 2 minutes ahead by the device clock (its TypeScript client doesn't refresh), where HiCRM follows Microsoft's refresh sample | [Starter Kit](https://github.com/PowerBiDevCamp/App-Owns-Data-Starter-Kit), [AppOwnsDataWithRLS](https://github.com/PowerBiDevCamp/AppOwnsDataWithRLS), [NetCore-AppOwnsData](https://github.com/PowerBiDevCamp/NetCore-AppOwnsData), EMBEDDING.md section 10, 2026-10-06 |
+| F52 | **[Docs]** Compared with Microsoft's App-Owns-Data samples (the Starter Kit, AppOwnsDataWithRLS, NetCore-AppOwnsData). The platform app already matched them on client credentials kept on the server, Generate Token V2 with an effective identity, roles decided on the server, and expiring the cached Entra token early enough for a whole embed token. Gaps found: per-person edit and create rights, a usage log, a refresh bug for short tokens, a security group for the service principal tenant settings, and reopening a report after "Save as" (F53 to F57). Deliberate differences: a service principal per tenant instead of profiles (F51), one token per report, and refresh timing: the Starter Kit's React client refreshes 2 minutes ahead by the device clock (its TypeScript client doesn't refresh), where the platform app follows Microsoft's refresh sample | [Starter Kit](https://github.com/PowerBiDevCamp/App-Owns-Data-Starter-Kit), [AppOwnsDataWithRLS](https://github.com/PowerBiDevCamp/AppOwnsDataWithRLS), [NetCore-AppOwnsData](https://github.com/PowerBiDevCamp/NetCore-AppOwnsData), EMBEDDING.md section 10, 2026-10-06 |
 | F53 | **[Code]** Report rights per person, like the Starter Kit's `CanEdit` and `CanCreate`: everyone may view; the token allows editing only for people who may edit, and names a target workspace only for people who may also create; the browser gets `Read`, `ReadWrite` or `All` to match. Rights are set in the back office or with `user-access --reports`, and changing them signs the person out. Demo sign-in keeps every right. Control EMB-06 | `test/personas.test.js` |
 | F54 | **[Tenant]** With app-owns-data embedding, Power BI's activity log records the service principal rather than the person, so the app keeps its own report usage log, like the Starter Kit's `ActivityLog`: who viewed or saved which report, load and render times, the embed token ID and the report's correlation ID. Live, four views on the trial capacity loaded in 10 to 12 seconds and rendered in 13 to 16. Control OPS-06 | `test/usage.test.js`, `usage Fabrikam`, 2026-10-06 |
 | F55 | **[Code]** Refreshing a fixed 10 minutes before expiry would refresh a token of 10 minutes or less (the Starter Kit's own lifetime) as soon as it arrived, again and again. The browser now refreshes at the smaller of 10 minutes and a third of the lifetime before expiry (`public/embed-token.js`) | `test/embed-client.test.js` |
-| F56 | **[Tenant]** "Service principals can call Fabric public APIs" and "Service principals can create workspaces, connections, and deployment pipelines" apply to the entire organization in the pilot tenant; so do profiles and embedding. Microsoft and the Starter Kit limit them to a security group. The validator now reads them (IDN-06) and warns. Also, a security group that holds the platform app allows the read-only admin APIs and those used for updates; the app needs neither. To do: a Fabric administrator limits the settings to a group holding the platform identity and the tenant service principals, and takes the platform app out of that group | `GET /v1/admin/tenantsettings`, `npm run validate -- --live`, 2026-10-06 |
+| F56 | **[Tenant]** "Service principals can call Fabric public APIs" and "Service principals can create workspaces, connections, and deployment pipelines" apply to the entire organization in the pilot tenant; so do profiles and embedding. Microsoft and the Starter Kit limit them to a security group. The validator now reads them (IDN-06) and warns. Also, a security group that holds the platform identity allows the read-only admin APIs and those used for updates; the app needs neither. To do: a Fabric administrator limits the settings to a group holding the platform identity and the tenant service principals, and takes the platform identity out of that group | `GET /v1/admin/tenantsettings`, `npm run validate -- --live`, 2026-10-06 |
 | F57 | **[Code]** After "Save as" or saving a new report, the app kept the frame and its token, which named the original report (or only the model, for a new one), and each refresh asked for the original again. Now the saved report opens with a token of its own, in edit mode for people who may edit, as the Starter Kit does and as "describe a chart" already did. Checked in Edge on the emulator with a stand-in for Power BI: after "Save as" the app asked for the copy, the next refresh asked for the copy, and a save in place kept the token. It's on the authoring path, off in the pilot (`REPORT_AUTHORING`) | `public/app.js`, 2026-10-06 |
 | F58 | **[Docs]** Current guidance, re-checked: Microsoft recommends certificates over client secrets for embedding back ends, and MSAL over hand-written OAuth calls. An app registration can trust a user-assigned managed identity (a federated identity credential: issuer `https://login.microsoftonline.com/<tenant>/v2.0`, subject the managed identity's object ID, audience `api://AzureADTokenExchange`, at most 20 per app). Managed identities can't call data agents, and Generate Token documents service principals and profiles only, so the per-customer app registrations stay, signing in with certificates or federated credentials. `powerbi-client` 2.25.0 and `powerbi-report-authoring` 3.0.0 are the latest; the refresh pattern matches Microsoft's | [Embed with a service principal](https://learn.microsoft.com/power-bi/developer/embedded/embed-service-principal), [MSAL](https://learn.microsoft.com/entra/identity-platform/msal-overview), [trust a managed identity](https://learn.microsoft.com/entra/workload-id/workload-identity-federation-config-app-trust-managed-identity), [data agent with a service principal](https://learn.microsoft.com/fabric/data-science/data-agent-service-principal), 2026-10-06 |
 | F59 | **[Tenant]** Token acquisition moved to MSAL Node (already installed with the SQL driver), with three credential types: federated, certificate, secret. Both customer service principals were moved to certificates: their tokens carry `appidacr=2` (certificate), and provisioning, embedding, the SQL database and the data agent all work with them. `scripts/bootstrap-identities.ps1 -Customer Fabrikam -Register` ran end to end with the new certificate default; the certificate made earlier by hand was then deleted from the app, and the old client secrets are unused. Federated credentials were tested against a stand-in for the managed identity | `test/credential-types.test.js`, `test/identities.test.js`, live, 2026-10-06 |
@@ -307,7 +318,7 @@ Real end-user sign-in (D7); hosting on Azure App Service or Container Apps with 
 | F64 | **[Code]** A pre-publish check (`npm run check:publish`): credential patterns anywhere in the project, and this deployment's IDs (from the registry and settings, also as 8-character prefixes), which `--fix` replaces with placeholders such as `<fabrikam-workspace-id>`; `--strict` flags any other GUID in documentation. The project was scrubbed with it before publishing, and `test/publishing.test.js` keeps credentials out | `test/publishing.test.js`, 2026-10-06 |
 | F65 | **[Tenant]** The workspace identity and both customer service principals are single-tenant apps (`signInAudience` is `AzureADMyOrg`; the workspace identity is tagged `Microsoft Fabric Identity`), so none of them can be admitted to a customer's Entra tenant, and "Workspace identity isn't supported in B2B or cross-tenant scenarios". Storage in another tenant needs a service principal or a SAS token. The add-on's design had the workspace identity read a customer's Azure sources; it now uses a reader per customer (`fabrikamreader`), a multi-tenant app whose service principal the customer admits ([IDENTITIES.md](IDENTITIES.md)) | `az ad sp show`, `az ad app show`, [workspace identity](https://learn.microsoft.com/fabric/security/workspace-identity#considerations-and-limitations), [ADLS shortcuts](https://learn.microsoft.com/fabric/onelake/create-adls-shortcut#limitations), 2026-10-07 |
 | F66 | **[Tenant]** Fabric cloud connections take Anonymous, Basic, Key, KeyPair, OAuth2, ServicePrincipal, SharedAccessSignature or WorkspaceIdentity credentials: no certificate and no federated credential. A service principal credential names the principal's tenant ID and takes a secret or a Key Vault reference; Key Vault references sign in with OAuth2 or a service principal, so they move the secret rather than remove it. Salesforce takes OAuth2 only. For pipelines, the SharePoint list connector documents organizational accounts and workspace identities, though the API also lists a service principal | `GET /v1/connections/supportedConnectionTypes`, [Create Connection](https://learn.microsoft.com/rest/api/fabric/core/connections/create-connection), [Key Vault references](https://learn.microsoft.com/fabric/data-factory/azure-key-vault-reference-overview), [SharePoint list connector](https://learn.microsoft.com/fabric/data-factory/connector-sharepoint-online-list-overview), 2026-10-07 |
-| F67 | **[Docs]** Gateways across tenants: registering one needs a user credential (`Add-DataGatewayCluster`), so a HiCRM engineer registers a customer's gateway to HiCRM's tenant; a machine can limit the tenants it registers to (`AllowedRegistrationTenants`); source credentials are encrypted for the gateway, and the service never sees them unencrypted; a service principal with permission on a gateway can create its connections; virtual network data gateways can't be created across tenants. Corrects F17 | [Add-DataGatewayCluster](https://learn.microsoft.com/powershell/module/datagateway/add-datagatewaycluster), [tenant registration](https://learn.microsoft.com/data-integration/gateway/service-gateway-tenant-registration), [security white paper](https://learn.microsoft.com/power-bi/guidance/white-paper-powerbi-security), [virtual network gateways](https://learn.microsoft.com/data-integration/vnet/create-data-gateways) |
+| F67 | **[Docs]** Gateways across tenants: registering one needs a user credential (`Add-DataGatewayCluster`), so a platform engineer registers a customer's gateway to the platform's Entra tenant; a machine can limit the tenants it registers to (`AllowedRegistrationTenants`); source credentials are encrypted for the gateway, and the service never sees them unencrypted; a service principal with permission on a gateway can create its connections; virtual network data gateways can't be created across tenants. Corrects F17 | [Add-DataGatewayCluster](https://learn.microsoft.com/powershell/module/datagateway/add-datagatewaycluster), [tenant registration](https://learn.microsoft.com/data-integration/gateway/service-gateway-tenant-registration), [security white paper](https://learn.microsoft.com/power-bi/guidance/white-paper-powerbi-security), [virtual network gateways](https://learn.microsoft.com/data-integration/vnet/create-data-gateways) |
 | F68 | **[Docs]** Across tenants: external data sharing shares OneLake data in place and read-only, to a user or a service principal named by object ID and tenant ID, with a setting on each side; Cloud Application and Application Administrators can grant admin consent, except for Microsoft Graph application permissions; nothing limits which tenants admit a multi-tenant app, so sign-in checks the issuer and `tid`; a managed identity can be a federated credential across tenants; Dataverse takes multi-tenant apps as application users; Azure SQL documents that service principals can't authenticate across tenant boundaries, so it's tested first | [external data sharing](https://learn.microsoft.com/fabric/governance/external-data-sharing-overview), [admin consent](https://learn.microsoft.com/entra/identity/enterprise-apps/grant-admin-consent), [multi-tenant apps](https://learn.microsoft.com/entra/identity-platform/howto-convert-app-to-be-multi-tenant), [secretless access](https://learn.microsoft.com/entra/identity/managed-identities-azure-resources/secretless-authentication), [Dataverse](https://learn.microsoft.com/power-apps/developer/data-platform/use-multi-tenant-server-server-authentication), [Azure SQL](https://learn.microsoft.com/azure/azure-sql/database/authentication-aad-service-principal#limitations) |
 | F69 | **[Code]** Local "View as" is a demo/testing aid for existing named sign-ins, not limited to pilot customers. It is refused in production or if forced with TRUST_PROXY or PUBLIC_ORIGIN; requests must come from loopback at a loopback or *.localhost host, with no X-Forwarded-For, X-Forwarded-Host or Forwarded header. Company addresses allow only that company's people; a shared local address can show all companies. Switching discards the report and clears the conversation and open account; Reports then gets that person's new token. The sign-in page clears the previous conversation. The browser validator selects one manager and one rep per distinct territory set: all four seeded pilot people, not every possible user | `src/routes/customer.js`, `public/app.js`, `src/platform/validation.js`, `test/view-as.test.js`, `test/framework.test.js`, 2026-10-07 |
 | F70 | **[Tenant]** View as, live in Edge, twice: all eight people of both companies, switched with View as. Each rep's "Pipeline by state" showed only their state, with the manager's value for it, and each manager saw every state. Fabrikam: Georgia 2,828,500, Texas 2,229,000, New Mexico 455,000. Contoso: Georgia 2,151,000, Texas 2,145,500, New Mexico 712,000. One earlier run stopped at Contoso's Texas rep while this network's DNS timed out on the Contoso database's redirect host; the server's SQL retries recovered. The live validator then passed RLS-03 for the same eight people, each matching the database, with a report filter for every state still showing only their rows: 18 pass, 4 to review, 1 failing (AI-03, the trial capacity) | Playwright in Edge against the live pilot, `npm run validate -- --live --browser`, 2026-10-07 |
@@ -319,7 +330,7 @@ Real end-user sign-in (D7); hosting on Azure App Service or Container Apps with 
 
 The current code map is in [README.md](README.md#code-map). Everything the table below planned is built: the CRM
 data-access layer (`src/crm/*`, Fabric SQL and SQLite, migrations, seed), editions (`src/platform/plans.js`), CRM tabs
-and the hovering assistant in `public/`, and the new provisioning steps. Still open from it: a HiCRM template
+and the hovering assistant in `public/`, and the new provisioning steps. Still open from it: the platform's template
 workspace with approved starter reports, and scheduled sources through pipelines (data integration add-on).
 
 ## 10. Risks
@@ -327,7 +338,7 @@ workspace with approved starter reports, and scheduled sources through pipelines
 | Risk | Mitigation |
 |---|---|
 | Heavy reports or Assistant use throttles the CRM (shared capacity) | Size the capacity; set a maximum vCore limit per database; surge protection; dedicated capacity for big customers; fallback D2 |
-| Pausing the capacity takes the CRM down | Keep HiCRM capacities on 24×7; pause only dev and demo capacities |
+| Pausing the capacity takes the CRM down | Keep the platform's capacities on 24×7; pause only dev and demo capacities |
 | The CRM database pauses after 15 idle minutes (serverless), so the next question waits | Connecting and reads retry on transient errors for up to 90 seconds; writes run once (F46) |
 | Fabric applies a removed role late (about an hour, F44) | After a release or an offboarding, confirm with a call that's denied; don't treat the role list alone as proof |
 | Preview features (Load Table, data agent with service principals, MCP) change | Keep each behind one module with tests; follow the release notes. The data agent already changed once (F25, F38); the quick-answer fallback kept the assistant working |

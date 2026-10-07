@@ -9,7 +9,7 @@ const read = (file) => readFileSync(file, 'utf8').replace(/\r\n/g, '\n');
 const STALE = 'is stale: run `node scripts/report-assets.js` after changing model.js, schema.js or report.js';
 
 test('the report assets match the model and the starter report', () => {
-  assert.equal(read(MEASURES_FILE), measuresDax(), `HiCRM-Insights.measures.dax ${STALE}`);
+  assert.equal(read(MEASURES_FILE), measuresDax(), `Platform-app-Insights.measures.dax ${STALE}`);
   const prompt = read(PROMPT_FILE);
   assert.equal(prompt, refreshPrompt(prompt), `report-creation-prompt.md ${STALE}`);
   assert.equal((measuresDax().match(/^ {4}MEASURE '/gm) || []).length, MEASURES.length, 'every measure is defined once');

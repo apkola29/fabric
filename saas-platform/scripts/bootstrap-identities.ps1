@@ -1,8 +1,8 @@
 <#
 .SYNOPSIS
-  One-time identity setup for HiCRM, run by a Microsoft Entra admin. Creating a service account needs Application
-  Administrator (or Cloud Application Administrator); -GrantPlatformAppCreation grants a Microsoft Graph application
-  permission, which needs Privileged Role Administrator (or Global Administrator).
+  One-time identity setup for the platform app, run by a Microsoft Entra admin. Creating a service account needs
+  Application Administrator (or Cloud Application Administrator); -GrantPlatformAppCreation grants a Microsoft Graph
+  application permission, which needs Privileged Role Administrator (or Global Administrator).
 
 .DESCRIPTION
   Creates the customer's service account "<customer>sa" (for example "fabrikamsa"): an app registration and service
@@ -16,7 +16,7 @@
                  file only this user can read straight into the platform's encrypted credential store, and the file is
                  deleted. Microsoft recommends certificates over secrets.
     Secret       A client secret, for development. It is never printed: it's handed over in this PowerShell session
-                 only (HICRM_SA_SECRET) and stored encrypted.
+                 only (PLATFORM_SA_SECRET) and stored encrypted.
 
   Optionally (-GrantPlatformAppCreation), grants the platform's own app the Microsoft Graph permission
   Application.ReadWrite.OwnedBy. With it the platform creates service accounts for new customers by itself, and can
@@ -45,7 +45,7 @@ param(
   [string] $ManagedIdentityObjectId,
   [ValidateRange(1, 2)] [int] $CertificateYears = 1,
   [ValidateRange(30, 730)] [int] $SecretDays = 180,
-  [string] $ProductName = 'HiCRM'
+  [string] $ProductName = 'Platform app'
 )
 
 $ErrorActionPreference = 'Stop'
@@ -93,17 +93,50 @@ if ($GrantPlatformAppCreation) {
 if (-not $Customer) { return }
 
 $name = (($Customer.ToLowerInvariant()) -replace '[^a-z0-9]', '') + 'sa'
-$display = "$ProductName service account - $Customer ($name)"
+$display = "$ProductName service principal - $Customer ($name)"
 
-$app = Invoke-Az ad app list --display-name $display --output json | ConvertFrom-Json | Select-Object -First 1
-if ($app) { Write-Host "Using the existing app registration $display ($($app.appId))." }
+# Earlier versions named the app after the product's earlier name (src/platform/legacy-names.js, the platform's one
+# list of them) and called it a service account. An app found under one of those names is renamed, not duplicated.
+$legacyModule = [System.Uri]::new((Join-Path $PSScriptRoot '..\src\platform\legacy-names.js')).AbsoluteUri
+try {
+  $legacyJson = & node --input-type=module -e 'const names = await import(process.argv[1]); console.log(JSON.stringify(names.LEGACY_PRODUCT_NAMES))' $legacyModule
+  if ($LASTEXITCODE -ne 0) { throw "node exited with code $LASTEXITCODE" }
+} catch {
+  throw "Node.js is needed to read the names earlier versions gave the app ($legacyModule): $($_.Exception.Message)"
+}
+$legacyProducts = $legacyJson | ConvertFrom-Json
+$earlierNames = @(@($legacyProducts) + $ProductName | Select-Object -Unique | ForEach-Object { "$_ service account - $Customer ($name)" })
+
+# az ad app list --display-name matches the start of the name. Only the whole name counts, and like Microsoft Graph,
+# in any case: -Customer fabrikam finds the app made for -Customer Fabrikam instead of creating a second one.
+function Find-App([string] $DisplayName) {
+  $apps = Invoke-Az ad app list --display-name $DisplayName --output json | ConvertFrom-Json
+  $apps | Where-Object { $_.displayName -eq $DisplayName } | Select-Object -First 1
+}
+
+$app = Find-App $display
+if ($app) { Write-Host "Using the existing app registration $($app.displayName) ($($app.appId))." }
 else {
+  foreach ($earlier in $earlierNames) {
+    $app = Find-App $earlier
+    if ($app) {
+      Invoke-Az ad app update --id $app.appId --display-name $display | Out-Null
+      Write-Host "Renamed the app registration $($app.displayName) to $display ($($app.appId))."
+      break
+    }
+  }
+}
+if (-not $app) {
   $app = Invoke-Az ad app create --display-name $display --sign-in-audience AzureADMyOrg --output json | ConvertFrom-Json
   Write-Host "Created app registration $display ($($app.appId))."
 }
 
 $sp = Invoke-Az ad sp list --filter "appId eq '$($app.appId)'" --output json | ConvertFrom-Json | Select-Object -First 1
 if (-not $sp) { $sp = Invoke-Az ad sp create --id $app.appId --output json | ConvertFrom-Json }
+elseif ($sp.displayName -ne $display) {
+  # Entra ID gives the service principal its app's new name; this doesn't wait for that to happen.
+  Invoke-Az ad sp update --id $sp.id --set "displayName=$display" --force-string | Out-Null
+}
 Write-Host "Service principal $name has object ID $($sp.id)."
 
 # The account's credential. --append keeps any it already has, so a rerun can't lock it out.
@@ -117,7 +150,7 @@ switch ($Credential) {
       issuer = "https://login.microsoftonline.com/$($account.tenantId)/v2.0"
       subject = $ManagedIdentityObjectId
       audiences = @('api://AzureADTokenExchange')
-      description = "$ProductName platform runtime (managed identity)"
+      description = "$ProductName runtime (managed identity)"
     }
     $existing = Invoke-Az ad app federated-credential list --id $app.appId --output json | ConvertFrom-Json
     if ($existing | Where-Object { $_.subject -eq $ManagedIdentityObjectId }) { Write-Host 'The app already trusts that managed identity.' }
@@ -132,7 +165,7 @@ switch ($Credential) {
     $registerCredential = @('--federated')
   }
   'Certificate' {
-    $made = Invoke-Az ad app credential reset --id $app.appId --append --create-cert --years $CertificateYears --display-name "$ProductName platform" --output json | ConvertFrom-Json
+    $made = Invoke-Az ad app credential reset --id $app.appId --append --create-cert --years $CertificateYears --display-name "$ProductName credential" --output json | ConvertFrom-Json
     $pemFile = $made.fileWithCertAndPrivateKey
     if (-not $pemFile -or -not (Test-Path $pemFile)) { throw 'The Azure CLI did not return the certificate file.' }
     Write-Host "Created a certificate valid for $CertificateYears year(s). Its private key is in a file only you can read until the platform stores it."
@@ -140,10 +173,10 @@ switch ($Credential) {
   }
   'Secret' {
     $endDate = (Get-Date).AddDays($SecretDays).ToString('yyyy-MM-dd')
-    $secret = Invoke-Az ad app credential reset --id $app.appId --append --display-name "$ProductName platform" --end-date $endDate --output json | ConvertFrom-Json
-    $env:HICRM_SA_SECRET = $secret.password
+    $secret = Invoke-Az ad app credential reset --id $app.appId --append --display-name "$ProductName credential" --end-date $endDate --output json | ConvertFrom-Json
+    $env:PLATFORM_SA_SECRET = $secret.password
     Write-Host "Created a client secret that expires $endDate (not shown). Use a certificate or a federated credential outside development."
-    $registerCredential = @('--secret-env', 'HICRM_SA_SECRET')
+    $registerCredential = @('--secret-env', 'PLATFORM_SA_SECRET')
   }
 }
 
@@ -165,7 +198,7 @@ if ($WorkspaceId) {
 }
 
 # --env-file-if-exists: the deployment's settings (.env), as "npm run cli" reads them.
-$registerArgs = @('--env-file-if-exists=.env', 'scripts/platform-cli.js', 'identity-register', $Customer, '--app-id', $app.appId, '--object-id', $sp.id) + $registerCredential
+$registerArgs = @('--env-file-if-exists=.env', 'scripts/platform-cli.js', 'identity-register', $Customer, '--app-id', $app.appId, '--object-id', $sp.id, '--display-name', $display) + $registerCredential
 if ($Register) {
   Push-Location (Join-Path $PSScriptRoot '..')
   try {
@@ -175,13 +208,13 @@ if ($Register) {
     & node --env-file-if-exists=.env scripts/platform-cli.js provision $Customer
   } finally {
     Pop-Location
-    Remove-Item Env:HICRM_SA_SECRET -ErrorAction SilentlyContinue
+    Remove-Item Env:PLATFORM_SA_SECRET -ErrorAction SilentlyContinue
     # The platform keeps the certificate encrypted now; the clear-text copy goes.
     if ($pemFile) { Remove-Item $pemFile -ErrorAction SilentlyContinue }
   }
 } else {
   Write-Host ''
   Write-Host 'Register it with the platform from this same PowerShell window, then delete the certificate file if there is one:'
-  Write-Host "  node $($registerArgs -join ' ')"
+  Write-Host "  node $(($registerArgs | ForEach-Object { if ($_ -match '\s') { "'$_'" } else { $_ } }) -join ' ')"
   Write-Host "  node --env-file-if-exists=.env scripts/platform-cli.js provision $Customer"
 }

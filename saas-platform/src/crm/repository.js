@@ -4,7 +4,7 @@ import { ACTIVITY_TYPES, CRM_SCHEMA_VERSION, INDUSTRIES, OPEN_STAGES, STAGE_PROB
 import { checkScope, scopeSql } from './scope.js';
 import { calendarRows, defaultCalendarRange, fabricateCrm } from './seed.js';
 
-// Everything the HiCRM screens do with the database. The SQL is shared by Fabric SQL and SQLite except for paging.
+// Everything the CRM screens do with the database. The SQL is shared by Fabric SQL and SQLite except for paging.
 //
 // Territory scope: the screens call `repo.scoped(territories)`. `null` means every account (sales managers); a list
 // limits every read and write to accounts in those states, and to the contacts, deals and activities of those

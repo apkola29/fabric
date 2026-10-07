@@ -11,7 +11,7 @@ import { inject } from './helpers.js';
 export const WEB = { 'x-platform-client': 'web' };
 export const FAST = { waitMs: 0, refreshPollMs: 0, capacityPollMs: 0 };
 
-// The whole app in mock mode, with the HiCRM report template so customers get a report to open. Report authoring (the
+// The whole app in mock mode, with the template workspace so customers get a report to open. Report authoring (the
 // next phase, off by default) is on here so its code stays tested; standard-report.test.js covers the default.
 export function makeApp({ env = {}, template = true } = {}) {
   const config = loadConfig({ FABRIC_AUTH_MODE: 'mock', DATA_DIR: 'unused', REPORT_AUTHORING: 'true', ...(template ? { FABRIC_TEMPLATE_WORKSPACE_ID: MOCK_TEMPLATE_ID } : {}), ...env });

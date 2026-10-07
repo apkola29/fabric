@@ -355,7 +355,7 @@ export function registerCustomerRoutes(router, { config, fabric, store, sessions
     sendJson(res, 200, {
       // Without authoring, only the reports the platform provides; customers' own reports come with authoring.
       reports: listing.reports.filter((r) => context.features.authoring || isStandardReport(context.tenant, r)).map(({ id, name }) => ({ id, name })),
-      // New reports are built on HiCRM Insights only: it's the model with row-level security. Only for people who may create.
+      // New reports are built on Platform app Insights only: it's the model with row-level security. Only for people who may create.
       models: context.reportPermissions.create ? listing.datasets.filter((d) => d.canCreateReport && d.id === context.tenant.fabric.semanticModelId).map(({ id, name }) => ({ id, name })) : [],
     });
   });

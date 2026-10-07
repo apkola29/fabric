@@ -18,7 +18,7 @@ function terminal(answers) {
   return { input, output, interactive: true, shown: () => text };
 }
 
-const freshDataDir = () => mkdtempSync(path.join(os.tmpdir(), 'hicrm-prompt-'));
+const freshDataDir = () => mkdtempSync(path.join(os.tmpdir(), 'platform-prompt-'));
 const SP = { FABRIC_AUTH_MODE: 'sp', AZURE_TENANT_ID: 'contoso.onmicrosoft.com', AZURE_CLIENT_ID: '11111111-2222-4333-8444-555555555555' };
 
 test('demo mode asks nothing; without a terminal nothing is asked and the configuration says what is missing', async () => {

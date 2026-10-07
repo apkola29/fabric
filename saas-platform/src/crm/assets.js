@@ -5,7 +5,7 @@ import { CRM_RELATIONSHIPS, CRM_TABLES, TERRITORIES, tableByName } from './schem
 // The model's two layers as files for people and AI tools that build reports (`node scripts/report-assets.js`): the
 // measures' DAX for the semantic layer, and the field list and example in the report creation prompt for the
 // visualization layer. The checks keep both on the model's names, so a rename fails a test instead of a deployment.
-export const MEASURES_FILE = new URL('./report-assets/HiCRM-Insights.measures.dax', import.meta.url);
+export const MEASURES_FILE = new URL('./report-assets/Platform-app-Insights.measures.dax', import.meta.url);
 export const PROMPT_FILE = new URL('./report-assets/report-creation-prompt.md', import.meta.url);
 
 const COUNT_FORMAT = '#,##0';

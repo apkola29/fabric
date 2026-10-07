@@ -1,10 +1,10 @@
 # Embedded reports: how "app owns data" works here
 
-How a customer's people see Power BI reports inside HiCRM: what's embedded, which credential is used at each step, how
-row-level security (RLS) decides what each person sees, and how all of it lines up with Microsoft's guidance and its
-App-Owns-Data samples (section 10). The framework's controls for embedding (EMB-01 to EMB-06) and RLS (RLS-01 to RLS-05)
-are in [FRAMEWORK.md](FRAMEWORK.md#6-controls). `npm run validate -- --live --browser` checks them against a running
-deployment.
+How a customer's people see Power BI reports inside the platform app: what's embedded, which credential is used at each
+step, how row-level security (RLS) decides what each person sees, and how all of it lines up with Microsoft's guidance
+and its App-Owns-Data samples (section 10). The framework's controls for embedding (EMB-01 to EMB-06) and RLS (RLS-01 to
+RLS-05) are in [FRAMEWORK.md](FRAMEWORK.md#6-controls). `npm run validate -- --live --browser` checks them against a
+running deployment.
 
 ## 1. Quick answers (checked live on 2026-10-06)
 
@@ -19,8 +19,8 @@ deployment.
 
 ## 2. The flow
 
-Fabrikam is the customer. HiCRM, the SaaS provider, runs the server, owns the identities and owns the workspace that
-holds Fabrikam's data ([who's who](README.md#whos-who)).
+Fabrikam is the customer. The platform, the SaaS provider, runs the server, owns the identities and owns the workspace
+that holds Fabrikam's data ([who's who](README.md#whos-who)).
 
 ```mermaid
 sequenceDiagram
@@ -28,15 +28,15 @@ sequenceDiagram
   box rgb(253,236,224) FABRIKAM · the customer
     participant P as Person, in a browser<br/>a Fabrikam manager or rep
   end
-  box rgb(231,240,250) HICRM · the SaaS provider
-    participant A as HiCRM server
+  box rgb(231,240,250) THE PLATFORM · the SaaS provider
+    participant A as Platform app server
   end
   box rgb(238,238,238) MICROSOFT
-    participant E as Microsoft Entra ID<br/>HiCRM's tenant
+    participant E as Microsoft Entra ID<br/>the platform's tenant
     participant PBI as Power BI service
   end
-  box rgb(231,240,250) HICRM · the SaaS provider
-    participant OL as OneLake, in the workspace<br/>HiCRM runs for Fabrikam
+  box rgb(231,240,250) THE PLATFORM · the SaaS provider
+    participant OL as OneLake, in the workspace<br/>the platform runs for Fabrikam
   end
 
   P->>A: Sign in at the customer's address (session cookie)
@@ -60,13 +60,13 @@ request (control EMB-04).
 
 | # | From → to | Credential | Issued by | Lifetime | Where it's kept |
 | --- | --- | --- | --- | --- | --- |
-| 1 | Person → HiCRM | Signed session cookie after a HiCRM password sign-in, or local View as (`__Host-` prefixed over HTTPS, HttpOnly, SameSite). At company addresses, the server checks the company/session pair. Work-account sign-in is not built | HiCRM | 8 hours by default; sign-out or access changes can end it earlier | The browser |
-| 2 | HiCRM → Entra ID | The customer service principal's client ID and a **client assertion**: a 10-minute JWT signed by MSAL with the account's **certificate** (PS256, `x5t#S256`). The code also supports a **federated credential**, using a managed or workload identity token instead. Legacy client-secret credentials are also accepted | MSAL signs the certificate assertion; Entra ID or the workload issuer issues the federated token | Generated certificates: one year by default. Certificate assertion: 10 minutes in this MSAL version. Federated token: its issuer's expiry | The certificate's private key: AES-256-GCM file with `SECRETS_KEY` (pilot), Azure Key Vault (production). Federation stores no service-account key |
-| 3 | HiCRM → Power BI REST | **Entra access token** for `https://analysis.windows.net/powerbi/api/.default`, as the customer service principal | Entra ID | Normally 60 to 90 minutes; Entra sets the expiry | Server memory. Reacquired on demand with five minutes left, or when GenerateToken needs a longer lifetime (up to 55 minutes of Entra validity, with a one-minute reuse guard for newly acquired tokens). Embed tokens never outlive the Entra token used to create them ([source](https://learn.microsoft.com/power-bi/developer/embedded/generate-embed-token#considerations-and-limitations)) |
+| 1 | Person → Platform app | Signed session cookie after a platform app password sign-in, or local View as (`__Host-` prefixed over HTTPS, HttpOnly, SameSite). At company addresses, the server checks the company/session pair. Work-account sign-in is not built | Platform app | 8 hours by default; sign-out or access changes can end it earlier | The browser |
+| 2 | Platform app → Entra ID | The customer service principal's client ID and a **client assertion**: a 10-minute JWT signed by MSAL with the account's **certificate** (PS256, `x5t#S256`). The code also supports a **federated credential**, using a managed or workload identity token instead. Legacy client-secret credentials are also accepted | MSAL signs the certificate assertion; Entra ID or the workload issuer issues the federated token | Generated certificates: one year by default. Certificate assertion: 10 minutes in this MSAL version. Federated token: its issuer's expiry | The certificate's private key: AES-256-GCM file with `SECRETS_KEY` (pilot), Azure Key Vault (production). Federation stores no service-account key |
+| 3 | Platform app → Power BI REST | **Entra access token** for `https://analysis.windows.net/powerbi/api/.default`, as the customer service principal | Entra ID | Normally 60 to 90 minutes; Entra sets the expiry | Server memory. Reacquired on demand with five minutes left, or when GenerateToken needs a longer lifetime (up to 55 minutes of Entra validity, with a one-minute reuse guard for newly acquired tokens). Embed tokens never outlive the Entra token used to create them ([source](https://learn.microsoft.com/power-bi/developer/embedded/generate-embed-token#considerations-and-limitations)) |
 | 4 | Browser → Power BI | **Embed token** from Generate Token V2: one report, its model, view only, with the person's effective identity | Power BI | Up to 30 minutes by default (`EMBED_TOKEN_MINUTES` requests 5 to 60), capped by the Entra token's expiry | Browser memory. The response also has the embed URL, expiration and report metadata. It's encrypted, so the browser can't decode or change it ([security white paper](https://learn.microsoft.com/power-bi/guidance/white-paper-powerbi-security)) |
-| 5 | Power BI → OneLake | The semantic model's **cloud connection**, which signs in as the customer's **workspace identity** (fixed identity), with SSO off | Fabric | Managed by Fabric | Fabric manages the identity's credentials; HiCRM stores no OneLake credential ([security integration](https://learn.microsoft.com/fabric/fundamentals/direct-lake-security-integration)) |
-| 6 | HiCRM → data agent (MCP) | Entra access token for `https://api.fabric.microsoft.com/.default`, as the customer service principal | Entra ID | About 60 to 90 minutes | Server memory |
-| 7 | HiCRM → SQL database | Entra access token for Azure SQL, as the customer service principal (Entra-only authentication) | Entra ID | About 60 to 90 minutes | Server memory |
+| 5 | Power BI → OneLake | The semantic model's **cloud connection**, which signs in as the customer's **workspace identity** (fixed identity), with SSO off | Fabric | Managed by Fabric | Fabric manages the identity's credentials; the platform app stores no OneLake credential ([security integration](https://learn.microsoft.com/fabric/fundamentals/direct-lake-security-integration)) |
+| 6 | Platform app → data agent (MCP) | Entra access token for `https://api.fabric.microsoft.com/.default`, as the customer service principal | Entra ID | About 60 to 90 minutes | Server memory |
+| 7 | Platform app → SQL database | Entra access token for Azure SQL, as the customer service principal (Entra-only authentication) | Entra ID | About 60 to 90 minutes | Server memory |
 
 **Each customer's service principal is an app, not a user.** Each customer has one Entra app registration and service
 principal (`<customer>sa`), which is Admin of that customer's workspace and of nothing else. It has no mailbox, MFA
@@ -105,8 +105,8 @@ their sessions, so an open report never keeps rights they no longer have.
 
 ## 5. Row-level security
 
-**The roles are in the semantic model.** "HiCRM Insights" is generated as TMDL, with one role per territory and one for
-managers:
+**The roles are in the semantic model.** "Platform app Insights" is generated as TMDL, with one role per territory and
+one for managers:
 
 ```tmdl
 role Texas
@@ -128,7 +128,8 @@ Users can then query the model without being able to query the database undernea
 
 **The roles come from the server.** In "app owns data", the username in an embed token can be any text: Power BI
 trusts the application ([RLS guidance](https://learn.microsoft.com/power-bi/guidance/rls-guidance#validate-roles)).
-So HiCRM works out the roles from the signed-in person's record on the server, never from the request. The rules:
+So the platform app works out the roles from the signed-in person's record on the server, never from the request.
+The rules:
 
 | Rule | Where | Control |
 | --- | --- | --- |
@@ -149,7 +150,7 @@ principal's ID, not the person's
 
 ### From a person to their rows
 
-The translation from a HiCRM session to rows in the report is:
+The translation from a platform app session to rows in the report is:
 
 1. The browser sends the signed session cookie, and the server finds the person's current record for that company.
 2. `accessOf(user)` returns their role and territories: `null` means every territory, not a list stored in the cookie.
@@ -229,12 +230,12 @@ the visual again: row-level security holds only if no filter can show a person m
 | Licenses for the service principals | None | [Service principal](https://learn.microsoft.com/power-bi/developer/embedded/embed-service-principal) |
 | Tenant setting "Service principals can call Fabric public APIs" | Yes, limited to a security group with the platform's service principals | [Developer settings](https://learn.microsoft.com/fabric/admin/service-admin-portal-developer) |
 | Tenant setting "Embed content in apps" | Yes | Same |
-| Tenant settings "Service principals can access read-only admin APIs" and "…admin APIs used for updates" | No. The application never calls admin APIs. The validator reads the tenant settings through the read-only one if the platform identity has it, in a group of its own; no HiCRM identity should have the one for updates (IDN-06) | [Admin API settings](https://learn.microsoft.com/fabric/admin/service-admin-portal-admin-api-settings) |
+| Tenant settings "Service principals can access read-only admin APIs" and "…admin APIs used for updates" | No. The application never calls admin APIs. The validator reads the tenant settings through the read-only one if the platform identity has it, in a group of its own; none of the platform's identities should have the one for updates (IDN-06) | [Admin API settings](https://learn.microsoft.com/fabric/admin/service-admin-portal-admin-api-settings) |
 | Workspace role for the identity that creates embed tokens | Member or Admin of the workspace holding the report and model. Each customer service principal is Admin of its own workspace | [Embed for your customers](https://learn.microsoft.com/power-bi/guidance/powerbi-implementation-planning-usage-scenario-embed-for-your-customers) |
 
 ## 8. Best-practice checklist
 
-| Practice | Status in HiCRM | Source |
+| Practice | Status in the platform app | Source |
 | --- | --- | --- |
 | Use a service principal, not a master user | Done: one per customer | [Embed for your customers](https://learn.microsoft.com/power-bi/guidance/powerbi-implementation-planning-usage-scenario-embed-for-your-customers) |
 | Generate embed tokens on the server; never send an Entra token to the browser | Done (EMB-01, EMB-04) | [Security white paper](https://learn.microsoft.com/power-bi/guidance/white-paper-powerbi-security) |
@@ -250,9 +251,9 @@ the visual again: row-level security holds only if no filter can show a person m
 | Test RLS with real embed tokens | Done (RLS-03, `npm run validate -- --live --browser`) | [RLS with Power BI](https://learn.microsoft.com/fabric/security/service-admin-row-level-security#considerations-and-limitations-for-dynamic-rls) |
 | Direct Lake with RLS: fixed-identity connection, SSO off | Done (RLS-05) | [Direct Lake security](https://learn.microsoft.com/fabric/fundamentals/direct-lake-security-integration) |
 | Restrict frames and pin the client library (CSP, Subresource Integrity) | Done (EMB-05) | [Content Security Policy (MDN)](https://developer.mozilla.org/docs/Web/HTTP/CSP) |
-| Limit the service principal tenant settings to a security group | **To do**: in the pilot tenant both settings apply to the entire organization (IDN-06 warns). Create a group such as "HiCRM service principals" with the platform identity and every service principal, and apply the settings to it only. The Starter Kit calls its group "Power BI Apps" | [Developer settings](https://learn.microsoft.com/fabric/admin/service-admin-portal-developer) |
-| Give no HiCRM identity the admin APIs used for updates | **To do**: in the pilot tenant the platform identity is in a security group that is allowed both admin API settings (IDN-06 warns). Take it out; give it a group of its own for the read-only setting only if the validator should keep reading tenant settings | [Admin API settings](https://learn.microsoft.com/fabric/admin/service-admin-portal-admin-api-settings) |
-| Use certificates or federated credentials instead of client secrets | Done for the customer service principals (certificates, live since 2026-10-06; federated supported). The platform identity supports both, and production refuses secrets; the pilot's platform app still uses a secret (IDN-05 warns) | [Service principal](https://learn.microsoft.com/power-bi/developer/embedded/embed-service-principal), [trust a managed identity](https://learn.microsoft.com/entra/workload-id/workload-identity-federation-config-app-trust-managed-identity) |
+| Limit the service principal tenant settings to a security group | **To do**: in the pilot tenant both settings apply to the entire organization (IDN-06 warns). Create a group such as "Platform service principals" with the platform identity and every service principal, and apply the settings to it only. The Starter Kit calls its group "Power BI Apps" | [Developer settings](https://learn.microsoft.com/fabric/admin/service-admin-portal-developer) |
+| Give none of the platform's identities the admin APIs used for updates | **To do**: in the pilot tenant the platform identity is in a security group that is allowed both admin API settings (IDN-06 warns). Take it out; give it a group of its own for the read-only setting only if the validator should keep reading tenant settings | [Admin API settings](https://learn.microsoft.com/fabric/admin/service-admin-portal-admin-api-settings) |
+| Use certificates or federated credentials instead of client secrets | Done for the customer service principals (certificates, live since 2026-10-06; federated supported). The platform identity supports both, and production refuses secrets; the pilot's platform identity still uses a secret (IDN-05 warns) | [Service principal](https://learn.microsoft.com/power-bi/developer/embedded/embed-service-principal), [trust a managed identity](https://learn.microsoft.com/entra/workload-id/workload-identity-federation-config-app-trust-managed-identity) |
 | Acquire tokens with MSAL, not hand-written OAuth calls | Done: MSAL Node for every service principal | [MSAL overview](https://learn.microsoft.com/entra/identity-platform/msal-overview) |
 | Keep relationship functions out of measures over secured tables | Done: `TREATAS` instead of `USERELATIONSHIP`, enforced by a test | [USERELATIONSHIP remarks](https://learn.microsoft.com/dax/userelationship-function-dax#remarks) |
 | Speed up embedding with `powerbi.bootstrap` or `powerbi.preload` | **Not yet**: the report embeds when the Reports tab opens. The usage log shows about 11 seconds to load and 14 to render on the trial capacity in headless Edge, so this is the next optimization to measure | [Performance best practices](https://learn.microsoft.com/power-bi/developer/embedded/embedded-performance-best-practices) |
@@ -276,9 +277,9 @@ Three samples from the Power BI Dev Camp show how Microsoft recommends building 
 - [AppOwnsDataWithRLS](https://github.com/PowerBiDevCamp/AppOwnsDataWithRLS): an authorization model built on row-level security;
 - [NetCore-AppOwnsData](https://github.com/PowerBiDevCamp/NetCore-AppOwnsData): a minimal .NET starter.
 
-HiCRM follows the same practices, with a few deliberate differences for a Fabric-native app:
+The platform app follows the same practices, with a few deliberate differences for a Fabric-native app:
 
-| Practice | In the samples | In HiCRM |
+| Practice | In the samples | In the platform app |
 | --- | --- | --- |
 | Service principal, client credentials on the server; Entra tokens never reach the browser | All three | Same, with one service principal per customer (EMB-01, EMB-04) |
 | Treat a cached Entra token as expired when it can't cover a whole embed token | Starter Kit `TokenManager` (`ExpiresOn` minus the embed lifetime) | Same, plus 5 minutes (EMB-02) |

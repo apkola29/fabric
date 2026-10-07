@@ -1,4 +1,4 @@
-// HiCRM Insights: every measure (the semantic layer).
+// Platform app Insights: every measure (the semantic layer).
 //
 // Generated from MEASURES in src/crm/model.js by `node scripts/report-assets.js`: change model.js, not this file.
 // Reports bind to these measures by name and carry no DAX (see report-creation-prompt.md).

@@ -118,7 +118,7 @@ export function createKeyVaultSecretStore({ vaultUrl, tokens, fetchImpl = fetch 
       return (await call('GET', name))?.value ?? null;
     },
     async set(name, value, { expiresOn } = {}) {
-      await call('PUT', name, { value: String(value), contentType: 'hicrm/service-account-secret', ...(expiresOn ? { attributes: { exp: Math.floor(Date.parse(expiresOn) / 1000) } } : {}) });
+      await call('PUT', name, { value: String(value), contentType: 'platform-app/service-principal-secret', ...(expiresOn ? { attributes: { exp: Math.floor(Date.parse(expiresOn) / 1000) } } : {}) });
     },
     async delete(name) {
       await call('DELETE', name);

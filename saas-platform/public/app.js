@@ -1,5 +1,5 @@
-// HiCRM, the end customer's app. It only calls /api/me/... and /api/session: the server decides which company the
-// signed-in user belongs to and what that company can use (CRM, reports, report building, the assistant).
+// The platform app, as the end customer sees it. It only calls /api/me/... and /api/session: the server decides which
+// company the signed-in user belongs to and what that company can use (CRM, reports, report building, the assistant).
 import { TOKEN_CHECK_MS, refreshTimeOf } from './embed-token.js';
 
 const NAV = [
@@ -152,7 +152,7 @@ async function applySite(generation = state.identityGeneration) {
     site = await api('/api/site', { generation });
   } catch (error) {
     if (!currentIdentity(generation)) return;
-    site = error.status === 404 ? { mode: 'unknown', product: 'HiCRM' } : { mode: 'shared', product: 'HiCRM' };
+    site = error.status === 404 ? { mode: 'unknown', product: 'Platform app' } : { mode: 'shared', product: 'Platform app' };
   }
   if (!currentIdentity(generation)) return;
   state.site = site;

@@ -21,7 +21,7 @@ test('config describes the mode, editions and service accounts without secrets',
   const config = (await call({ url: '/api/admin/config' })).json();
   assert.equal(config.mode, 'mock');
   assert.equal(config.live, false);
-  assert.equal(config.productName, 'HiCRM');
+  assert.equal(config.productName, 'Platform app');
   assert.deepEqual(config.plans.map((p) => p.id), ['standard', 'professional', 'enterprise']);
   assert.deepEqual(config.addons.map((a) => a.id), ['integration']);
   assert.deepEqual(config.serviceAccounts, { mode: 'preferred', autoCreate: true });
@@ -59,7 +59,7 @@ test('end to end: provision with a service account, check the CRM, embed reports
   assert.ok(crm.summary.pipelineValue > 0);
 
   const items = (await call({ url: `${base}/items` })).json().map((i) => `${i.type}:${i.displayName}`);
-  for (const expected of ['SQLDatabase:hicrm_db', 'SemanticModel:HiCRM Insights', 'Report:Sales overview', 'DataAgent:HiCRM Assistant']) assert.ok(items.includes(expected), expected);
+  for (const expected of ['SQLDatabase:platform_app_db', 'SemanticModel:Platform app Insights', 'Report:Sales overview', 'DataAgent:Platform app Assistant']) assert.ok(items.includes(expected), expected);
 
   const { reports, datasets } = (await call({ url: `${base}/reports` })).json();
   assert.equal(reports[0].datasetId, datasets[0].id);
@@ -71,7 +71,7 @@ test('end to end: provision with a service account, check the CRM, embed reports
   assert.deepEqual(create.tokenRequest, { datasets: [{ id: datasets[0].id }], targetWorkspaces: [{ id: tenant.fabric.workspaceId }], identities: operator, lifetimeInMinutes: 30 });
 
   const answer = (await call({ method: 'POST', url: `${base}/agent/ask`, headers: WEB, body: { question: 'What is the pipeline?' } })).json();
-  assert.match(answer.answer, /HiCRM Insights - Assistant \(Sales Reps, Accounts, Contacts, Opportunities, Activities, Calendar\)/);
+  assert.match(answer.answer, /Platform app Insights - Assistant \(Sales Reps, Accounts, Contacts, Opportunities, Activities, Calendar\)/);
 
   assert.equal((await call({ method: 'DELETE', url: `${base}?confirm=wrong`, headers: WEB })).status, 400);
   assert.equal((await call({ method: 'DELETE', url: `${base}?confirm=Fabrikam`, headers: WEB })).status, 200);

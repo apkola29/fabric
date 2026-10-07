@@ -1,9 +1,9 @@
-# HiCRM: a multitenant SaaS app on Microsoft Fabric
+# A multitenant SaaS platform app on Microsoft Fabric
 
-A framework for multitenant applications on Microsoft Fabric, and a working sample built on it. The sample, **HiCRM**,
-is a CRM sold as SaaS, with Fabric doing the data work behind the scenes. Every customer company gets its own Fabric
-workspace, run through its own service principal that can reach nothing else, and its own address, logo and
-sign-ins. The customers' people only ever see HiCRM:
+A framework for multitenant applications on Microsoft Fabric, and a working sample built on it. The sample,
+**the platform app**, is a CRM sold as SaaS, with Fabric doing the data work behind the scenes. Every customer company
+gets its own Fabric workspace, run through its own service principal that can reach nothing else, and its own address,
+logo and sign-ins. The customers' people only ever see the platform app:
 
 - their accounts, opportunities and activities, in a SQL database in Fabric;
 - a standard Power BI report, embedded ("app owns data") and filtered to their territories by row-level security;
@@ -28,60 +28,60 @@ They need no Microsoft Entra account and no Power BI license.
 
 ## Who's who
 
-The documents name three companies. HiCRM is the provider that runs everything; Fabrikam and Contoso are two of its
-customers.
+The documents name three companies. The platform is the provider that runs everything; Fabrikam and Contoso are two of
+its customers.
 
 | Name | Who they are | What they own |
 | --- | --- | --- |
-| **HiCRM** (blue) | The SaaS provider: it builds, sells and runs the CRM. "You" in [REQUIREMENTS.md](REQUIREMENTS.md), [BUILDOUT.md](BUILDOUT.md) and [DEPLOYMENT-ARCHITECTURES.md](DEPLOYMENT-ARCHITECTURES.md) | Everything in Azure and Fabric: the app, its own Microsoft Entra tenant and every identity in it, the Fabric capacity, and a workspace and a service principal for each customer. It pays for all of it |
-| **Fabrikam** (orange), **Contoso** (green) | Customers: two fictional companies that subscribe to HiCRM | Their people (a sales manager and three reps each), their business data and their own Microsoft Entra tenant. Their people need no account in HiCRM's tenant and no Fabric or Power BI license |
-| **Microsoft** (grey) | The cloud provider | Runs Microsoft Entra ID, Fabric and Power BI, which HiCRM uses |
+| **The platform** (blue) | The SaaS provider: it builds, sells and runs the CRM. "You" in [REQUIREMENTS.md](REQUIREMENTS.md), [BUILDOUT.md](BUILDOUT.md) and [DEPLOYMENT-ARCHITECTURES.md](DEPLOYMENT-ARCHITECTURES.md) | Everything in Azure and Fabric: the platform app, its own Microsoft Entra tenant and every identity in it, the Fabric capacity, and a workspace and a service principal for each customer. It pays for all of it |
+| **Fabrikam** (orange), **Contoso** (green) | Customers: two fictional companies that subscribe to the platform app | Their people (a sales manager and three reps each), their business data and their own Microsoft Entra tenant. Their people need no account in the platform's tenant and no Fabric or Power BI license |
+| **Microsoft** (grey) | The cloud provider | Runs Microsoft Entra ID, Fabric and Power BI, which the platform uses |
 
 Two phrases to read with care:
-- **"Fabrikam's workspace"** is the workspace HiCRM runs for Fabrikam: HiCRM owns it, and it holds only Fabrikam's
-  data. Likewise `fabrikamsa` is HiCRM's service principal for Fabrikam's work.
-- **"Tenant"**, in the code and in [FRAMEWORK.md](FRAMEWORK.md), is one of HiCRM's customers (the registry is
-  `tenants.json`), not a Microsoft Entra tenant. Each company has an Entra tenant of its own. Today every identity
-  HiCRM runs as lives in HiCRM's. A customer's own tenant takes part only if the customer opts in: to let its people
-  sign in with their work accounts, or to bring in its own data. [IDENTITIES.md](IDENTITIES.md) shows every identity
-  and how each sign-in works.
+- **"Fabrikam's workspace"** is the workspace the platform runs for Fabrikam: the platform owns it, and it holds only
+  Fabrikam's data. Likewise `fabrikamsa` is the platform's service principal for Fabrikam's work.
+- **"Tenant"**, in the code and in [FRAMEWORK.md](FRAMEWORK.md), is one of the platform's customers (the registry is
+  `tenants.json`), not a Microsoft Entra tenant. Each company has an Entra tenant of its own. Today every identity the
+  platform runs as lives in the platform's. A customer's own tenant takes part only if the customer opts in: to let its
+  people sign in with their work accounts, or to bring in its own data. [IDENTITIES.md](IDENTITIES.md) shows every
+  identity and how each sign-in works.
 
 ```mermaid
 flowchart TB
-  %% Who owns what. Orange: Fabrikam, green: Contoso (two customers of HiCRM). Blue: HiCRM, the SaaS provider.
-  %% Grey: Microsoft. Dashed: the future data integration add-on.
+  %% Who owns what. Orange: Fabrikam, green: Contoso (two customers of the platform).
+  %% Blue: the platform, the SaaS provider. Grey: Microsoft. Dashed: the future data integration add-on.
 
   subgraph FAB["FABRIKAM · customer 1 · owns its people, its data and its own Entra tenant"]
     direction LR
-    FPPL["Fabrikam's people<br/>a sales manager and three reps<br/>no account in HiCRM's tenant, no license"]
+    FPPL["Fabrikam's people<br/>a sales manager and three reps<br/>no account in the platform's tenant, no license"]
     FSYS[("Fabrikam's own systems<br/>ERP, spreadsheets, SaaS apps")]
   end
 
   subgraph CON["CONTOSO · customer 2 · owns its people, its data and its own Entra tenant"]
     direction LR
-    CPPL["Contoso's people<br/>a sales manager and three reps<br/>no account in HiCRM's tenant, no license"]
+    CPPL["Contoso's people<br/>a sales manager and three reps<br/>no account in the platform's tenant, no license"]
     CSYS[("Contoso's own systems<br/>ERP, spreadsheets, SaaS apps")]
   end
 
-  subgraph HI["HICRM · the SaaS provider · owns, runs and pays for everything in this box"]
+  subgraph HI["THE PLATFORM · the SaaS provider · owns, runs and pays for everything in this box"]
     direction TB
-    APP["HiCRM app and back office<br/>one deployment for every customer<br/>fabrikam.hicrm… · contoso.hicrm…"]
-    subgraph IDS["HiCRM's Microsoft Entra tenant · HiCRM's own identities"]
+    APP["Platform app and back office<br/>one deployment for every customer<br/>fabrikam.platform… · contoso.platform…"]
+    subgraph IDS["The platform's Microsoft Entra tenant · the platform's own identities"]
       direction LR
-      FSA["fabrikamsa<br/>HiCRM's service principal<br/>for Fabrikam's work"]
+      FSA["fabrikamsa<br/>the platform's service principal<br/>for Fabrikam's work"]
       PID["Platform identity<br/>builds workspaces,<br/>then lets go"]
-      CSA["contososa<br/>HiCRM's service principal<br/>for Contoso's work"]
+      CSA["contososa<br/>the platform's service principal<br/>for Contoso's work"]
     end
-    subgraph CAP["HiCRM's Fabric capacity"]
+    subgraph CAP["The platform's Fabric capacity"]
       direction LR
-      FWS["Workspace for Fabrikam<br/>owned by HiCRM<br/>holds only Fabrikam's data"]
-      CWS["Workspace for Contoso<br/>owned by HiCRM<br/>holds only Contoso's data"]
+      FWS["Workspace for Fabrikam<br/>owned by the platform<br/>holds only Fabrikam's data"]
+      CWS["Workspace for Contoso<br/>owned by the platform<br/>holds only Contoso's data"]
     end
   end
 
-  subgraph MS["MICROSOFT · runs the cloud services HiCRM uses"]
+  subgraph MS["MICROSOFT · runs the cloud services the platform uses"]
     direction LR
-    MEID["Microsoft Entra ID<br/>signs HiCRM's identities in"]
+    MEID["Microsoft Entra ID<br/>signs the platform's identities in"]
     MFAB["Microsoft Fabric and Power BI<br/>run the capacity and the reports"]
   end
 
@@ -100,13 +100,13 @@ flowchart TB
 
   classDef fabrikam fill:#FDECE0,stroke:#C55A11,color:#4A1F00
   classDef contoso fill:#E7F4EA,stroke:#2E7D32,color:#123D1B
-  classDef hicrm fill:#E7F0FA,stroke:#1F5AA6,color:#0B2545
+  classDef platform fill:#E7F0FA,stroke:#1F5AA6,color:#0B2545
   classDef microsoft fill:#EEEEEE,stroke:#5F5F5F,color:#1F1F1F
   classDef future fill:#FFFFFF,stroke:#6B6B6B,stroke-dasharray:5 5,color:#333333
   class FPPL fabrikam
   class CPPL contoso
   class FSYS,CSYS future
-  class APP,FSA,PID,CSA,FWS,CWS hicrm
+  class APP,FSA,PID,CSA,FWS,CWS platform
   class MEID,MFAB microsoft
   style FAB fill:#FFF7F1,stroke:#C55A11,stroke-width:2px,color:#4A1F00
   style CON fill:#F3FAF4,stroke:#2E7D32,stroke-width:2px,color:#123D1B
@@ -116,7 +116,7 @@ flowchart TB
   style MS fill:#FAFAFA,stroke:#5F5F5F,color:#1F1F1F
 ```
 
-Orange: Fabrikam. Green: Contoso. Blue: HiCRM. Grey: Microsoft. Dashed: the future data integration add-on.
+Orange: Fabrikam. Green: Contoso. Blue: the platform. Grey: Microsoft. Dashed: the future data integration add-on.
 
 ## How it works
 
@@ -125,7 +125,7 @@ One customer's data, end to end. Fabrikam is shown; Contoso works the same way, 
 ```mermaid
 flowchart TB
   %% One customer's data, end to end: Fabrikam. Contoso works the same way, in its own workspace, as contososa.
-  %% Orange: Fabrikam (the customer). Blue: HiCRM (the SaaS provider). Grey: Microsoft. Dashed: future add-on.
+  %% Orange: Fabrikam (the customer). Blue: the platform (the SaaS provider). Grey: Microsoft. Dashed: future add-on.
 
   subgraph FAB["FABRIKAM · the customer"]
     direction LR
@@ -134,25 +134,25 @@ flowchart TB
     SYS[("Fabrikam's own systems<br/>ERP, spreadsheets, SaaS apps")]
   end
 
-  subgraph HI["HICRM · the SaaS provider · everything in this box is HiCRM's"]
+  subgraph HI["THE PLATFORM · the SaaS provider · everything in this box is the platform's"]
     direction TB
-    subgraph APP["HiCRM app"]
+    subgraph APP["Platform app"]
       direction LR
       WEB["Web app and API<br/>knows each person's<br/>role and territories"]
       EMB["Embed token<br/>service"]
       AST["Assistant"]
     end
-    SA["fabrikamsa · HiCRM's service principal for Fabrikam<br/>signs in with a certificate, through MSAL"]
-    subgraph WS["Workspace for Fabrikam · on HiCRM's Fabric capacity · only Fabrikam's data"]
+    SA["fabrikamsa · the platform's service principal for Fabrikam<br/>signs in with a certificate, through MSAL"]
+    subgraph WS["Workspace for Fabrikam · on the platform's Fabric capacity · only Fabrikam's data"]
       direction TB
       subgraph NOW["Today"]
         direction TB
-        DB[("SQL database hicrm_db<br/>CRM records")]
+        DB[("SQL database platform_app_db<br/>CRM records")]
         OL[("OneLake<br/>Delta copy")]
-        SM["Semantic model<br/>HiCRM Insights<br/>one role per territory"]
+        SM["Semantic model<br/>Platform app Insights<br/>one role per territory"]
         RPT["Report<br/>Sales overview"]
-        AM["HiCRM Insights - Assistant<br/>the same model, no roles"]
-        AG["Data agent<br/>HiCRM Assistant"]
+        AM["Platform app Insights - Assistant<br/>the same model, no roles"]
+        AG["Data agent<br/>Platform app Assistant"]
       end
       subgraph NEXT["Future add-on · data integration"]
         direction TB
@@ -198,12 +198,12 @@ flowchart TB
   GD -.->|"more answers"| AM
 
   classDef fabrikam fill:#FDECE0,stroke:#C55A11,color:#4A1F00
-  classDef hicrm fill:#E7F0FA,stroke:#1F5AA6,color:#0B2545
+  classDef platform fill:#E7F0FA,stroke:#1F5AA6,color:#0B2545
   classDef microsoft fill:#EEEEEE,stroke:#5F5F5F,color:#1F1F1F
   classDef future fill:#FFFFFF,stroke:#6B6B6B,stroke-dasharray:5 5,color:#333333
   class MGR,REP fabrikam
   class SYS,PL,BR,NB,SV,GD future
-  class WEB,EMB,AST,SA,DB,OL,SM,RPT,AM,AG hicrm
+  class WEB,EMB,AST,SA,DB,OL,SM,RPT,AM,AG platform
   class ENTRA,PBI microsoft
   style FAB fill:#FFF7F1,stroke:#C55A11,stroke-width:2px,color:#4A1F00
   style HI fill:#F5F9FE,stroke:#1F5AA6,stroke-width:2px,color:#0B2545
@@ -214,11 +214,11 @@ flowchart TB
   style MS fill:#FAFAFA,stroke:#5F5F5F,color:#1F1F1F
 ```
 
-1. **Sign in.** Fabrikam's manager and reps sign in to HiCRM at Fabrikam's address. HiCRM knows each person's role
-   and territories; nobody needs a Microsoft account.
-2. **Run as Fabrikam's service principal.** Every call HiCRM makes for Fabrikam runs as `fabrikamsa`, which gets its
-   tokens from Microsoft Entra ID with a certificate, through MSAL. It's Admin of Fabrikam's workspace and of nothing
-   else, so a bug that mixes up customers is refused by Fabric.
+1. **Sign in.** Fabrikam's manager and reps sign in to the platform app at Fabrikam's address. The platform app knows
+   each person's role and territories; nobody needs a Microsoft account.
+2. **Run as Fabrikam's service principal.** Every call the platform app makes for Fabrikam runs as `fabrikamsa`, which
+   gets its tokens from Microsoft Entra ID with a certificate, through MSAL. It's Admin of Fabrikam's workspace and of
+   nothing else, so a bug that mixes up customers is refused by Fabric.
 3. **CRM data.** The app reads and writes the CRM records in the SQL database. Fabric copies them to OneLake
    automatically, and the semantic model reads them there (Direct Lake, through a fixed identity).
 4. **Embed token.** To show a report, the app asks Power BI for an embed token (Generate Token V2) for that one report,
@@ -264,15 +264,16 @@ embedded report.
 1. **Read [REQUIREMENTS.md](REQUIREMENTS.md).** It lists the roles needed and what each is for, the identities, the
    tenant settings, the capacity, and the exact rules for each customer's workspace.
 2. **Create the identities** (an Entra admin):
-   - the platform app registration, with a certificate (REQUIREMENTS.md, section 8, step 4);
+   - the platform identity's app registration, with a certificate (REQUIREMENTS.md, section 8, step 4);
    - one service principal per customer, with a certificate, made Admin of the customer's workspace and registered with
      the platform:
      ```powershell
      az login --tenant <tenant-id>
      ./scripts/bootstrap-identities.ps1 -Customer Fabrikam -WorkspaceId <workspace-id> -Register
      ```
-3. **Set up:** `npm run setup` asks for the tenant, the platform app and its certificate, and the capacity, then builds the
-   customers: database, semantic models, report, data agent. Only non-secret settings go into `.env`.
+3. **Set up:** `npm run setup` asks for the tenant, the platform identity's app registration and its certificate, and
+   the capacity, then builds the customers: database, semantic models, report, data agent. Only non-secret settings go
+   into `.env`.
 4. **Start:** `npm start` asks for what it needs and keeps none of it:
 
    | You're asked for | Unless the environment provides it |
@@ -298,8 +299,14 @@ outside Key Vault, or a back office without sign-in. [.env.example](.env.example
 The diagrams page is [published on GitHub Pages](https://apkola29.github.io/fabric/saas-platform/); its source is
 [site/index.html](site/index.html). It uses only HTML and three SVG images, with no scripts:
 [who-sees-what.svg](site/who-sees-what.svg), [credential-flow.svg](site/credential-flow.svg) and
-[all-in-one.svg](site/all-in-one.svg), a design in which a customer runs its own Fabric. The SVGs are drawn by
-[site/diagrams.mjs](site/diagrams.mjs): edit a diagram there, then run `node site/diagrams.mjs`.
+[all-in-one.svg](site/all-in-one.svg), a design in which a customer runs its own Fabric.
+
+Each diagram is drawn by its own module: [who-sees-what.mjs](site/who-sees-what.mjs),
+[credential-flow.mjs](site/credential-flow.mjs) and [all-in-one.mjs](site/all-in-one.mjs), with shared helpers in
+[diagram-kit.mjs](site/diagram-kit.mjs). Edit a module, then run `node site/diagrams.mjs` to write all three SVGs. The
+Fabric icons are Microsoft's official ones from
+[@fabric-msft/svg-icons](https://github.com/microsoft/fabric-samples/blob/main/docs-samples/Icons.zip) 6.1.0 (MIT
+License), embedded by [fabric-icons.mjs](site/fabric-icons.mjs); each SVG carries the license text.
 
 ## Operate it from the command line
 
@@ -337,8 +344,8 @@ npm test
 - row-level security: roles in the model and in every token, and no measure that breaks under row-level security;
 - robustness: failures injected at every provisioning step, 20 customers side by side, rate limits, the production
   profile and security headers (`test/robustness.test.js`);
-- the framework: the core reaches HiCRM only through its workload contract, FRAMEWORK.md and the validator agree
-  (`test/framework.test.js`), and the project holds no credentials (`test/publishing.test.js`).
+- the framework: the core reaches the platform app's CRM only through its workload contract, FRAMEWORK.md and the
+  validator agree (`test/framework.test.js`), and the project holds no credentials (`test/publishing.test.js`).
 
 ## Validate it
 
@@ -371,7 +378,7 @@ the project in CI.
 | [FRAMEWORK.md](FRAMEWORK.md) | The framework: principles, reference architecture, building blocks, design decisions, 34 controls, validation |
 | [EMBEDDING.md](EMBEDDING.md) | How the embedded reports work: every credential, the token request, row-level security, refresh, best practices, and a comparison with Microsoft's App-Owns-Data samples |
 | [ARCHITECTURE.md](ARCHITECTURE.md) | Diagrams of the system, identities, provisioning and the runtime flows |
-| [IDENTITIES.md](IDENTITIES.md) | Every identity in HiCRM's and the customers' Microsoft Entra tenants, and how each sign-in works: today, with work accounts, and for the data integration add-on |
+| [IDENTITIES.md](IDENTITIES.md) | Every identity in the platform's and the customers' Microsoft Entra tenants, and how each sign-in works: today, with work accounts, and for the data integration add-on |
 | [DATA-INTEGRATION.md](DATA-INTEGRATION.md) | The future data integration add-on: Data Factory pipelines, Spark notebooks and lakehouse layers, who owns what, and the identities they run as |
 | [MULTITENANCY.md](MULTITENANCY.md) | The multitenancy, least-privilege and robustness review, with evidence |
 | [BUILDOUT.md](BUILDOUT.md) | How the pilot was built: identities and their counts, permissions, and the as-built record |
@@ -394,11 +401,11 @@ the project in CI.
 | `src/platform/audit.js`, `validation.js`, `browser.js` | Drift audit, the framework's controls, the validator and its browser check of row-level security |
 | `src/platform/tenancy.js`, `branding.js`, `sessions.js`, `operators.js` | Each customer's address, logo and color; sessions; back-office sign-in |
 | `src/fabric/client.js`, `mock.js` | Fabric, Power BI and OneLake REST client (throttling, long-running operations), and the role-enforcing emulator |
-| `src/crm/` | HiCRM itself: schema, semantic model and roles, starter report, data access, sample data. `workload.js` is all the framework uses |
-| `src/routes/`, `public/` | The customer and back-office APIs; the HiCRM app and the back office |
+| `src/crm/` | The platform app's CRM: schema, semantic model and roles, starter report, data access, sample data. `workload.js` is all the framework uses |
+| `src/routes/`, `public/` | The customer and back-office APIs; the platform app and its back office |
 | `src/util/publishing.js`, `scripts/check-publish.js` | The pre-publish check for credentials and environment IDs |
 | `scripts/` | Setup, CLI, identity bootstrap, preflight check and validator |
-| `site/` | The static diagrams page, published to GitHub Pages: HTML, three SVG diagrams and `diagrams.mjs`, which draws them |
+| `site/` | The static diagrams page, published to GitHub Pages: HTML, three SVG diagrams, one module per diagram and the official Fabric icons |
 
 ## License
 

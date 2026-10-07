@@ -238,6 +238,11 @@ export function createFabricClient({
     listItems: (workspaceId, type) =>
       listAll(`/workspaces/${workspaceId}/items${type ? `?type=${encodeURIComponent(type)}` : ''}`),
     createItem: (workspaceId, item) => longRunning('POST', `/workspaces/${workspaceId}/items`, { body: item }),
+    // A new display name or description; the item keeps its ID, definition and data. SQL databases go through this
+    // generic endpoint too: their own (PATCH .../sqlDatabases/{id}) takes only a description.
+    // https://learn.microsoft.com/rest/api/fabric/core/items/update-item
+    updateItem: (workspaceId, itemId, { displayName, description } = {}) =>
+      json('PATCH', `/workspaces/${workspaceId}/items/${itemId}`, { body: { displayName, description } }),
     getItemDefinition: (workspaceId, itemId) => longRunning('POST', `/workspaces/${workspaceId}/items/${itemId}/getDefinition`),
     updateItemDefinition: (workspaceId, itemId, definition) =>
       longRunning('POST', `/workspaces/${workspaceId}/items/${itemId}/updateDefinition`, { body: { definition }, withResult: false }),
@@ -250,6 +255,9 @@ export function createFabricClient({
     // embedded viewers (who have no Fabric identity) can query it.
     listConnections: () => listAll('/connections'),
     createConnection: (request) => json('POST', '/connections', { body: request }),
+    // Renames a connection in place, so what's bound to it stays bound. The request names its connectivity type.
+    // https://learn.microsoft.com/rest/api/fabric/core/connections/update-connection
+    updateConnection: (connectionId, request) => json('PATCH', `/connections/${connectionId}`, { body: request }),
     deleteConnection: async (connectionId) => drain(await call('DELETE', `/connections/${connectionId}`)),
     listItemConnections: (workspaceId, itemId) => listAll(`/workspaces/${workspaceId}/items/${itemId}/connections`),
     bindSemanticModelConnection: async (workspaceId, semanticModelId, connectionBinding) =>

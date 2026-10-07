@@ -11,7 +11,7 @@ const digest = (text) => createHash('sha256').update(String(text)).digest();
 
 export function createOperatorAuth({ key = '', secure = false, maxAgeSeconds = 4 * 60 * 60 } = {}) {
   // Derived from the key, so rotating ADMIN_KEY signs every operator out.
-  const signingKey = key ? createHmac('sha256', 'hicrm-operator').update(key).digest() : randomBytes(32);
+  const signingKey = key ? createHmac('sha256', 'platform-app-operator').update(key).digest() : randomBytes(32);
   const sign = (payload) => createHmac('sha256', signingKey).update(payload).digest('base64url');
   const attributes = `HttpOnly; SameSite=Strict; Path=/api/admin${secure ? '; Secure' : ''}`;
 

@@ -5,12 +5,12 @@
   <meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src 'self'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'">
   <meta name="referrer" content="no-referrer">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="description" content="A static explanation of who sees what in the HiCRM sample SaaS app on Microsoft Fabric, how credentials flow for app-owns-data embedding, and an all-in-one design in which a customer runs its own Fabric.">
-  <title>HiCRM on Microsoft Fabric: who sees what, how credentials flow, and an all-in-one option</title>
+  <meta name="description" content="A static explanation of who sees what in the platform app, a sample SaaS CRM on Microsoft Fabric, how credentials flow for app-owns-data embedding, and an all-in-one design in which a customer runs its own Fabric.">
+  <title>Platform app on Microsoft Fabric: who sees what, how credentials flow, and an all-in-one option</title>
   <style>
     :root {
       color-scheme: light;
-      --hicrm-blue: #1F5AA6;
+      --platform-blue: #1F5AA6;
       --fabrikam-orange: #C55A11;
       --contoso-green: #2E7D32;
       --text: #1F2328;
@@ -39,7 +39,7 @@
     }
 
     a {
-      color: var(--hicrm-blue);
+      color: var(--platform-blue);
       text-underline-offset: 0.18em;
     }
 
@@ -72,7 +72,7 @@
     }
 
     .eyebrow {
-      color: var(--hicrm-blue);
+      color: var(--platform-blue);
       font-size: 0.82rem;
       font-weight: 700;
       letter-spacing: 0.08em;
@@ -93,7 +93,7 @@
     }
 
     h2 {
-      border-left: 0.35rem solid var(--hicrm-blue);
+      border-left: 0.35rem solid var(--platform-blue);
       font-size: clamp(1.5rem, 3vw, 2rem);
       margin-bottom: 1rem;
       padding-left: 0.85rem;
@@ -212,8 +212,8 @@
       padding: 0.35rem 0.75rem;
     }
 
-    .pill-hicrm {
-      color: var(--hicrm-blue);
+    .pill-platform {
+      color: var(--platform-blue);
     }
 
     .pill-fabrikam {
@@ -302,11 +302,11 @@
 <body>
   <main class="page">
     <header class="hero">
-      <p class="eyebrow">HiCRM sample architecture</p>
-      <h1>HiCRM on Microsoft Fabric: who sees what, how credentials flow, and an all-in-one option</h1>
-      <p class="lede">HiCRM is a sample CRM for SaaS. In the isolated live pilot, each customer company has its own Fabric workspace and service principal. Its people see an embedded Power BI report filtered to their rows, without needing Microsoft accounts or Power BI user licenses: <strong>app owns data</strong>. Live reports need a supported Fabric capacity; demo mode uses an emulator. The last diagram shows another option: a customer that runs its own Fabric, from its data sources to reports and data agents.</p>
+      <p class="eyebrow">Platform app sample architecture</p>
+      <h1>Platform app on Microsoft Fabric: who sees what, how credentials flow, and an all-in-one option</h1>
+      <p class="lede">The platform app is a sample CRM for SaaS. In the isolated live pilot, each customer company has its own Fabric workspace and service principal. Its people see an embedded Power BI report filtered to their rows, without needing Microsoft accounts or Power BI user licenses: <strong>app owns data</strong>. Live reports need a supported Fabric capacity; demo mode uses an emulator. The last diagram shows another option: a customer that runs its own Fabric, from its data sources to reports and data agents.</p>
       <div class="brand-strip" aria-label="Companies in the sample">
-        <span class="pill pill-hicrm">HiCRM</span>
+        <span class="pill pill-platform">The platform</span>
         <span class="pill pill-fabrikam">Fabrikam</span>
         <span class="pill pill-contoso">Contoso</span>
       </div>
@@ -316,18 +316,18 @@
       <h2 id="who-sees-what">Who sees what</h2>
       <figure>
         <a href="who-sees-what.svg" aria-label="Open the who sees what diagram full size">
-          <img src="who-sees-what.svg" alt="Diagram showing Fabrikam and Contoso people signing in to the HiCRM web app, then reaching only their own Fabric workspace: SQL database, OneLake, a semantic model with territory roles, the report, and the data agent the app shows as the Assistant." style="width:100%; height:auto">
+          <img src="who-sees-what.svg" alt="Diagram showing Fabrikam and Contoso people signing in to the platform app, then reaching only their own Fabric workspace: SQL database, OneLake, a semantic model with territory roles, the report, and the data agent the app shows as the Assistant." style="width:100%; height:auto">
         </a>
-        <figcaption>Each customer reaches only its own Fabric workspace through the HiCRM web app.</figcaption>
+        <figcaption>Each customer reaches only its own Fabric workspace through the platform app.</figcaption>
       </figure>
 
       <ul class="key-points">
-        <li>Each company's people sign in at their company's address with HiCRM passwords, or local <strong>View as</strong> cards for demos. They need no account in HiCRM's Entra tenant and no Power BI user license. Work-account sign-in is a design option, not built.</li>
-        <li>HiCRM's customer-facing calls use that company's <strong>service principal</strong>, an app registration in HiCRM's Entra tenant, not a person's account: <strong>fabrikamsa</strong> for Fabrikam, <strong>contososa</strong> for Contoso. In isolated mode, each is Admin of its own workspace only, so its token can't reach the other company's workspace. The platform identity handles workspace setup and hand-over.</li>
+        <li>Each company's people sign in at their company's address with platform app passwords, or local <strong>View as</strong> cards for demos. They need no account in the platform's Entra tenant and no Power BI user license. Work-account sign-in is a design option, not built.</li>
+        <li>The platform app's customer-facing calls use that company's <strong>service principal</strong>, an app registration in the platform's Entra tenant, not a person's account: <strong>fabrikamsa</strong> for Fabrikam, <strong>contososa</strong> for Contoso. In isolated mode, each is Admin of its own workspace only, so its token can't reach the other company's workspace. The platform identity handles workspace setup and hand-over.</li>
         <li>Inside a workspace, the data flows like this:
           <ul>
             <li>The CRM records live in a SQL database in Fabric. Fabric automatically mirrors supported tables to OneLake as Delta tables, near real time (<a href="https://learn.microsoft.com/fabric/database/sql/mirroring-overview">SQL mirroring</a>).</li>
-            <li>The semantic model reads OneLake with Direct Lake through a fixed connection: workspace identity, SSO off. Fabric manages that identity's credentials; HiCRM stores no OneLake credential (<a href="https://learn.microsoft.com/fabric/fundamentals/direct-lake-security-integration">Direct Lake security</a>).</li>
+            <li>The semantic model reads OneLake with Direct Lake through a fixed connection: workspace identity, SSO off. Fabric manages that identity's credentials; the platform app stores no OneLake credential (<a href="https://learn.microsoft.com/fabric/fundamentals/direct-lake-security-integration">Direct Lake security</a>).</li>
             <li>The model has one row-level security role per territory: Texas, New Mexico and Georgia, plus <strong>All territories</strong> for managers.</li>
             <li>The report shows each person only their rows.</li>
             <li>The data agent answers questions about the same data, and the app shows it as the <strong>Assistant</strong>. For now it reads a copy of the model without roles, so only managers' questions reach it, and reps get answers scoped to their states from the CRM database. Row-level security for the agent comes later.</li>
@@ -402,13 +402,13 @@
             <tr>
               <th scope="row">1</th>
               <td>Person signs in at their company's address.</td>
-              <td>HiCRM password, or local View as for demos, then a signed session cookie. Work-account sign-in is not built.</td>
+              <td>A platform app password, or local View as for demos, then a signed session cookie. Work-account sign-in is not built.</td>
               <td>Browser, host-only HttpOnly cookie.</td>
               <td>8 hours by default; sign-out or access changes can end it earlier.</td>
             </tr>
             <tr>
               <th scope="row">2</th>
-              <td>HiCRM's server signs in to Microsoft Entra ID as fabrikamsa with MSAL client credentials.</td>
+              <td>The platform app's server signs in to Microsoft Entra ID as fabrikamsa with MSAL client credentials.</td>
               <td>An assertion signed with fabrikamsa's certificate. The code also supports a managed or workload identity token as a federated assertion.</td>
               <td>The certificate's private key in an encrypted file (pilot) or Azure Key Vault (production). Federation stores no service-account key.</td>
               <td>The certificate assertion: 10 minutes in this MSAL version. A federated token has its issuer's expiry.</td>
@@ -469,27 +469,27 @@
         </ul>
       </aside>
 
-      <p>HiCRM also requests separate SQL and Fabric tokens as fabrikamsa for the CRM pages and data agent's MCP endpoint. Contoso's calls use contososa.</p>
+      <p>The platform app also requests separate SQL and Fabric tokens as fabrikamsa for the CRM pages and data agent's MCP endpoint. Contoso's calls use contososa.</p>
     </section>
 
     <section aria-labelledby="all-in-one">
       <h2 id="all-in-one">All in one: a customer runs its own Fabric</h2>
       <figure>
         <a href="all-in-one.svg" aria-label="Open the all-in-one diagram full size">
-          <img src="all-in-one.svg" alt="Diagram of Contoso's environment, managed by Contoso. A CRM app with Azure SQL Database or a SQL database in Fabric, SQL Server and file shares behind an on-premises data gateway, SaaS apps and APIs, SharePoint and OneDrive, and cloud storage feed mirroring, Data Factory and shortcuts into OneLake. Stored procedures and notebooks shape business tables, and a semantic model serves reports and data agents to Contoso's people." style="width:100%; height:auto">
+          <img src="all-in-one.svg" alt="Diagram of Contoso's environment, managed by Contoso. Sources: a CRM app with Azure SQL Database or a SQL database in Fabric, SQL Server and file shares behind an on-premises data gateway, SaaS apps and APIs, SharePoint and OneDrive, and cloud storage. In Contoso's Fabric workspace: 1. Ingestion, with mirroring, Data Factory and shortcuts. 2. Storage layer, in OneLake: operational data, a warehouse and a lakehouse with a medallion architecture (bronze, silver and gold). 3. Transform, with stored procedures and notebooks that shape business tables. 4. Model, a semantic model. 5. Consume / visualize, with reports and data agents for Contoso's people." style="width:100%; height:auto">
         </a>
         <figcaption>Contoso as the example: its own tenant, capacity and workspace, from its data sources to reports and data agents.</figcaption>
       </figure>
 
       <p>This is a design for discussion; the sample builds the isolated pilot above. Here the customer manages the environment, and the data flows in five steps:</p>
       <ul class="key-points">
-        <li><strong>Bring it in.</strong> <a href="https://learn.microsoft.com/fabric/mirroring/overview">Mirroring</a> keeps a near-real-time copy of databases such as Azure SQL Database and <a href="https://learn.microsoft.com/fabric/mirroring/sql-server">SQL Server</a>. <a href="https://learn.microsoft.com/fabric/data-factory/data-factory-overview">Data Factory</a> pipelines, copy jobs and Dataflow Gen2 load other sources, such as SaaS apps and REST APIs. <a href="https://learn.microsoft.com/fabric/onelake/onelake-shortcuts">Shortcuts</a> read files in place, in SharePoint, OneDrive, Azure Data Lake Storage or Amazon S3. Sources on Contoso's network go through an <a href="https://learn.microsoft.com/data-integration/gateway/service-gateway-onprem">on-premises data gateway</a>.</li>
-        <li><strong>Store once, in OneLake.</strong> The CRM's operational data (a SQL database in Fabric, or mirrored databases), a warehouse and a lakehouse, all as Delta tables.</li>
-        <li><strong>Shape.</strong> Notebooks (Spark) and stored procedures (T-SQL) clean and join the data into business tables. Data Factory pipelines run them on a schedule.</li>
+        <li><strong>Ingestion.</strong> <a href="https://learn.microsoft.com/fabric/mirroring/overview">Mirroring</a> keeps a near-real-time copy of databases such as Azure SQL Database and <a href="https://learn.microsoft.com/fabric/mirroring/sql-server">SQL Server</a>. <a href="https://learn.microsoft.com/fabric/data-factory/data-factory-overview">Data Factory</a> pipelines, copy jobs and Dataflow Gen2 load other sources, such as SaaS apps and REST APIs. <a href="https://learn.microsoft.com/fabric/onelake/onelake-shortcuts">Shortcuts</a> read files in place, in SharePoint, OneDrive, Azure Data Lake Storage or Amazon S3. Sources on Contoso's network go through an <a href="https://learn.microsoft.com/data-integration/gateway/service-gateway-onprem">on-premises data gateway</a>.</li>
+        <li><strong>Storage layer.</strong> OneLake stores the data once: the CRM's operational data (a SQL database in Fabric, or mirrored databases), a warehouse, and a lakehouse that follows a <a href="https://learn.microsoft.com/fabric/onelake/onelake-medallion-lakehouse-architecture">medallion architecture</a> (bronze, silver and gold tables), all as Delta tables.</li>
+        <li><strong>Transform.</strong> Notebooks (Spark) and stored procedures (T-SQL) clean and join the data into business tables.</li>
         <li><strong>Model.</strong> A semantic model reads the business tables with <a href="https://learn.microsoft.com/fabric/fundamentals/direct-lake-overview">Direct Lake</a> and applies row-level security.</li>
-        <li><strong>Use.</strong> Reports and <a href="https://learn.microsoft.com/fabric/data-science/concept-data-agent">data agents</a> serve Contoso's people in Power BI, Teams or Copilot, or inside the CRM app.</li>
+        <li><strong>Consume / visualize.</strong> Reports and <a href="https://learn.microsoft.com/fabric/data-science/concept-data-agent">data agents</a> serve Contoso's people in Power BI, Teams or Copilot, or inside the CRM app.</li>
       </ul>
-      <p>Compared with the isolated pilot, Contoso owns the tenant, the capacity, the workspace, the gateway and the connections, and its IT runs them. HiCRM, if Contoso uses it, is just the CRM app.</p>
+      <p>Compared with the isolated pilot, Contoso owns the tenant, the capacity, the workspace, the gateway and the connections, and its IT runs them. The platform app, if Contoso uses it, is just the CRM app.</p>
     </section>
 
     <section aria-labelledby="questions">
@@ -497,7 +497,7 @@
       <dl class="qa-list">
         <div>
           <dt><strong>What are fabrikamsa and contososa?</strong></dt>
-          <dd>Service principals, not user accounts: app registrations in HiCRM's Entra tenant that sign in with a certificate, one per customer. No person signs in as them; the app's messages and back office call each one the customer's service account. Each is Admin of its own workspace and has no role anywhere else. Embedding needs <a href="https://learn.microsoft.com/power-bi/guidance/powerbi-implementation-planning-usage-scenario-embed-for-your-customers">Admin or Member</a>. Admin is used because this service principal sets up what's in the workspace, including its <a href="https://learn.microsoft.com/fabric/security/workspace-identity">workspace identity</a>, which needs a workspace admin, and it stays the workspace's admin once the platform identity gives up its own access.</dd>
+          <dd>Service principals, not user accounts: app registrations in the platform's Entra tenant that sign in with a certificate, one per customer, with Entra display names such as "Platform app service principal - Fabrikam (fabrikamsa)". No person signs in as them; the platform app's messages and back office call each one the customer's service account. Each is Admin of its own workspace and has no role anywhere else. Embedding needs <a href="https://learn.microsoft.com/power-bi/guidance/powerbi-implementation-planning-usage-scenario-embed-for-your-customers">Admin or Member</a>. Admin is used because this service principal sets up what's in the workspace, including its <a href="https://learn.microsoft.com/fabric/security/workspace-identity">workspace identity</a>, which needs a workspace admin, and it stays the workspace's admin once the platform identity gives up its own access.</dd>
         </div>
         <div>
           <dt><strong>Why a service principal?</strong></dt>
@@ -547,7 +547,7 @@
         <li><a href="https://learn.microsoft.com/power-bi/developer/embedded/embed-tokens">Embed tokens</a></li>
         <li><a href="https://learn.microsoft.com/rest/api/fabric/lakehouse/items/create-lakehouse">Create a lakehouse (REST)</a></li>
       </ul>
-      <p class="tagline">A sample for learning, provided as-is.</p>
+      <p class="tagline">A sample for learning, provided as-is. Fabric icons: <a href="https://github.com/microsoft/fabric-samples/blob/main/docs-samples/Icons.zip">@fabric-msft/svg-icons</a> 6.1.0, MIT License, Copyright (c) 2025 Microsoft Corporation; the license text is in each diagram file.</p>
     </footer>
   </main>
 </body>

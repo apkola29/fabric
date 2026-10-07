@@ -19,7 +19,7 @@ import { CORE_ITEMS } from '../platform/plans.js';
 
 export const MOCK_TEMPLATE_ID = 'mock-template';
 export const MOCK_PLATFORM_PRINCIPAL = '0a1b2c3d-0000-4000-8000-00000000a11a';
-const TEMPLATE_NAME = 'Template - HiCRM';
+const TEMPLATE_NAME = 'Template - Platform app';
 const STATE_VERSION = 2;
 const ROLE_RANK = { Viewer: 1, Contributor: 2, Member: 3, Admin: 4 };
 
@@ -38,7 +38,7 @@ const badRequest = (message, code = 'BadRequest') => new FabricApiError(message,
 const publicItem = ({ id, type, displayName, description, workspaceId }) => ({ id, type, displayName, description, workspaceId });
 
 // A "golden template" workspace: the reports every customer gets, bound to the template's own copy of the model.
-// Stamping copies the reports and re-points them at the customer's HiCRM Insights model.
+// Stamping copies the reports and re-points them at the customer's Platform app Insights model.
 function templateItems() {
   const ws = MOCK_TEMPLATE_ID;
   const pbir = {
@@ -263,8 +263,8 @@ export function createMockFabric({ stateFile = null, latencyMs = 0, jobDurationM
       // read-only admin APIs only to the platform identity's own group (so the validator can read these), no admin updates.
       async listTenantSettings() {
         await pause();
-        const group = [{ graphId: '22222222-3333-4444-8555-666666666666', name: 'HiCRM service principals' }];
-        const platformOnly = [{ graphId: '33333333-4444-4555-8666-777777777777', name: 'HiCRM platform identity' }];
+        const group = [{ graphId: '22222222-3333-4444-8555-666666666666', name: 'Platform app service principals' }];
+        const platformOnly = [{ graphId: '33333333-4444-4555-8666-777777777777', name: 'Platform identity' }];
         return [
           { settingName: 'ServicePrincipalAccessPermissionAPIs', title: 'Service principals can call Fabric public APIs', enabled: true, enabledSecurityGroups: group },
           { settingName: 'ServicePrincipalAccessGlobalAPIs', title: 'Service principals can create workspaces, connections, and deployment pipelines', enabled: true, enabledSecurityGroups: group },
@@ -389,6 +389,24 @@ export function createMockFabric({ stateFile = null, latencyMs = 0, jobDurationM
         const { owner, ...visible } = connection;
         return clone(visible);
       },
+      // Only the owner can change a connection, and the request names the connectivity type it was created with.
+      // https://learn.microsoft.com/rest/api/fabric/core/connections/update-connection
+      async updateConnection(connectionId, request = {}) {
+        await pause();
+        const connection = visibleConnection(connectionId);
+        if (request.connectivityType !== connection.connectivityType) throw badRequest(`connectivityType must be ${connection.connectivityType}.`, 'InvalidRequest');
+        if (request.displayName !== undefined) {
+          if (!request.displayName) throw badRequest('displayName must not be empty.', 'InvalidRequest');
+          if (Object.values(state.connections).some((c) => c.id !== connectionId && c.displayName === request.displayName)) {
+            throw conflict(`A connection named ${request.displayName} already exists.`, 'DuplicateConnectionName');
+          }
+          connection.displayName = request.displayName;
+        }
+        if (request.privacyLevel) connection.privacyLevel = request.privacyLevel;
+        save();
+        const { owner, ...visible } = connection;
+        return clone(visible);
+      },
       async deleteConnection(connectionId) {
         await pause();
         visibleConnection(connectionId);
@@ -448,6 +466,22 @@ export function createMockFabric({ stateFile = null, latencyMs = 0, jobDurationM
         if (definition) state.definitions[created.id] = clone(definition);
         save();
         return publicItem(created);
+      },
+      // A new display name or description; the item keeps its ID, definition, data and everything bound to it.
+      // https://learn.microsoft.com/rest/api/fabric/core/items/update-item
+      async updateItem(workspaceId, itemId, { displayName, description } = {}) {
+        await pause();
+        const item = itemFor(workspaceId, itemId, 'Contributor', 'update an item');
+        if (displayName !== undefined) {
+          if (!displayName) throw badRequest('displayName must not be empty.', 'InvalidRequest');
+          if (itemsIn(workspaceId).some((i) => i.id !== itemId && i.type === item.type && i.displayName === displayName)) {
+            throw conflict(`An item named ${displayName} already exists.`, 'ItemDisplayNameAlreadyInUse');
+          }
+          item.displayName = displayName;
+        }
+        if (description !== undefined) item.description = description;
+        save();
+        return publicItem(item);
       },
       async getItemDefinition(workspaceId, itemId) {
         await pause();

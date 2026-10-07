@@ -1,6 +1,6 @@
-# HiCRM starter report: specification
+# Platform app starter report: specification
 
-**Report:** HiCRM Sales Performance · **Status:** draft for approval · **Prepared:** 2026-10-02
+**Report:** Platform app Sales Performance · **Status:** draft for approval · **Prepared:** 2026-10-02
 
 This is the report spec that PLAN.md §0 waits on ("Starter report template for every customer: needs an approved
 report spec"). Build it once in the template workspace and stamp it per customer. Every number below was verified
@@ -14,7 +14,7 @@ reports later if editions need that.
 
 | Item | Value |
 |---|---|
-| Semantic model | HiCRM Insights: Direct Lake on OneLake over `hicrm_db` |
+| Semantic model | Platform app Insights: Direct Lake on OneLake over `platform_app_db` |
 | Verified against | Workspace `saas-fabrikam` (`<fabrikam-workspace-id>`), model `<fabrikam-semantic-model-id>` |
 | Tables (rows) | Opportunities 331 · Accounts 120 · Contacts 358 · Activities 1,343 · Sales Reps 8 · Calendar 2024-01-01 to 2027-12-31 |
 | Relationships | 8: Contacts, Opportunities and Activities → Accounts; Opportunities and Activities → Sales Reps; Opportunities (Close Date) and Activities (Activity Date) → Calendar; Accounts → Sales Reps (inactive) |
@@ -112,7 +112,7 @@ Starting theme JSON (validate it in Desktop under View → Themes):
 
 ```json
 {
-  "name": "HiCRM Executive",
+  "name": "Platform app Executive",
   "dataColors": ["#2563EB", "#15803D", "#B91C1C", "#F59E0B", "#0EA5E9", "#7C3AED", "#64748B", "#0F766E"],
   "background": "#FFFFFF",
   "foreground": "#334155",
@@ -442,7 +442,7 @@ Give every new measure a one-line description, as the existing 22 have, so the m
    tablePermission 'Sales Reps' = 'Sales Reps'[Rep Email] = USERPRINCIPALNAME()
    tablePermission Accounts = 'Accounts'[State] = LOOKUPVALUE ( 'Sales Reps'[Region], 'Sales Reps'[Rep Email], USERPRINCIPALNAME () )
    ```
-7. **Upstream, in `hicrm_db` or the lake:**
+7. **Upstream, in `platform_app_db` or the lake:**
    - add date-only `created_date` columns to opportunities and accounts;
    - fix the 54 deals created after their close date and the 4 created in the future;
    - review the closed-won deal dated 2026-11-10.

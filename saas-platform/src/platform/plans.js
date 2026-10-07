@@ -1,10 +1,10 @@
-// HiCRM editions. The edition decides which Fabric resources a customer gets and which features the app shows.
+// The platform app's editions. The edition decides which Fabric resources a customer gets and which features the app shows.
 // Customers never see edition names; the app simply shows or hides features.
 
 export const CORE_ITEMS = Object.freeze({
-  sqlDatabase: { type: 'SQLDatabase', name: 'hicrm_db' },
-  semanticModel: { type: 'SemanticModel', name: 'HiCRM Insights' },
-  dataAgent: { type: 'DataAgent', name: 'HiCRM Assistant' },
+  sqlDatabase: { type: 'SQLDatabase', name: 'platform_app_db' },
+  semanticModel: { type: 'SemanticModel', name: 'Platform app Insights' },
+  dataAgent: { type: 'DataAgent', name: 'Platform app Assistant' },
   lakehouse: { type: 'Lakehouse', name: 'lh_customer' },
   warehouse: { type: 'Warehouse', name: 'wh_customer' },
 });
@@ -15,7 +15,7 @@ export const PLANS = Object.freeze({
   standard: {
     id: 'standard',
     name: 'Standard',
-    summary: 'HiCRM with ready-made reports over the CRM data.',
+    summary: 'The platform app with ready-made reports over the CRM data.',
     resources: { crm: true, semanticModel: true, dataAgent: false },
     features: { crm: true, reports: true, authoring: false, agent: false, ingestion: false },
     templateTypes: REPORT_TEMPLATE_TYPES,

@@ -127,3 +127,17 @@ test('embed tokens are created with a Microsoft Entra token that outlives them',
   assert.deepEqual(asked, [['https://analysis.windows.net/powerbi/api/.default', 35 * 60_000]]);
   assert.equal(embedTokenValidityMs({}), 55 * 60_000, 'an hour-long embed token asks for no more than a fresh token gives');
 });
+
+test('renames an item and a connection in place with PATCH, with the Fabric headers and retries every call gets', async () => {
+  const { fetchImpl, calls } = scriptedFetch([
+    { match: '/workspaces/ws/items/item-1', method: 'PATCH', respond: [json(429, { errorCode: 'RequestBlocked' }, { 'retry-after': '0' }), json(200, { id: 'item-1', type: 'SQLDatabase', displayName: 'new name' })] },
+    { match: '/connections/conn-1', method: 'PATCH', respond: json(200, { id: 'conn-1', displayName: 'new connection', connectivityType: 'ShareableCloud' }) },
+  ]);
+  const fabric = createFabricClient({ tokens: staticTokens, endpoints, fetchImpl, pollIntervalMs: 1, baseBackoffMs: 1, fabricHeaders: { 'x-ms-test-tool': 'saas-platform' } });
+  assert.equal((await fabric.updateItem('ws', 'item-1', { displayName: 'new name' })).displayName, 'new name');
+  assert.equal((await fabric.updateConnection('conn-1', { connectivityType: 'ShareableCloud', displayName: 'new connection' })).displayName, 'new connection');
+  assert.deepEqual(calls.map((c) => `${c.method} ${new URL(c.url).pathname}`), ['PATCH /v1/workspaces/ws/items/item-1', 'PATCH /v1/workspaces/ws/items/item-1', 'PATCH /v1/connections/conn-1']);
+  assert.deepEqual(JSON.parse(calls[1].body), { displayName: 'new name' }, 'only what changes');
+  assert.deepEqual(JSON.parse(calls[2].body), { connectivityType: 'ShareableCloud', displayName: 'new connection' });
+  for (const call of calls) assert.equal(call.headers['x-ms-test-tool'], 'saas-platform');
+});

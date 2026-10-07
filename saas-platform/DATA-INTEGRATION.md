@@ -1,13 +1,14 @@
 # Data integration add-on (future state)
 
-HiCRM's core needs no ETL: each customer's CRM lives in a SQL database in Fabric, and Fabric copies its tables to
-OneLake automatically, where the semantic model reads them. This add-on, sold on top of an edition ("Data
+The platform app's core needs no ETL: each customer's CRM lives in a SQL database in Fabric, and Fabric copies its
+tables to OneLake automatically, where the semantic model reads them. This add-on, sold on top of an edition ("Data
 integration", `--addon integration`), brings a customer's **other** data into the same workspace with Fabric Data
 Factory and Data Engineering. Reports and the assistant can then answer questions that combine CRM data with, for
 example, invoices, product usage or support tickets.
 
-**Who's who.** HiCRM is the SaaS provider; Fabrikam is one of its customers ([README.md](README.md#whos-who)).
-Everything below happens in the workspace HiCRM runs for Fabrikam, and the same again, separately, for each customer.
+**Who's who.** The platform is the SaaS provider; Fabrikam is one of its customers ([README.md](README.md#whos-who)).
+Everything below happens in the workspace the platform runs for Fabrikam, and the same again, separately, for each
+customer.
 
 ## Status
 
@@ -15,7 +16,7 @@ Everything below happens in the workspace HiCRM runs for Fabrikam, and the same 
 | --- | --- |
 | A lakehouse per customer when the add-on is on (`lh_customer`) | **Built**: provisioning step "Create the lakehouse (data integration)" |
 | File uploads and one-off web pulls into lakehouse tables (OneLake, then Load Table) | **Built**: `src/platform/ingest.js`. The data agent picks up the new tables |
-| Requests for other connections | **Built**: recorded for HiCRM's team |
+| Requests for other connections | **Built**: recorded for the platform's team |
 | Scheduled copies from the customer's systems with Data Factory pipelines | Future |
 | Spark notebooks that clean the data (silver) and shape business tables (gold) | Future |
 | Gold tables in the semantic model, under the same row-level security roles | Future |
@@ -26,32 +27,33 @@ Everything below happens in the workspace HiCRM runs for Fabrikam, and the same 
 
 | Part | Owner | Notes |
 | --- | --- | --- |
-| The source systems: ERP, SaaS apps, files, and Fabrikam's own Fabric if it has one | **Fabrikam**, in its own Entra tenant | Fabrikam decides what HiCRM may read, grants the access, and can withdraw it |
-| An on-premises data gateway, for sources on Fabrikam's network | **Fabrikam**, installed by its IT | Registered to HiCRM's tenant by a HiCRM engineer (registering needs a person's account), so HiCRM's connections can use it |
-| The connections, pipeline, notebooks, lakehouse and schedules | **HiCRM** | In the workspace HiCRM runs for Fabrikam, owned by `fabrikamsa`, HiCRM's service principal for Fabrikam |
-| `fabrikamreader`, HiCRM's reader for Fabrikam | **HiCRM** owns the app registration; **Fabrikam** admits its service principal | The identity that the connections to Fabrikam's systems sign in as. Its service principal in Fabrikam's tenant reads only what Fabrikam grants, and Fabrikam can remove it at any time |
-| The copied data | **Fabrikam's data**, held by HiCRM | Only in Fabrikam's workspace; Contoso's never meets it |
+| The source systems: ERP, SaaS apps, files, and Fabrikam's own Fabric if it has one | **Fabrikam**, in its own Entra tenant | Fabrikam decides what the platform may read, grants the access, and can withdraw it |
+| An on-premises data gateway, for sources on Fabrikam's network | **Fabrikam**, installed by its IT | Registered to the platform's tenant by a platform engineer (registering needs a person's account), so the platform's connections can use it |
+| The connections, pipeline, notebooks, lakehouse and schedules | **The platform** | In the workspace the platform runs for Fabrikam, owned by `fabrikamsa`, the platform's service principal for Fabrikam |
+| `fabrikamreader`, the platform's reader for Fabrikam | **The platform** owns the app registration; **Fabrikam** admits its service principal | The identity that the connections to Fabrikam's systems sign in as. Its service principal in Fabrikam's tenant reads only what Fabrikam grants, and Fabrikam can remove it at any time |
+| The copied data | **Fabrikam's data**, held by the platform | Only in Fabrikam's workspace; Contoso's never meets it |
 
 ## How it would work
 
 ```mermaid
 flowchart LR
-  %% The data integration add-on (future), for one customer: Fabrikam. Every item is HiCRM's, in the workspace
-  %% HiCRM runs for Fabrikam, and runs as fabrikamsa. Orange: Fabrikam. Blue: HiCRM. Dashed: not built yet.
+  %% The data integration add-on (future), for one customer: Fabrikam. Every item is the platform's, in the workspace
+  %% the platform runs for Fabrikam, and runs as fabrikamsa. Orange: Fabrikam. Blue: the platform.
+  %% Dashed: not built yet.
 
-  subgraph FAB["FABRIKAM · the customer, in its own Entra tenant · decides what HiCRM may read"]
+  subgraph FAB["FABRIKAM · the customer, in its own Entra tenant · decides what the platform may read"]
     direction TB
     ERP[("ERP or finance system<br/>on Fabrikam's network")]
     SAAS[("SaaS apps<br/>marketing, support, billing")]
     FILES[("Files<br/>in Fabrikam's Azure storage")]
     FFAB[("Fabrikam's own Fabric<br/>lakehouse or warehouse")]
-    GW["On-premises data gateway<br/>installed by Fabrikam's IT,<br/>registered to<br/>HiCRM's tenant"]
+    GW["On-premises data gateway<br/>installed by Fabrikam's IT,<br/>registered to<br/>the platform's tenant"]
   end
 
-  subgraph HI["HICRM · the SaaS provider · everything in this box is HiCRM's"]
+  subgraph PLAT["THE PLATFORM · the SaaS provider · everything in this box is the platform's"]
     direction LR
-    CTRL["HiCRM platform<br/>provisions the items from code,<br/>schedules and watches the runs,<br/>always as fabrikamsa"]
-    subgraph WS["Workspace for Fabrikam · on HiCRM's Fabric capacity · only Fabrikam's data"]
+    CTRL["Platform app<br/>provisions the items from code,<br/>schedules and watches the runs,<br/>always as fabrikamsa"]
+    subgraph WS["Workspace for Fabrikam · on the platform's Fabric capacity · only Fabrikam's data"]
       direction LR
       CONN["Fabric connections<br/>owned by fabrikamsa,<br/>signing in to Fabrikam's<br/>tenant as fabrikamreader"]
       PL["Data Factory pipeline<br/>copy activities on a schedule"]
@@ -87,18 +89,18 @@ flowchart LR
   CTRL -.->|"after each load: refresh the model"| SM
 
   classDef fabrikam fill:#FDECE0,stroke:#C55A11,color:#4A1F00
-  classDef hicrm fill:#E7F0FA,stroke:#1F5AA6,color:#0B2545
+  classDef platform fill:#E7F0FA,stroke:#1F5AA6,color:#0B2545
   classDef future fill:#FFFFFF,stroke:#1F5AA6,stroke-dasharray:5 5,color:#0B2545
   class ERP,SAAS,FILES,FFAB,GW fabrikam
-  class CTRL,CRM,SM,OUT hicrm
+  class CTRL,CRM,SM,OUT platform
   class CONN,PL,BR,SV,GD,NB future
   style FAB fill:#FFF7F1,stroke:#C55A11,stroke-width:2px,color:#4A1F00
-  style HI fill:#F5F9FE,stroke:#1F5AA6,stroke-width:2px,color:#0B2545
+  style PLAT fill:#F5F9FE,stroke:#1F5AA6,stroke-width:2px,color:#0B2545
   style WS fill:#FFFFFF,stroke:#1F5AA6,color:#0B2545
   style LH fill:#FFFFFF,stroke:#1F5AA6,stroke-dasharray:5 5,color:#0B2545
 ```
 
-Orange is what Fabrikam owns; blue is HiCRM's; dashed is not built yet.
+Orange is what Fabrikam owns; blue is the platform's; dashed is not built yet.
 
 1. **Copy.** A Data Factory pipeline copies what Fabrikam allows into the lakehouse's **bronze** layer, raw and as
    received, on a schedule. Files can be OneLake shortcuts instead, read where they are, and data in Fabrikam's own
@@ -107,30 +109,31 @@ Orange is what Fabrikam owns; blue is HiCRM's; dashed is not built yet.
 3. **Clean.** They type, deduplicate and check it into **silver**.
 4. **Shape.** They join silver with the CRM tables, read through a shortcut to the database's OneLake copy, into
    **gold** business tables keyed by account.
-5. **Serve.** The gold tables join the HiCRM Insights semantic model as Direct Lake tables related to Accounts, so the
-   same territory roles filter them; the report and the data agent use them. After each load the platform refreshes
-   the model and records the run.
+5. **Serve.** The gold tables join the Platform app Insights semantic model as Direct Lake tables related to Accounts,
+   so the same territory roles filter them; the report and the data agent use them. After each load the platform app
+   refreshes the model and records the run.
 
 Gold could instead be a Fabric Warehouse built with T-SQL ([PLAN.md](PLAN.md), decision D4, still proposed).
 Identities, isolation and row-level security work the same either way.
 
 ## Identities and isolation
 
-- **Inside HiCRM's tenant, everything runs as the customer's service principal.** Provisioning creates the items as
-  `fabrikamsa`, and the platform starts and schedules runs as `fabrikamsa`. Fabric's Items API and Job Scheduler API
-  support service principals ([notebook APIs](https://learn.microsoft.com/fabric/data-engineering/notebook-public-api)),
+- **Inside the platform's tenant, everything runs as the customer's service principal.** Provisioning creates the items
+  as `fabrikamsa`, and the platform app starts and schedules runs as `fabrikamsa`. Fabric's Items API and Job
+  Scheduler API support service principals
+  ([notebook APIs](https://learn.microsoft.com/fabric/data-engineering/notebook-public-api)),
   and a service principal can run a pipeline on a schedule or through the API
   ([workspace identity](https://learn.microsoft.com/fabric/data-factory/workspace-identity#prerequisites)).
 - **Keep people out of these items.** A notebook started by a pipeline runs as whoever last changed the pipeline, and a
   scheduled run as whoever last changed the schedule ([security context](https://learn.microsoft.com/fabric/data-engineering/how-to-use-notebook#security-context-of-running-notebook)).
   A person who edits them would make the runs theirs. The validator already flags people with workspace access (IDN-04).
-- **Two Entra tenants.** The pipeline, the notebooks and `fabrikamsa` are in HiCRM's tenant; Fabrikam's systems are
-  in Fabrikam's. The workspace identity can't cross ("Workspace identity isn't supported in B2B or cross-tenant
+- **Two Entra tenants.** The pipeline, the notebooks and `fabrikamsa` are in the platform's tenant; Fabrikam's systems
+  are in Fabrikam's. The workspace identity can't cross ("Workspace identity isn't supported in B2B or cross-tenant
   scenarios": [workspace identity](https://learn.microsoft.com/fabric/security/workspace-identity#considerations-and-limitations)),
   so it only reads the CRM tables. Data in Fabrikam's own Fabric is shared in place to `fabrikamsa`, with no secret.
   Cloud sources are read through connections, owned by `fabrikamsa`, that sign in to Fabrikam's tenant as
-  `fabrikamreader`: a HiCRM app whose service principal Fabrikam admits and grants read access. On-premises sources
-  go through a gateway on Fabrikam's network. Each connection, who owns it and who it signs in as:
+  `fabrikamreader`: an app owned by the platform, whose service principal Fabrikam admits and grants read access.
+  On-premises sources go through a gateway on Fabrikam's network. Each connection, who owns it and who it signs in as:
   [IDENTITIES.md](IDENTITIES.md#4-connections-who-owns-each-one-and-who-it-signs-in-as).
 - **No path to another customer.** `fabrikamsa` has no role in Contoso's workspace, so nothing in Fabrikam's
   workspace can read or write Contoso's, whatever a pipeline or notebook asks for. Contoso's reader,

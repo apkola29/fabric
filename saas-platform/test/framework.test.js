@@ -132,7 +132,7 @@ test('the tenant settings check finds service principals that may change the ten
   assert.match(text(pilot), /The platform identity reads these settings through Admin API apps, so it can also call the Fabric admin APIs that make changes/);
 
   // As designed: one group for the service principals, the platform's own group for read-only admin, no admin updates.
-  const designed = assessTenantSettings(settings({ apis: group('HiCRM service principals'), read: { enabled: true, enabledSecurityGroups: group('HiCRM platform') }, write: { enabled: false } }));
+  const designed = assessTenantSettings(settings({ apis: group('Platform app service principals'), read: { enabled: true, enabledSecurityGroups: group('Platform identity') }, write: { enabled: false } }));
   assert.deepEqual(statuses(designed), ['pass', 'pass', 'pass', 'pass']);
 
   // Admin updates for everyone, or through the tenants' group.

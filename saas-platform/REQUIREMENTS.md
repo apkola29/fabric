@@ -1,11 +1,11 @@
 # Requirements: roles, identities, credentials and workspace rules
 
-What has to exist before HiCRM runs against Microsoft Fabric, who creates it, and why. Use it as the checklist for
-setting up an environment: each table says which role does what, and section 5 says exactly what goes into each
-customer's workspace.
+What has to exist before the platform app runs against Microsoft Fabric, who creates it, and why. Use it as the
+checklist for setting up an environment: each table says which role does what, and section 5 says exactly what goes into
+each customer's workspace.
 
-**Who's who.** "You" is the provider that runs the platform: HiCRM in the sample. "Customers" are the companies that
-subscribe, such as Fabrikam and Contoso; they need none of this ([README.md](README.md#whos-who)).
+**Who's who.** "You" is the provider that runs the platform app: "the platform" in the sample. "Customers" are the
+companies that subscribe, such as Fabrikam and Contoso; they need none of this ([README.md](README.md#whos-who)).
 
 **Demo mode needs none of this.** `npm install`, `npm run setup -- --mode demo --yes` and `npm start` run everything on
 your computer against a Fabric emulator: no Azure, no credentials.
@@ -25,13 +25,13 @@ your computer against a Fabric emulator: no Azure, no credentials.
 
 | Role | Where it's granted | Needed for | When | Not needed if |
 | --- | --- | --- | --- | --- |
-| **Application Administrator** (or Cloud Application Administrator) | Microsoft Entra ID | Creating the platform app registration and one service principal per customer, and giving them a certificate or a federated credential (`scripts/bootstrap-identities.ps1`) | Once, then once per customer | The platform creates service principals itself (next row) |
-| **Privileged Role Administrator** (or Global Administrator) | Microsoft Entra ID | Granting the platform app the Microsoft Graph application permission `Application.ReadWrite.OwnedBy`, so it creates (and can only manage) its own service principals | Once, optional | An admin creates each customer's service principal |
+| **Application Administrator** (or Cloud Application Administrator) | Microsoft Entra ID | Creating the platform identity's app registration and one service principal per customer, and giving them a certificate or a federated credential (`scripts/bootstrap-identities.ps1`) | Once, then once per customer | The platform creates service principals itself (next row) |
+| **Privileged Role Administrator** (or Global Administrator) | Microsoft Entra ID | Granting the platform identity the Microsoft Graph application permission `Application.ReadWrite.OwnedBy`, so it creates (and can only manage) its own service principals | Once, optional | An admin creates each customer's service principal |
 | **Groups Administrator** (or the group's owner) | Microsoft Entra ID | A security group holding the platform identity and every service principal, so the tenant settings in section 4 apply to them only | Once, recommended | You accept the settings for the whole organization (the validator warns, IDN-06) |
 | **Fabric Administrator** | Microsoft Entra ID role, used in the Fabric admin portal | The tenant settings in section 4 | Once | They're already on for the group |
 | **Capacity administrator** | The Fabric capacity | Making the platform identity Contributor on the capacity, so it can create customer workspaces and assign them to it | Once per capacity | An admin creates each workspace and the platform adopts it (section 5) |
 | **Workspace creator** (a person with Contributor on the capacity) | The Fabric capacity | Creating a customer's workspace and adding the customer's service principal and the platform identity as Admin, when the platform can't create workspaces. Remove yourself afterwards (IDN-04) | Per customer, optional | The platform identity is Contributor on the capacity |
-| **Operator** | HiCRM back office (`/admin`) | Running the setup, adding customers and people, support. No Entra or Fabric role | Ongoing | |
+| **Operator** | The platform app's back office (`/admin`) | Running the setup, adding customers and people, support. No Entra or Fabric role | Ongoing | |
 | **Report author** | Power BI Pro or Premium Per User license, Contributor on the workspace | Building report pages in the Fabric portal, for example with Copilot | Optional | Customers use the standard report |
 | **Azure contributor** | An Azure subscription or resource group | Production hosting: App Service or Container Apps, the user-assigned managed identity, Key Vault (with the Key Vault Secrets Officer role for the managed identity) | Production | Running on your own computer |
 
@@ -61,15 +61,15 @@ Letting a customer's people sign in with their work accounts, and the data integ
 | **Platform identity** (control plane) | App registration and service principal | An Entra admin | Development: a certificate (or a client secret), asked for at start. Production: a federated credential trusting the app's managed identity | Fabric APIs (tenant setting); Contributor on the capacity; Admin of a customer workspace only until it hands it over. Optional: `Application.ReadWrite.OwnedBy` in Microsoft Graph | 1 |
 | **Customer service principal** `<customer>sa`, for example `fabrikamsa` | App registration and service principal, in **your** Entra tenant, not the customer's | An Entra admin (`bootstrap-identities.ps1`), or the platform with `Application.ReadWrite.OwnedBy` | A certificate (default) kept encrypted by the platform, or a federated credential trusting the app's managed identity | Admin of that customer's workspace, and nothing else | 1 per customer |
 | **Workspace identity** | Fabric-managed service principal; nobody holds its secret | Fabric, when provisioning asks for it | Fabric | Contributor of its own workspace; the semantic models read OneLake as it | 1 per customer |
-| **User-assigned managed identity** | Azure managed identity | An Azure contributor | Azure | Nothing in Fabric itself: the platform app and the service principals trust it (federated identity credentials), and it reads Key Vault | 1, production |
-| **Security group for service principals** | Entra security group | Groups Administrator | | Scopes the tenant settings to HiCRM's identities | 1, recommended |
+| **User-assigned managed identity** | Azure managed identity | An Azure contributor | Azure | Nothing in Fabric itself: the platform identity and the service principals trust it (federated identity credentials), and it reads Key Vault | 1, production |
+| **Security group for service principals** | Entra security group | Groups Administrator | | Scopes the tenant settings to the platform's identities | 1, recommended |
 | **Support group** | Entra security group (`FABRIC_OPS_PRINCIPAL_ID`) | Groups Administrator | | Viewer of every customer workspace | 0 or 1 |
 | **Sign-in app** (only for work-account sign-in) | Multi-tenant app registration, with a service principal in each customer tenant that admits it | An Entra admin, once | A certificate, or a federated credential trusting the app's managed identity | Sign-in only (`openid`, `profile`, `email`), and the app roles Manager and Rep | 0 or 1 |
 | **Customer reader** `<customer>reader`, for example `fabrikamreader` (only for the add-on) | Multi-tenant app registration, with a service principal in that customer's tenant only. The customer's connections to its own systems sign in as it | The platform, or an Entra admin | A client secret held only by that customer's Fabric connections, which take a secret for a service principal | What the customer grants that service principal in its own tenant, read-only; nothing in yours | 1 per customer with the add-on |
 
-The customers' own people need **no** Entra account and **no** Power BI license: they sign in to HiCRM, and the
-platform embeds reports for them with tokens it creates ("app owns data"). A customer can instead let its people sign
-in with their own work accounts; they still get nothing in your tenant ([IDENTITIES.md](IDENTITIES.md)).
+The customers' own people need **no** Entra account and **no** Power BI license: they sign in to the platform app, and
+the platform embeds reports for them with tokens it creates ("app owns data"). A customer can instead let its people
+sign in with their own work accounts; they still get nothing in your tenant ([IDENTITIES.md](IDENTITIES.md)).
 
 Why one service principal per customer: every call made for a customer runs as that customer's service principal, which
 can reach only that customer's workspace. A bug that mixes up customers meets a refusal from Fabric, not another
@@ -84,7 +84,7 @@ secret at all.
 
 | Credential | Unlocks | Development (on your computer) | Production |
 | --- | --- | --- | --- |
-| Platform identity's certificate or client secret | The control plane | Asked for at start: a PEM file path (recommended) or a client secret. `AZURE_CLIENT_CERTIFICATE_PATH` can remember the path | None: `MANAGED_IDENTITY_CLIENT_ID`, the platform app trusting the app's managed identity. Production refuses client secrets |
+| Platform identity's certificate or client secret | The control plane | Asked for at start: a PEM file path (recommended) or a client secret. `AZURE_CLIENT_CERTIFICATE_PATH` can remember the path | None: `MANAGED_IDENTITY_CLIENT_ID`, the platform identity trusting the app's managed identity. Production refuses client secrets |
 | Each customer service principal's credential | That customer's workspace | A certificate the bootstrap script creates (or the platform, in auto-create mode), stored encrypted in the data folder; the clear-text file is deleted | None: a federated credential trusting the app's managed identity. Or a certificate in Key Vault |
 | `SECRETS_KEY` | The data folder's encrypted credential store | Asked for at start; you choose it the first time | Not used: `SECRETS_PROVIDER=keyvault` |
 | `ADMIN_KEY` | The back office (`/admin`) | Asked for at start, or made for the run and shown once | From the hosting platform's settings (a Key Vault reference); better, sign operators in with Entra ID |
@@ -110,7 +110,7 @@ rather than the whole organization.
 | Users can use Copilot and other features powered by Azure OpenAI | Copilot and Azure OpenAI Service | The data agent |
 | Data sent to Azure OpenAI can be processed outside your capacity's geographic region | Copilot and Azure OpenAI Service | Only when the capacity is outside the US and the EU Data Boundary |
 | Service principals can access read-only admin APIs | Admin API settings | Optional: lets the validator read these settings (IDN-06). Allow it for a group holding only the platform identity |
-| Service principals can access admin APIs used for updates | Admin API settings | Never for HiCRM's identities |
+| Service principals can access admin APIs used for updates | Admin API settings | Never for the platform's identities |
 | Users can accept external data shares | Export and sharing settings | Only for the data integration add-on, when a customer shares data from its own Fabric. Allow it for the service principals' group only |
 
 ## 5. Workspace rules
@@ -141,11 +141,11 @@ Every customer gets exactly this, and nothing else. Provisioning creates it and 
 
 | Item | Name | What it's for |
 | --- | --- | --- |
-| SQL database | `hicrm_db` | The customer's CRM data; replicated to OneLake automatically |
-| Semantic model | `HiCRM Insights` | Direct Lake on OneLake, with one row-level security role per territory; every embedded report reads it |
-| Semantic model | `HiCRM Insights - Assistant` | The same model without roles, for the data agent only (service principals can't query a model with roles) |
+| SQL database | `platform_app_db` | The customer's CRM data; replicated to OneLake automatically |
+| Semantic model | `Platform app Insights` | Direct Lake on OneLake, with one row-level security role per territory; every embedded report reads it |
+| Semantic model | `Platform app Insights - Assistant` | The same model without roles, for the data agent only (service principals can't query a model with roles) |
 | Report | `Sales overview` | The standard report every person sees, filtered to their territories |
-| Data agent | `HiCRM Assistant` | Answers managers' questions over its MCP endpoint |
+| Data agent | `Platform app Assistant` | Answers managers' questions over its MCP endpoint |
 | Lakehouse, warehouse | Optional | The data integration add-on |
 
 **Outside the workspace:** one cloud connection per customer, owned by the customer's service principal, that signs in
@@ -178,11 +178,11 @@ platform identity's role. Remove your own access afterwards.
 ## 8. Checklist
 
 1. **Capacity:** an F capacity (or a trial for development) in the region you need.
-2. **Security group** for HiCRM's service principals (Groups Administrator).
+2. **Security group** for the platform's service principals (Groups Administrator).
 3. **Tenant settings** from section 4, applied to that group (Fabric Administrator).
 4. **Platform identity:** an app registration with a certificate (Application Administrator):
    ```powershell
-   az ad app create --display-name "HiCRM platform"          # note the appId
+   az ad app create --display-name "Platform identity"       # note the appId
    az ad sp create --id <appId>
    az ad app credential reset --id <appId> --create-cert --append --years 1   # prints the PEM file's path
    ```
@@ -196,8 +196,8 @@ platform identity's role. Remove your own access afterwards.
    ```
    Or let the platform create them: `-GrantPlatformAppCreation` once (Privileged Role Administrator), then
    `TENANT_IDENTITY_AUTO_CREATE=true`.
-7. **Setup:** `npm run setup` asks for the tenant, the platform app, its certificate and the capacity, then builds the
-   customers. It writes only non-secret settings to `.env`.
+7. **Setup:** `npm run setup` asks for the tenant, the platform identity, its certificate and the capacity, then builds
+   the customers. It writes only non-secret settings to `.env`.
 8. **Run:** `npm start` asks for the credentials it needs, then prints each customer's address.
 9. **Validate:** `npm run validate -- --live --browser` checks every control in [FRAMEWORK.md](FRAMEWORK.md) against the
    deployment, read-only, including what each person sees in the report.

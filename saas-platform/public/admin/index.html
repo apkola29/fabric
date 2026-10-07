@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>HiCRM back office · customers on Fabric</title>
+  <title>Platform app back office · customers on Fabric</title>
   <meta name="description" content="Local console that provisions and runs a Microsoft Fabric workspace for each SaaS customer: data loads, embedded reports and a data agent.">
   <link rel="icon" href="data:,">
   <link rel="stylesheet" href="/admin/admin.css">
@@ -64,9 +64,9 @@
       <section class="intro" id="intro">
         <p class="eyebrow">Fabric as the data platform behind a SaaS app</p>
         <h1>Give every customer their own analytics workspace</h1>
-        <p class="lede">Each HiCRM customer gets a Fabric workspace of their own, run by a service account that can reach nothing else. Their CRM data lives in a Fabric SQL database; reports and the assistant read it through one semantic model. The customer only ever sees HiCRM.</p>
+        <p class="lede">Each customer of the platform app gets a Fabric workspace of their own, run by a service account that can reach nothing else. Their CRM data lives in a Fabric SQL database; reports and the assistant read it through one semantic model. The customer only ever sees the platform app.</p>
         <ol class="how">
-          <li><strong>Provision.</strong> Workspace, the customer's service account, the CRM database, the HiCRM Insights model bound to a workspace identity, and the assistant.</li>
+          <li><strong>Provision.</strong> Workspace, the customer's service account, the CRM database, the Platform app Insights model bound to a workspace identity, and the assistant.</li>
           <li><strong>Use.</strong> The CRM writes to SQL; Fabric replicates it to OneLake and the model reads it directly (Direct Lake), so reports stay current without copy jobs.</li>
           <li><strong>Analyze.</strong> Embedded reports with short-lived tokens, report building with a describe-a-chart box, and an assistant that answers from the model.</li>
         </ol>

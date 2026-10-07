@@ -285,10 +285,10 @@ test('unsafe configurations are refused before the server starts', () => {
     AZURE_CLIENT_ID: '00000000-0000-4000-8000-000000000002',
     MANAGED_IDENTITY_CLIENT_ID: '00000000-0000-4000-8000-000000000003',
     FABRIC_CAPACITY_ID: '00000000-0000-4000-8000-000000000004',
-    KEY_VAULT_URL: 'https://hicrm-kv.vault.azure.net',
+    KEY_VAULT_URL: 'https://platform-kv.vault.azure.net',
     SESSION_SECRET: 's'.repeat(40),
     ADMIN_KEY: 'k'.repeat(40),
-    PUBLIC_ORIGIN: 'https://hicrm.example.com',
+    PUBLIC_ORIGIN: 'https://platform.example.com',
     ALLOW_DEMO_SIGNIN: 'true',
     DATA_DIR: 'unused',
   });
@@ -307,13 +307,15 @@ test('unsafe configurations are refused before the server starts', () => {
 
 test('.env.example loads as documented: development defaults as-is, production once the secrets are filled in', () => {
   const root = path.join(path.dirname(fileURLToPath(import.meta.url)), '..');
+  // Like node --env-file: a quoted value loses its quotes.
   const env = Object.fromEntries(
     readFileSync(path.join(root, '.env.example'), 'utf8')
       .split(/\r?\n/)
       .filter((line) => /^[A-Z_]+=/.test(line))
-      .map((line) => [line.slice(0, line.indexOf('=')), line.slice(line.indexOf('=') + 1)]),
+      .map((line) => [line.slice(0, line.indexOf('=')), line.slice(line.indexOf('=') + 1).replace(/^"(.*)"$/, '$1')]),
   );
   const development = loadConfig({ ...env, DATA_DIR: 'unused' });
+  assert.equal(development.productName, 'Platform app');
   assert.equal(development.identity.mode, 'preferred');
   assert.equal(development.platformWorkspaceAccess, 'keep');
   assert.equal(development.sampleDataDefault, true, 'an empty SAMPLE_DATA_DEFAULT keeps the default');
@@ -327,10 +329,10 @@ test('.env.example loads as documented: development defaults as-is, production o
     AZURE_TENANT_ID: '00000000-0000-4000-8000-000000000001',
     AZURE_CLIENT_ID: '00000000-0000-4000-8000-000000000002',
     MANAGED_IDENTITY_CLIENT_ID: '00000000-0000-4000-8000-000000000003',
-    KEY_VAULT_URL: 'https://hicrm-kv.vault.azure.net',
+    KEY_VAULT_URL: 'https://platform-kv.vault.azure.net',
     SESSION_SECRET: 's'.repeat(40),
     ADMIN_KEY: 'k'.repeat(40),
-    PUBLIC_ORIGIN: 'https://hicrm.example.com',
+    PUBLIC_ORIGIN: 'https://platform.example.com',
     ALLOW_DEMO_SIGNIN: 'true',
     DATA_DIR: 'unused',
   });
@@ -350,7 +352,7 @@ test('security headers, Secure cookies behind HTTPS, and pinned CDN scripts', as
   assert.match(page.headers['permissions-policy'], /camera=\(\)/);
   assert.equal(page.headers['strict-transport-security'], undefined, 'no HSTS on plain HTTP');
 
-  const secure = makePlatform({ env: { PUBLIC_ORIGIN: 'https://hicrm.example.com', ADMIN_KEY } });
+  const secure = makePlatform({ env: { PUBLIC_ORIGIN: 'https://platform.example.com', ADMIN_KEY } });
   await secure.operatorSignIn(ADMIN_KEY);
   await secure.addCustomer('Fabrikam', 'standard', 'fabrikam.com');
   const signedIn = await secure.call({ method: 'POST', url: '/api/session', headers: WEB, body: { email: 'ana@fabrikam.com' } });
@@ -388,7 +390,7 @@ test('embed tokens are short-lived', async () => {
 });
 
 test('database connections are bounded: least recently used and idle ones close, in-memory demo data never does', async () => {
-  const dir = tempDir('hicrm-pools-');
+  const dir = tempDir('platform-pools-');
   let clock = Date.parse('2026-01-01T00:00:00Z');
   const fabric = createMockFabric();
   const service = createCrmService({ fabric, identities: null, sqliteDir: dir, maxOpen: 2, idleMinutes: 15, now: () => clock, closeGraceMs: 0 });
@@ -417,7 +419,7 @@ test('database connections are bounded: least recently used and idle ones close,
 });
 
 test('storage: a failed write does not block later ones, and concurrent secret writes are all kept', async () => {
-  const dir = tempDir('hicrm-io-');
+  const dir = tempDir('platform-io-');
   const file = path.join(dir, 'state.json');
   const write = createJsonWriter(file);
   mkdirSync(file);

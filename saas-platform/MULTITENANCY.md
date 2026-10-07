@@ -1,12 +1,12 @@
-# HiCRM multitenancy, least-privilege and robustness review
+# Platform app multitenancy, least-privilege and robustness review
 
-Review of the HiCRM platform on Microsoft Fabric, 2026-10-02: the code, a role-enforcing Fabric emulator, fault
+Review of the platform app on Microsoft Fabric, 2026-10-02: the code, a role-enforcing Fabric emulator, fault
 injection, and the live `saas-fabrikam` workspace. It answers three questions: are customers truly isolated, does every
 identity have only the access it needs, and does the platform stay correct when things fail?
 
-**Verdict.** The design is a sound multitenant model: a shared control plane (the HiCRM app and the platform identity)
-and a data plane isolated per customer (a workspace, a SQL database, a semantic model, a connection and a service
-account each), on a shared capacity with an optional dedicated one. The review found 18 issues, 4 of them high
+**Verdict.** The design is a sound multitenant model: a shared control plane (the platform app and the platform
+identity) and a data plane isolated per customer (a workspace, a SQL database, a semantic model, a connection and a
+service account each), on a shared capacity with an optional dedicated one. The review found 18 issues, 4 of them high
 (chiefly: the back office had no sign-in, the platform identity kept standing Admin access to every customer, and
 isolation had never been tested because the Fabric emulator didn't enforce roles). All 18 are fixed and each fix has a
 test that fails if the protection is removed. The biggest remaining risk is the shared control plane: one platform
@@ -20,17 +20,17 @@ The rules this review established are now the framework's controls ([FRAMEWORK.m
 
 | Layer | How customers are separated | Enforced by | Evidence |
 | --- | --- | --- | --- |
-| Address | Each customer has its own address (`https://<customer>.<APP_DOMAIN>`, locally `http://fabrikam.localhost:3000`). It signs in only that customer's people; anyone else gets the same answer as an unknown person. A session works only at the address that issued it: cookies are host-only (`__Host-` over HTTPS), and the server checks the session's customer against the address's. The back office answers only on the platform's address; any other host name gets 421 | HiCRM and the browser | `test/tenancy.test.js`; live: Fabrikam's session got 401 at `contoso.localhost` and at the platform address |
-| Sign-in | The customer comes from a signed cookie, never from the request; the email's domain is checked against the customer's current domains on every request | HiCRM | `test/isolation.test.js`: moving a domain ends sessions at once |
-| Within a customer | Each person has a role and territories. CRM queries are scoped in SQL; embed tokens carry the person's row-level security role (`effectiveIdentity`); the data agent, which runs as the service principal and sees every territory, answers managers only, while reps get scoped quick answers. Changing someone's access ends their sessions | HiCRM, Power BI | `test/personas.test.js`, `test/assistant.test.js`; live: the Texas rep's token named only Texas |
-| API | Report and model IDs from the browser are only accepted if they are in the customer's own workspace, and, until report authoring ships, only the platform's standard reports | HiCRM, then Fabric | Another customer's report and model IDs get 404; `test/standard-report.test.js` |
+| Address | Each customer has its own address (`https://<customer>.<APP_DOMAIN>`, locally `http://fabrikam.localhost:3000`). It signs in only that customer's people; anyone else gets the same answer as an unknown person. A session works only at the address that issued it: cookies are host-only (`__Host-` over HTTPS), and the server checks the session's customer against the address's. The back office answers only on the platform's address; any other host name gets 421 | Platform app and the browser | `test/tenancy.test.js`; live: Fabrikam's session got 401 at `contoso.localhost` and at the platform address |
+| Sign-in | The customer comes from a signed cookie, never from the request; the email's domain is checked against the customer's current domains on every request | Platform app | `test/isolation.test.js`: moving a domain ends sessions at once |
+| Within a customer | Each person has a role and territories. CRM queries are scoped in SQL; embed tokens carry the person's row-level security role (`effectiveIdentity`); the data agent, which runs as the service principal and sees every territory, answers managers only, while reps get scoped quick answers. Changing someone's access ends their sessions | Platform app, Power BI | `test/personas.test.js`, `test/assistant.test.js`; live: the Texas rep's token named only Texas |
+| API | Report and model IDs from the browser are only accepted if they are in the customer's own workspace, and, until report authoring ships, only the platform's standard reports | Platform app, then Fabric | Another customer's report and model IDs get 404; `test/standard-report.test.js` |
 | Identity | Every customer call runs as that customer's service principal, which is Admin of one workspace and has no other role anywhere | Microsoft Entra ID and Fabric | The emulator's call log: every call for Fabrikam ran as `fabrikamsa`, in Fabrikam's workspace |
 | Data | One workspace, SQL database, semantic model and connection per customer; the connection belongs to the customer's service principal, including for a workspace the platform built before the account existed | Fabric | A service principal can't read, query, embed, change or delete anything of another customer; the hand-over test |
 | Defence in depth | If the registry mixed up two customers, the wrong service principal would be refused by Fabric instead of reading the other customer's data | Fabric | Test with deliberately swapped identities |
 | Embedding | V2 embed tokens name the items of one workspace and live 30 minutes | Power BI | Live: requested 04:48:08, expired 05:18:12 |
-| Branding | Logos are plain drawings or raster images (an SVG with script, event handlers, external links or HTML is refused), shown only through `<img>`, and served with a sandbox policy | HiCRM | `test/tenancy.test.js` |
-| Compute | Per-customer and per-user rate limits; a dedicated capacity per customer when needed | HiCRM, Fabric capacity | One customer's 429s leave another customer unaffected |
-| Control plane | The platform identity releases its role after the hand-over; operators sign in; looking at customer data (including the questions people asked the assistant) is logged | HiCRM, Fabric | Release-mode test; operator sign-in and activity log test |
+| Branding | Logos are plain drawings or raster images (an SVG with script, event handlers, external links or HTML is refused), shown only through `<img>`, and served with a sandbox policy | Platform app | `test/tenancy.test.js` |
+| Compute | Per-customer and per-user rate limits; a dedicated capacity per customer when needed | Platform app, Fabric capacity | One customer's 429s leave another customer unaffected |
+| Control plane | The platform identity releases its role after the hand-over; operators sign in; looking at customer data (including the questions people asked the assistant) is logged | Platform app, Fabric | Release-mode test; operator sign-in and activity log test |
 
 This follows the [Azure guidance for multitenant solutions](https://learn.microsoft.com/azure/architecture/guide/multitenant/overview)
 (a shared control plane, an isolated data plane, noisy-neighbour controls). Power BI's own pattern for multitenant
@@ -41,8 +41,8 @@ each tenant, instead of having a single service principal access multiple worksp
 
 ### Why each customer has two semantic models
 
-`HiCRM Insights` has the territory roles and serves every report. `HiCRM Insights - Assistant` is the same model
-without roles and serves only the data agent.
+`Platform app Insights` has the territory roles and serves every report. `Platform app Insights - Assistant` is the same
+model without roles and serves only the data agent.
 
 One model can't do both jobs with "app owns data":
 - **The data agent runs as a service principal.** The customer's people have no Entra identity, so the service principal
@@ -224,10 +224,10 @@ In order of priority:
    accounts, hand-over and release are done and verified live (section 4).
 2. **Remove direct human access** from both workspaces (the administrator who created them is Admin on `saas-fabrikam` and
    `saas-contoso`), or make it documented break-glass access through a PIM-eligible group.
-3. **A dedicated platform app.** The current one also has roles on seven workspaces unrelated to HiCRM.
+3. **A dedicated platform identity.** The current one also has roles on seven workspaces unrelated to the platform.
    Rotate its secret too: it was shared earlier (D8). It's also in a security group that may call the Fabric
-   admin APIs, including those that make changes, such as updating tenant settings; the app needs none of them.
-   Limit the service principal tenant settings to a group of HiCRM's identities as well (IDN-06 warns on both).
+   admin APIs, including those that make changes, such as updating tenant settings; the identity needs none of them.
+   Limit the service principal tenant settings to a group of the platform's identities as well (IDN-06 warns on both).
 4. **Split the control plane identity, and use the federated credentials.** Today one platform identity provisions,
    reads the service principals' stored credentials and (with auto-create) owns the service principal apps. Done: every
    service principal can sign in with a certificate or a federated credential through MSAL, production refuses client

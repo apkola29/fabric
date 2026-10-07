@@ -1,6 +1,6 @@
-# HiCRM pilot
+# Platform app pilot
 
-Two customer companies on the same HiCRM app, Fabrikam and Contoso. They're isolated from each other at every layer:
+Two customer companies on the same platform app, Fabrikam and Contoso. They're isolated from each other at every layer:
 
 | Layer | Per customer |
 | --- | --- |

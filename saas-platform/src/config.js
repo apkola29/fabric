@@ -93,7 +93,7 @@ export function loadConfig(env = process.env) {
     opsPrincipal: opsId ? { id: opsId, type: (env.FABRIC_OPS_PRINCIPAL_TYPE || 'Group').trim() } : null,
     templateWorkspaceId: (env.FABRIC_TEMPLATE_WORKSPACE_ID || '').trim(),
     dataDir: dataDirOf(env),
-    productName: (env.PRODUCT_NAME || '').trim() || 'HiCRM',
+    productName: (env.PRODUCT_NAME || '').trim() || 'Platform app',
     sessionSecret: env.SESSION_SECRET || '',
     // Operator (back office) sign-in. Without it the back office only works on a loopback address.
     adminKey: env.ADMIN_KEY || '',
@@ -189,9 +189,9 @@ export function loadConfig(env = process.env) {
   if (config.secrets.key && config.secrets.key.length < 16) errors.push('SECRETS_KEY must be at least 16 characters.');
   if (config.identity.fabricGroupId && !isGuid(config.identity.fabricGroupId)) errors.push('FABRIC_SP_GROUP_ID must be a security group object ID.');
   if (!Number.isInteger(config.port) || config.port < 0 || config.port > 65535) errors.push('PORT must be a valid port number.');
-  if (publicOrigin && !/^https?:\/\/[^/\s]+$/i.test(publicOrigin)) errors.push('PUBLIC_ORIGIN must look like https://hicrm.example.com (no path).');
+  if (publicOrigin && !/^https?:\/\/[^/\s]+$/i.test(publicOrigin)) errors.push('PUBLIC_ORIGIN must look like https://platform.example.com (no path).');
   if (appDomain && (!HOSTNAME.test(appDomain) || /^\d+(\.\d+){3}$/.test(appDomain))) {
-    errors.push('APP_DOMAIN must be a host name, such as localhost or hicrm.example.com (no scheme, port or IP address).');
+    errors.push('APP_DOMAIN must be a host name, such as localhost or platform.example.com (no scheme, port or IP address).');
   } else if (appDomain && /^https?:\/\/[^/\s]+$/i.test(publicOrigin) && new URL(publicOrigin).hostname !== appDomain) {
     errors.push(`PUBLIC_ORIGIN must be the address of APP_DOMAIN (https://${appDomain}): the back office runs there, and customers get https://<customer>.${appDomain}.`);
   }
@@ -255,6 +255,6 @@ export function loadConfig(env = process.env) {
   if (!config.sessionSecret) config.warnings.push('SESSION_SECRET is not set, so customer sessions end when the server restarts.');
   if (live && config.personaSwitcher) config.warnings.push('PERSONA_SWITCHER is on: on this computer, "View as" signs in as any of a company\'s people without a password. Set PERSONA_SWITCHER=false to turn it off.');
   if (production && flag(env.ALLOW_DEMO_SIGNIN)) config.warnings.push('ALLOW_DEMO_SIGNIN=true: anyone who knows a customer email domain can sign in as that customer. Staging only.');
-  if (production && !appDomain) config.warnings.push('APP_DOMAIN is not set, so every customer signs in at the same address. Give each customer its own: APP_DOMAIN=hicrm.example.com gives https://<customer>.hicrm.example.com.');
+  if (production && !appDomain) config.warnings.push('APP_DOMAIN is not set, so every customer signs in at the same address. Give each customer its own: APP_DOMAIN=platform.example.com gives https://<customer>.platform.example.com.');
   return Object.freeze(config);
 }

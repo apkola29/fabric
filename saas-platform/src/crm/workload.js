@@ -1,4 +1,4 @@
-// HiCRM's workload: what the framework needs to know about the application it hosts.
+// The platform app's workload: what the framework needs to know about the application it hosts.
 //
 // The framework core (src/auth, src/fabric, src/http, src/platform) reaches the sample application only through this
 // module, and test/framework.test.js enforces it. To host another application, replace src/crm and implement the same

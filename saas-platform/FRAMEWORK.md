@@ -4,14 +4,14 @@ One application, many customers ("tenants"). Each tenant gets its own data, repo
 isolated by Fabric itself rather than by application code alone. The tenants' people sign in to the application and
 need no Microsoft Entra account and no Power BI license.
 
-**Who's who in the sample.** HiCRM is the provider: it owns and runs the application, the Microsoft Entra tenant and
-every identity in it, the capacity, and a workspace for each tenant. Its tenants, Fabrikam and Contoso, are customer
+**Who's who in the sample.** The platform is the provider: it owns and runs the application, the Microsoft Entra tenant
+and every identity in it, the capacity, and a workspace for each tenant. Its tenants, Fabrikam and Contoso, are customer
 companies that own only their people and their data. "Tenant" in this document always means such a customer, never a
 Microsoft Entra tenant. Today every identity the platform runs as lives in the provider's Entra tenant; a tenant's own
 Entra tenant takes part only in the options in [IDENTITIES.md](IDENTITIES.md) ([README.md](README.md#whos-who)).
 
-This repository is the framework, plus a sample built on it: **HiCRM**, a small CRM whose customers each have a SQL
-database, a semantic model with row-level security, an embedded Power BI report and a data agent. The framework
+This repository is the framework, plus a sample built on it: **the platform app**, a small CRM whose customers each have
+a SQL database, a semantic model with row-level security, an embedded Power BI report and a data agent. The framework
 defines its rules as **controls** (section 6) and checks them with one command:
 
 ```powershell
@@ -24,12 +24,12 @@ npm run validate -- --live --browser     # against this deployment, read-only, i
 | [1. What the framework gives you](#1-what-the-framework-gives-you) | The parts, at a glance |
 | [2. Principles](#2-principles) | The eight rules every decision follows |
 | [3. Reference architecture](#3-reference-architecture) | Control plane, application, tenant planes |
-| [4. Building blocks](#4-building-blocks) | Each part, its code, and what's specific to HiCRM |
+| [4. Building blocks](#4-building-blocks) | Each part, its code, and what's specific to the platform app |
 | [5. Design decisions](#5-design-decisions) | The defaults, and when to choose otherwise |
 | [6. Controls](#6-controls) | 34 controls, and how each is checked |
 | [7. Validating a deployment](#7-validating-a-deployment) | The validator, the tests, and the latest results |
 | [8. Tenant lifecycle](#8-tenant-lifecycle) | From onboarding to removal |
-| [9. Adopting the framework](#9-adopting-the-framework-for-your-application) | Replacing HiCRM with your application |
+| [9. Adopting the framework](#9-adopting-the-framework-for-your-application) | Replacing the platform app with your application |
 | [10. Known limits](#10-known-limits) | What the framework doesn't do yet |
 | [Appendix A](#appendix-a-latest-live-validation) | The latest live scorecard |
 
@@ -37,7 +37,7 @@ Related documents:
 - [REQUIREMENTS.md](REQUIREMENTS.md): the roles, identities, credentials, tenant settings and workspace rules a deployment
   needs.
 - [EMBEDDING.md](EMBEDDING.md): how the embedded reports, their credentials and row-level security work.
-- [ARCHITECTURE.md](ARCHITECTURE.md): HiCRM's design.
+- [ARCHITECTURE.md](ARCHITECTURE.md): the platform app's design.
 - [MULTITENANCY.md](MULTITENANCY.md): the security review.
 - [BUILDOUT.md](BUILDOUT.md): the build record, with every identity and permission.
 - [DEPLOYMENT-ARCHITECTURES.md](DEPLOYMENT-ARCHITECTURES.md): production designs.
@@ -85,14 +85,14 @@ Related documents:
 ```mermaid
 flowchart LR
   %% The framework's reference architecture, with the sample's names. Orange: Fabrikam. Green: Contoso. They are
-  %% HiCRM's customers, the "tenants". Blue: HiCRM, the provider, which owns and runs every blue box.
+  %% the platform's customers, the "tenants". Blue: the platform, the provider, which owns and runs every blue box.
   subgraph FAB["FABRIKAM · tenant 1"]
     U1["Fabrikam's people"]
   end
   subgraph CON["CONTOSO · tenant 2"]
     U2["Contoso's people"]
   end
-  subgraph APP["HICRM · application, one deployment"]
+  subgraph APP["THE PLATFORM · application, one deployment"]
     direction TB
     WEB["Web app and API<br/>sign-in, tenant by address"]
     EMB["Embed token service"]
@@ -100,19 +100,19 @@ flowchart LR
     REG[("Tenant registry")]
     SEC[("Credentials<br/>Key Vault")]
   end
-  subgraph CP["HICRM · control plane"]
+  subgraph CP["THE PLATFORM · control plane"]
     direction TB
     PROV["Provisioning engine"]
     PSP["Platform identity"]
     VAL["Audit and validator"]
   end
-  subgraph T1["HICRM · tenant plane for Fabrikam<br/>only Fabrikam's data"]
+  subgraph T1["THE PLATFORM · tenant plane for Fabrikam<br/>only Fabrikam's data"]
     direction TB
     SA1["fabrikamsa<br/>service principal"]
     WS1["Workspace: SQL database, OneLake,<br/>model with RLS, role-free model,<br/>report, data agent"]
     WI1["Workspace identity"]
   end
-  subgraph T2["HICRM · tenant plane for Contoso<br/>only Contoso's data"]
+  subgraph T2["THE PLATFORM · tenant plane for Contoso<br/>only Contoso's data"]
     direction TB
     SA2["contososa<br/>service principal"]
     WS2["Workspace<br/>the same items"]
@@ -139,10 +139,10 @@ flowchart LR
 
   classDef fabrikam fill:#FDECE0,stroke:#C55A11,color:#4A1F00
   classDef contoso fill:#E7F4EA,stroke:#2E7D32,color:#123D1B
-  classDef hicrm fill:#E7F0FA,stroke:#1F5AA6,color:#0B2545
+  classDef platform fill:#E7F0FA,stroke:#1F5AA6,color:#0B2545
   class U1 fabrikam
   class U2 contoso
-  class WEB,EMB,ASK,REG,SEC,PROV,PSP,VAL,SA1,WS1,WI1,SA2,WS2,WI2 hicrm
+  class WEB,EMB,ASK,REG,SEC,PROV,PSP,VAL,SA1,WS1,WI1,SA2,WS2,WI2 platform
   style FAB fill:#FFF7F1,stroke:#C55A11,stroke-width:2px,color:#4A1F00
   style CON fill:#F3FAF4,stroke:#2E7D32,stroke-width:2px,color:#123D1B
   style APP fill:#F5F9FE,stroke:#1F5AA6,stroke-width:2px,color:#0B2545
@@ -161,7 +161,7 @@ flowchart LR
 
 ## 4. Building blocks
 
-| Block | What it does | Framework code | HiCRM-specific code (replace for your app) |
+| Block | What it does | Framework code | Platform app code (replace for your app) |
 | --- | --- | --- | --- |
 | Tenant registry | Tenant records: edition, status, provisioning steps, Fabric IDs, logs | `src/platform/store.js` | None |
 | Addresses and branding | Address to tenant; logo and color; host-bound sessions | `src/platform/tenancy.js`, `branding.js`, `sessions.js` | None |
@@ -280,7 +280,7 @@ The live run's open items, all about the environment rather than the framework:
 | --- | --- | --- | --- |
 | AI-03 | FAIL | The data agents refuse to run on the trial capacity (`FT1 SKU Not Supported`). Managers get quick answers from the database instead | Move the workspaces to a paid F2 or larger capacity |
 | IDN-04 | WARN | The administrator who created the workspaces is still Admin of both | Remove them, or document them as break-glass access through a PIM-eligible group |
-| IDN-05 | WARN | The platform identity signs in with a client secret (the pilot reuses an existing app registration). The customer service principals use certificates | Give the platform app a certificate (`AZURE_CLIENT_CERTIFICATE_PATH`), or a federated credential once the app runs in Azure |
+| IDN-05 | WARN | The platform identity signs in with a client secret (the pilot reuses an existing app registration). The customer service principals use certificates | Give the platform identity a certificate (`AZURE_CLIENT_CERTIFICATE_PATH`), or a federated credential once the app runs in Azure |
 | IDN-06 | WARN | The service principal tenant settings (Fabric APIs, profiles, embedding) apply to the whole organization. The platform identity is in a group allowed the admin APIs, including those that make changes | A Fabric administrator limits the settings to a security group holding the platform and tenant service principals, and takes the platform identity out of the admin API group (or gives it a group of its own for the read-only admin APIs only) |
 | OPS-05 | WARN | The trial capacity can't host data agents | The same as AI-03 |
 
@@ -315,7 +315,7 @@ The live run's open items, all about the environment rather than the framework:
    | `RLS_PROBE`, `AGENT_PROBE_QUESTION` | What the validator opens and asks to prove row-level security and the agent |
 
 3. **Rename what still says CRM**: some step names and the customer API routes (`src/routes/customer.js`) are
-   HiCRM's.
+   the platform app's.
 4. **Set up the tenant** as in [REQUIREMENTS.md](REQUIREMENTS.md): tenant settings, a capacity, the platform identity,
    and a service principal per tenant, each with a certificate or a federated credential.
 5. **Validate**: `npm test` and `npm run validate`, then `npm run validate -- --live --browser` against your
@@ -365,11 +365,11 @@ the trial capacity).
 | EMB-04 | The browser gets an embed token and URL only: never a Microsoft Entra token, a secret or the token request | **TESTS** | npm test: `customer-app.test.js`, `robustness.test.js` |
 | EMB-05 | Frames are limited to Power BI, and the Power BI client library is pinned with Subresource Integrity | **TESTS** | npm test: `admin-api.test.js`, `robustness.test.js` |
 | EMB-06 | Editing and creating reports are granted per person; only people who may create get a token that names the workspace (Save as, New report) | **TESTS** | npm test: `personas.test.js` |
-| RLS-01 | Reports read a model with row-level security, and every embed token names the viewer and their roles from the server's session | **PASS** | Fabrikam: "Sales overview" reads HiCRM Insights, which requires the viewer's identity and roles.<br>Fabrikam, manager leah.thompson@fabrikam.com: effective identity with role All territories.<br>Fabrikam, Texas rep drew.collins@fabrikam.com: effective identity with role Texas.<br>Fabrikam, New Mexico rep arjun.mehta@fabrikam.com: effective identity with role New Mexico.<br>Fabrikam, Georgia rep amara.okoye@fabrikam.com: effective identity with role Georgia.<br>Contoso: "Sales overview" reads HiCRM Insights, which requires the viewer's identity and roles.<br>Contoso, manager maria.alvarez@contoso.com: effective identity with role All territories.<br>Contoso, Texas rep sam.rivera@contoso.com: effective identity with role Texas.<br>Contoso, New Mexico rep priya.nair@contoso.com: effective identity with role New Mexico.<br>Contoso, Georgia rep grace.kim@contoso.com: effective identity with role Georgia. |
-| RLS-02 | People limited by row-level security never get a token for a model without it | **PASS** | Fabrikam: no standard report reads HiCRM Insights - Assistant, the model without row-level security.<br>Contoso: no standard report reads HiCRM Insights - Assistant, the model without row-level security. |
+| RLS-01 | Reports read a model with row-level security, and every embed token names the viewer and their roles from the server's session | **PASS** | Fabrikam: "Sales overview" reads Platform app Insights, which requires the viewer's identity and roles.<br>Fabrikam, manager leah.thompson@fabrikam.com: effective identity with role All territories.<br>Fabrikam, Texas rep drew.collins@fabrikam.com: effective identity with role Texas.<br>Fabrikam, New Mexico rep arjun.mehta@fabrikam.com: effective identity with role New Mexico.<br>Fabrikam, Georgia rep amara.okoye@fabrikam.com: effective identity with role Georgia.<br>Contoso: "Sales overview" reads Platform app Insights, which requires the viewer's identity and roles.<br>Contoso, manager maria.alvarez@contoso.com: effective identity with role All territories.<br>Contoso, Texas rep sam.rivera@contoso.com: effective identity with role Texas.<br>Contoso, New Mexico rep priya.nair@contoso.com: effective identity with role New Mexico.<br>Contoso, Georgia rep grace.kim@contoso.com: effective identity with role Georgia. |
+| RLS-02 | People limited by row-level security never get a token for a model without it | **PASS** | Fabrikam: no standard report reads Platform app Insights - Assistant, the model without row-level security.<br>Contoso: no standard report reads Platform app Insights - Assistant, the model without row-level security. |
 | RLS-03 | The rendered report shows each person only their rows, and its numbers match the database | **PASS** | Fabrikam, manager leah.thompson@fabrikam.com: shows Georgia 2828500, Texas 2229000, New Mexico 455000, as the database does. A report filter for every state still shows Georgia, Texas, New Mexico.<br>Fabrikam, Texas rep drew.collins@fabrikam.com: shows Texas 2229000, as the database does. A report filter for every state still shows Texas.<br>Fabrikam, New Mexico rep arjun.mehta@fabrikam.com: shows New Mexico 455000, as the database does. A report filter for every state still shows New Mexico.<br>Fabrikam, Georgia rep amara.okoye@fabrikam.com: shows Georgia 2828500, as the database does. A report filter for every state still shows Georgia.<br>Contoso, manager maria.alvarez@contoso.com: shows Georgia 2151000, Texas 2145500, New Mexico 712000, as the database does. A report filter for every state still shows Georgia, Texas, New Mexico.<br>Contoso, Texas rep sam.rivera@contoso.com: shows Texas 2145500, as the database does. A report filter for every state still shows Texas.<br>Contoso, New Mexico rep priya.nair@contoso.com: shows New Mexico 712000, as the database does. A report filter for every state still shows New Mexico.<br>Contoso, Georgia rep grace.kim@contoso.com: shows Georgia 2151000, as the database does. A report filter for every state still shows Georgia. |
 | RLS-04 | The app's own data access applies the same scope as the report | **PASS** | Fabrikam, manager (every territory): sees Georgia, Texas, New Mexico.<br>Fabrikam, Texas rep (Texas): sees Texas.<br>Fabrikam, New Mexico rep (New Mexico): sees New Mexico.<br>Fabrikam, Georgia rep (Georgia): sees Georgia.<br>Contoso, manager (every territory): sees Georgia, Texas, New Mexico.<br>Contoso, Texas rep (Texas): sees Texas.<br>Contoso, New Mexico rep (New Mexico): sees New Mexico.<br>Contoso, Georgia rep (Georgia): sees Georgia. |
-| RLS-05 | Direct Lake reads OneLake through a fixed-identity cloud connection with single sign-on off | **PASS** | Fabrikam: HiCRM OneLake <fabrikam-workspace-id> <fabrikam-service-principal-app-id>: workspace identity, no single sign-on, no stored secret<br>Contoso: HiCRM OneLake <contoso-workspace-id>: workspace identity, no single sign-on, no stored secret |
+| RLS-05 | Direct Lake reads OneLake through a fixed-identity cloud connection with single sign-on off | **PASS** | Fabrikam: Platform app OneLake <fabrikam-workspace-id> <fabrikam-service-principal-app-id>: workspace identity, no single sign-on, no stored secret<br>Contoso: Platform app OneLake <contoso-workspace-id>: workspace identity, no single sign-on, no stored secret |
 | AI-01 | The data agent is called at its published MCP endpoint, as the tenant's identity | **PASS** | Fabrikam: https://api.fabric.microsoft.com/v1/mcp/workspaces/<fabrikam-workspace-id>/dataagents/<fabrikam-data-agent-id>/agent reached the published agent as fabrikamsa, and the capacity refused to run it.<br>Contoso: https://api.fabric.microsoft.com/v1/mcp/workspaces/<contoso-workspace-id>/dataagents/<contoso-data-agent-id>/agent reached the published agent as contososa, and the capacity refused to run it. |
 | AI-02 | The agent reads the role-free model, so only people who may see every row reach it | **PASS** | Fabrikam: the published agent reads the role-free model.<br>Fabrikam: none of the 6 logged question(s) from people limited to territories reached the agent.<br>Contoso: the published agent reads the role-free model.<br>Contoso: none of the 5 logged question(s) from people limited to territories reached the agent. |
 | AI-03 | The agent answers on the tenant capacity; when it cannot, the app falls back and records why | **FAIL** | Fabrikam: MCP initialize error -32003: FT1 SKU Not Supported. Data agents need a paid F2 or larger capacity (or P1 with Fabric); until then the app gives quick answers.<br>Contoso: MCP initialize error -32003: FT1 SKU Not Supported. Data agents need a paid F2 or larger capacity (or P1 with Fabric); until then the app gives quick answers. |

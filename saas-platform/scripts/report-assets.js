@@ -1,4 +1,4 @@
-// Writes src/crm/report-assets/HiCRM-Insights.measures.dax and refreshes the generated sections of
+// Writes src/crm/report-assets/Platform-app-Insights.measures.dax and refreshes the generated sections of
 // report-creation-prompt.md from the model and the starter report. Run it after changing src/crm/model.js,
 // src/crm/schema.js or src/crm/report.js: node scripts/report-assets.js
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';

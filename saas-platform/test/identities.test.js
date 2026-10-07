@@ -5,8 +5,9 @@ import os from 'node:os';
 import path from 'node:path';
 import { test } from 'node:test';
 import { createSelfSignedCertificate } from '../src/auth/certificates.js';
-import { credentialFromStore } from '../src/auth/credential-types.js';
-import { createIdentityBroker } from '../src/platform/identities.js';
+import { credentialFromStore, storedCredential } from '../src/auth/credential-types.js';
+import { createIdentityBroker, secretNameFor } from '../src/platform/identities.js';
+import { LEGACY_PRODUCT_NAMES, LEGACY_SERVICE_ACCOUNT_TAGS, legacyTenantTags } from '../src/platform/legacy-names.js';
 import { createFileSecretStore, createKeyVaultSecretStore, createMemorySecretStore } from '../src/platform/secrets.js';
 import { newTenantRecord } from '../src/platform/store.js';
 import { json, scriptedFetch, staticTokens } from './helpers.js';
@@ -22,7 +23,7 @@ function liveConfig(identity, federated = {}) {
     authMode: 'sp',
     tenantId: TENANT_ID,
     clientId: PLATFORM_APP,
-    productName: 'HiCRM',
+    productName: 'Platform app',
     identity: { mode: 'required', autoCreate: false, fabricGroupId: '', credential: 'certificate', ...identity },
     federated: { managedIdentityClientId: '', managedIdentityObjectId: '', tokenFile: '', audience: 'api://AzureADTokenExchange', getAssertion: null, ...federated },
     endpoints: { login: 'https://login.test', graph: 'https://graph.test/v1.0', fabric: 'https://api.fabric.test/v1', powerbi: 'https://api.powerbi.test/v1.0/myorg', onelake: 'https://onelake.test' },
@@ -33,7 +34,7 @@ const fabrikam = () => newTenantRecord({ name: 'Fabrikam', plan: 'enterprise', d
 const tokenOk = () => json(200, { access_token: 'sa-token', expires_in: 3600 });
 
 test('the file secret store encrypts at rest and needs its key', async () => {
-  const file = path.join(mkdtempSync(path.join(os.tmpdir(), 'hicrm-secrets-')), 'secrets.json');
+  const file = path.join(mkdtempSync(path.join(os.tmpdir(), 'platform-secrets-')), 'secrets.json');
   const store = createFileSecretStore({ file, key: 'correct horse battery staple' });
   await store.set('tenant-1-service-account', 'p@ss-Value!');
   assert.equal(await store.get('tenant-1-service-account'), 'p@ss-Value!');
@@ -52,7 +53,7 @@ test('Key Vault secrets are read and written with the platform identity', async 
     { match: '/secrets/tenant-1-service-account', method: 'GET', respond: json(200, { value: 'v1' }) },
     { match: '/secrets/missing', method: 'GET', respond: json(404, { error: { code: 'SecretNotFound' } }) },
   ]);
-  const vault = createKeyVaultSecretStore({ vaultUrl: 'https://hicrm-kv.vault.azure.net', tokens: staticTokens, fetchImpl });
+  const vault = createKeyVaultSecretStore({ vaultUrl: 'https://platform-kv.vault.azure.net', tokens: staticTokens, fetchImpl });
   await vault.set('tenant-1-service-account', 'v1', { expiresOn: '2027-01-01T00:00:00Z' });
   assert.equal(await vault.get('tenant-1-service-account'), 'v1');
   assert.equal(await vault.get('missing'), null);
@@ -63,7 +64,8 @@ test('Key Vault secrets are read and written with the platform identity', async 
 
 test('the platform creates "fabrikamsa" through Graph with a certificate, keeps the key in the vault, and signs in as it', async () => {
   const { fetchImpl, calls } = scriptedFetch([
-    { match: "/applications(uniqueName='hicrm-tenant-", method: 'PATCH', respond: json(201, { id: 'app-object', appId: APP_ID }) },
+    { match: '/applications?$filter=', method: 'GET', respond: json(200, { value: [] }) },
+    { match: "/applications(uniqueName='platform-tenant-", method: 'PATCH', respond: json(201, { id: 'app-object', appId: APP_ID }) },
     { match: `/servicePrincipals(appId='${APP_ID}')`, method: 'PATCH', respond: json(201, { id: SP_ID, appId: APP_ID }) },
     { match: 'graph.test/v1.0/applications/app-object', method: 'PATCH', respond: new Response(null, { status: 204 }) },
     { match: 'graph.test/v1.0/applications/app-object', method: 'DELETE', respond: new Response(null, { status: 204 }) },
@@ -93,11 +95,12 @@ test('the platform creates "fabrikamsa" through Graph with a certificate, keeps 
   assert.ok(!calls.some((c) => c.url.includes('addPassword')), 'no client secret is created');
 
   const upsert = calls.find((c) => c.method === 'PATCH' && c.url.includes('/applications(uniqueName='));
-  assert.ok(upsert.url.endsWith(`/applications(uniqueName='hicrm-tenant-${tenant.id}')`), 'keyed on the customer, so retries are idempotent');
+  assert.ok(upsert.url.endsWith(`/applications(uniqueName='platform-tenant-${tenant.id}')`), 'keyed on the customer, so retries are idempotent');
   assert.equal(upsert.headers.prefer, 'create-if-missing');
   const created = JSON.parse(upsert.body);
   assert.equal(created.signInAudience, 'AzureADMyOrg');
-  assert.ok(created.tags.includes(`hicrm-tenant-${tenant.id}`));
+  assert.equal(created.displayName, 'Platform app service principal - Fabrikam (fabrikamsa)');
+  assert.deepEqual(created.tags, [`platform-tenant-${tenant.id}`, 'platform-service-account']);
   assert.ok(!calls.some((c) => c.url.includes('ownedObjects')), 'no directory-wide listing is needed');
 
   const tokens = await broker.tokensFor(tenant);
@@ -117,9 +120,11 @@ test('the platform creates "fabrikamsa" through Graph with a certificate, keeps 
 });
 
 test('a retry after an interrupted run reuses the app Graph already has (upsert answers 204)', async () => {
+  // The tag lookups run before the app shows up in them; the upsert's alternate key sees it at once.
+  const lookups = [json(200, { value: [] }), json(200, { value: [] }), json(200, { value: [{ id: 'app-object', appId: APP_ID }] })];
   const { fetchImpl, calls } = scriptedFetch([
-    { match: "/applications(uniqueName='hicrm-tenant-", method: 'PATCH', respond: new Response(null, { status: 204 }) },
-    { match: '/applications?$filter=', method: 'GET', respond: json(200, { value: [{ id: 'app-object', appId: APP_ID }] }) },
+    { match: "/applications(uniqueName='platform-tenant-", method: 'PATCH', respond: new Response(null, { status: 204 }) },
+    { match: '/applications?$filter=', method: 'GET', respond: lookups },
     { match: `/servicePrincipals(appId='${APP_ID}')`, method: 'PATCH', respond: new Response(null, { status: 204 }) },
     { match: `/servicePrincipals(appId='${APP_ID}')`, method: 'GET', respond: json(200, { id: SP_ID, appId: APP_ID }) },
     { match: 'graph.test/v1.0/applications/app-object', method: 'PATCH', respond: new Response(null, { status: 204 }) },
@@ -130,8 +135,9 @@ test('a retry after an interrupted run reuses the app Graph already has (upsert 
   const identity = await broker.ensure(tenant);
   assert.equal(identity.appId, APP_ID);
   assert.equal(identity.objectId, SP_ID);
-  const lookup = calls.find((c) => c.url.includes('/applications?$filter='));
-  assert.ok(decodeURIComponent(lookup.url).includes(`tags/any(t:t eq 'hicrm-tenant-${tenant.id}')`));
+  assert.ok(calls.some((c) => c.method === 'PATCH' && c.url.includes('/applications(uniqueName=')), 'the upsert ran');
+  const readBack = calls.filter((c) => c.url.includes('/applications?$filter=')).at(-1);
+  assert.ok(decodeURIComponent(readBack.url).includes(`tags/any(t:t eq 'platform-tenant-${tenant.id}')`));
   assert.ok(!calls.some((c) => c.method === 'POST' && /\/(applications|servicePrincipals)$/.test(c.url)), 'nothing is created twice');
 });
 
@@ -157,7 +163,7 @@ test('an admin-created service account is checked before it is stored', async ()
   // An admin-made certificate (scripts/bootstrap-identities.ps1 -Credential Certificate) replaces the secret, and
   // keeps what provisioning recorded about the account.
   tenant.identity.workspaceRole = 'Admin';
-  const made = createSelfSignedCertificate({ commonName: 'HiCRM fabrikamsa' });
+  const made = createSelfSignedCertificate({ commonName: 'Platform app fabrikamsa' });
   const withCertificate = await broker.register(tenant, { appId: APP_ID, objectId: SP_ID, certificate: made.bundle });
   assert.equal(withCertificate.credentialType, 'certificate');
   assert.equal(withCertificate.certificateThumbprint, made.thumbprintSha256);
@@ -183,7 +189,8 @@ test('required mode never falls back to the platform identity; preferred mode do
 
 test('with a managed identity, new service accounts trust it and nothing secret is stored anywhere', async () => {
   const { fetchImpl, calls } = scriptedFetch([
-    { match: "/applications(uniqueName='hicrm-tenant-", method: 'PATCH', respond: json(201, { id: 'app-object', appId: APP_ID }) },
+    { match: '/applications?$filter=', method: 'GET', respond: json(200, { value: [] }) },
+    { match: "/applications(uniqueName='platform-tenant-", method: 'PATCH', respond: json(201, { id: 'app-object', appId: APP_ID }) },
     { match: `/servicePrincipals(appId='${APP_ID}')`, method: 'PATCH', respond: json(201, { id: SP_ID, appId: APP_ID }) },
     { match: '/applications/app-object/federatedIdentityCredentials', method: 'POST', respond: json(201, { id: 'fic-1' }) },
     { match: 'login.test', method: 'POST', respond: tokenOk },
@@ -209,4 +216,71 @@ test('with a managed identity, new service accounts trust it and nothing secret 
   // An account that trusts the managed identity can't sign in on a host that has none.
   const elsewhere = createIdentityBroker({ config: liveConfig({ mode: 'required' }), platformTokens: staticTokens, platformFabric: {}, secrets, fetchImpl });
   await assert.rejects(elsewhere.tokensFor(tenant), /MANAGED_IDENTITY_CLIENT_ID/);
+});
+
+const CURRENT_NAME = 'Platform app service principal - Fabrikam (fabrikamsa)';
+const CURRENT_TAGS = (tenant) => [`platform-tenant-${tenant.id}`, 'platform-service-account'];
+
+test('an app an earlier version created is found by its earlier tag and renamed in place, never created again', async () => {
+  const tenant = fabrikam();
+  const [earlierTag] = legacyTenantTags(tenant.id);
+  const earlier = { id: 'app-object', appId: APP_ID, displayName: `${LEGACY_PRODUCT_NAMES[0]} service account - Fabrikam (fabrikamsa)`, tags: [earlierTag, ...LEGACY_SERVICE_ACCOUNT_TAGS] };
+  const { fetchImpl, calls } = scriptedFetch([
+    { match: `'platform-tenant-${tenant.id}'`, method: 'GET', respond: json(200, { value: [] }) },
+    { match: `'${earlierTag}'`, method: 'GET', respond: json(200, { value: [earlier] }) },
+    { match: 'graph.test/v1.0/applications/app-object', method: 'PATCH', respond: new Response(null, { status: 204 }) },
+    { match: `/servicePrincipals(appId='${APP_ID}')`, method: 'PATCH', respond: new Response(null, { status: 204 }) },
+    { match: `/servicePrincipals(appId='${APP_ID}')`, method: 'GET', respond: json(200, { id: SP_ID, appId: APP_ID }) },
+    { match: 'login.test', method: 'POST', respond: tokenOk },
+  ]);
+  const broker = createIdentityBroker({ config: liveConfig({ autoCreate: true }), platformTokens: staticTokens, platformFabric: {}, secrets: createMemorySecretStore(), fetchImpl, propagationWaitMs: 0 });
+  const identity = await broker.ensure(tenant);
+  assert.equal(identity.appId, APP_ID, 'the app it already had');
+  assert.equal(identity.applicationObjectId, 'app-object');
+  assert.equal(identity.displayName, CURRENT_NAME);
+  assert.ok(!calls.some((c) => c.url.includes('/applications(uniqueName=')), 'no upsert under the new key: it would make a second app');
+  const lookups = calls.filter((c) => c.url.includes('/applications?$filter=')).map((c) => decodeURIComponent(c.url));
+  assert.deepEqual(lookups.map((url) => url.includes(`'platform-tenant-${tenant.id}'`)), [true, false], 'the current tag first, then the earlier one');
+  const renamed = calls.filter((c) => c.method === 'PATCH' && c.url.endsWith('/applications/app-object')).map((c) => JSON.parse(c.body)).find((b) => b.displayName);
+  assert.equal(renamed.displayName, CURRENT_NAME);
+  assert.deepEqual(renamed.tags, CURRENT_TAGS(tenant), 'the new tags replace the earlier ones');
+  const principal = JSON.parse(calls.find((c) => c.method === 'PATCH' && c.url.includes('/servicePrincipals(')).body);
+  assert.equal(principal.displayName, CURRENT_NAME);
+  assert.deepEqual(principal.tags, CURRENT_TAGS(tenant));
+});
+
+test('provisioning renames an account the platform created under an earlier name; one an admin created is left to the admin', async () => {
+  const { fetchImpl, calls } = scriptedFetch([
+    { match: 'graph.test/v1.0/applications/app-object', method: 'PATCH', respond: new Response(null, { status: 204 }) },
+    { match: `/servicePrincipals(appId='${APP_ID}')`, method: 'PATCH', respond: new Response(null, { status: 204 }) },
+  ]);
+  const secrets = createMemorySecretStore();
+  const broker = createIdentityBroker({ config: liveConfig({ autoCreate: true }), platformTokens: staticTokens, platformFabric: {}, secrets, fetchImpl, propagationWaitMs: 0 });
+  const tenant = fabrikam();
+  const earlierName = `${LEGACY_PRODUCT_NAMES[0]} service account - Fabrikam (fabrikamsa)`;
+  tenant.identity = { kind: 'servicePrincipal', name: 'fabrikamsa', displayName: earlierName, appId: APP_ID, objectId: SP_ID, applicationObjectId: 'app-object', secretName: secretNameFor(tenant), credentialType: 'secret', createdBy: 'platform' };
+  await secrets.set(tenant.identity.secretName, storedCredential({ type: 'secret', secret: 'still-valid' }));
+  assert.equal(await broker.ensure(tenant), tenant.identity, 'an account with a credential is used as it is');
+  assert.equal(calls.length, 0);
+
+  assert.deepEqual(await broker.rename(tenant), { from: earlierName, to: CURRENT_NAME });
+  assert.deepEqual(calls.map((c) => [c.method, new URL(c.url).pathname]), [['PATCH', '/v1.0/applications/app-object'], ['PATCH', `/v1.0/servicePrincipals(appId='${APP_ID}')`]]);
+  for (const call of calls) assert.deepEqual(JSON.parse(call.body), { displayName: CURRENT_NAME, tags: CURRENT_TAGS(tenant) });
+  assert.equal(tenant.identity.displayName, CURRENT_NAME);
+  assert.equal(tenant.identity.appId, APP_ID, 'the same app, renamed');
+  assert.equal(await broker.rename(tenant), null, 'once');
+
+  tenant.identity = { ...tenant.identity, displayName: earlierName, createdBy: 'admin' };
+  assert.equal(await broker.rename(tenant), null);
+  assert.equal(calls.length, 2, "the platform never renames an app it doesn't own");
+});
+
+test('registering an account again replaces the name an earlier version recorded, or takes the one the admin gives', async () => {
+  const broker = createIdentityBroker({ config: { ...liveConfig(), authMode: 'mock' }, platformTokens: null, platformFabric: {}, secrets: createMemorySecretStore() });
+  const tenant = fabrikam();
+  tenant.identity = { appId: APP_ID, objectId: SP_ID, name: 'fabrikamsa', displayName: `${LEGACY_PRODUCT_NAMES[0]} service account - Fabrikam`, createdBy: 'admin', workspaceRole: 'Admin' };
+  assert.equal((await broker.register(tenant, { appId: APP_ID, objectId: SP_ID, secret: 's' })).displayName, CURRENT_NAME);
+  assert.equal(tenant.identity.workspaceRole, 'Admin', 'what provisioning recorded stays');
+  assert.equal((await broker.register(tenant, { appId: APP_ID, objectId: SP_ID, secret: 's', displayName: 'Fabrikam reporting (fabrikamsa)' })).displayName, 'Fabrikam reporting (fabrikamsa)');
+  assert.equal((await broker.register(tenant, { appId: APP_ID, objectId: SP_ID, secret: 's' })).displayName, 'Fabrikam reporting (fabrikamsa)', 'a name of its own is kept');
 });

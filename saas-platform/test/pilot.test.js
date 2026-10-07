@@ -110,7 +110,7 @@ test('customers from earlier versions: the pilot says when sample data has no te
 });
 
 test('npm run setup in demo mode: writes .env and the sign-ins, runs again safely, and removes what it created', async () => {
-  const dir = await mkdtemp(path.join(os.tmpdir(), 'hicrm-setup-'));
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'platform-setup-'));
   const envFile = path.join(dir, '.env');
   const env = { ...process.env, DATA_DIR: path.join(dir, 'data') };
   for (const key of ['FABRIC_AUTH_MODE', 'AZURE_TENANT_ID', 'AZURE_CLIENT_ID', 'AZURE_CLIENT_SECRET', 'FABRIC_CAPACITY_ID', 'ADMIN_KEY', 'SESSION_SECRET', 'FABRIC_TEMPLATE_WORKSPACE_ID', 'APP_DOMAIN', 'SECRETS_KEY']) delete env[key];

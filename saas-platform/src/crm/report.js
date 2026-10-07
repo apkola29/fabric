@@ -5,7 +5,7 @@ import { modelColumn, modelTableName } from './model.js';
 
 // "Sales overview": the report every customer starts with when the platform has no template workspace. It's PBIR, in
 // the shape Power BI itself saves for these visuals (schemas, query roles, sort and title objects, the base theme),
-// bound to the customer's HiCRM Insights model. Like any report on that model, it shows each viewer only the
+// bound to the customer's Platform app Insights model. Like any report on that model, it shows each viewer only the
 // territories their embed token's row-level security roles allow.
 
 export const STARTER_REPORT_NAME = 'Sales overview';

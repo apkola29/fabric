@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import { ASSISTANT_MODEL_NAME, MODEL_NAME, STARTER_REPORT_NAME, agentTables, buildSemanticModelDefinition, buildStarterReportDefinition, sampleSeedOf } from '../crm/workload.js';
 import { agentDescription, agentInstructions, agentModelSource, buildSemanticModelAgentDefinition, syncDataAgent } from './agent.js';
+import { LEGACY_ITEM_NAMES, LEGACY_PRODUCT_NAMES } from './legacy-names.js';
 import { CORE_ITEMS, entitlements } from './plans.js';
 import { addActivity } from './store.js';
 import { stampTemplates } from './templates.js';
@@ -19,6 +20,12 @@ const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const now = () => new Date().toISOString();
 const short = (id) => String(id).slice(0, 8);
 const sameId = (a, b) => String(a || '').toLowerCase() === String(b || '').toLowerCase();
+// Fabric turned the request down (as opposed to a network failure, an expired token or throttling).
+const refused = (error) => error?.upstreamStatus >= 400 && error.upstreamStatus < 500 && ![401, 429].includes(error.upstreamStatus);
+const reasonOf = (error) => `HTTP ${error.upstreamStatus}${error.code ? `, ${error.code}` : ''}`;
+// A step's result: a detail, or a warning when something needs a person to look at it.
+const result = (notes, warning = false) => (warning ? { status: 'warning', detail: notes.join('; ') } : notes.join('; '));
+const detailOf = (value) => (typeof value === 'object' && value ? value : { status: 'done', detail: value });
 
 export function workspaceNameFor(config, tenant) {
   return `${config.workspacePrefix}${tenant.slug}-${tenant.id.slice(0, 4)}`;
@@ -212,7 +219,15 @@ export function createProvisioner({
     // Role assignments take a moment to apply; prove the account can open the workspace before relying on it.
     const scoped = await identities.fabricFor(tenant);
     await retry(() => scoped.getWorkspace(workspaceId), 6, `${identity.name} can't open the workspace yet`);
-    return `${identity.name} is ${identity.workspaceRole} of this workspace${existing ? '' : ' (just added)'}`;
+    const notes = [`${identity.name} is ${identity.workspaceRole} of this workspace${existing ? '' : ' (just added)'}`];
+    // An app registration an earlier version named gets the current name; it's cosmetic, so a refusal doesn't stop the run.
+    try {
+      const renamed = await identities.rename(tenant);
+      if (renamed) notes.push(`renamed its app registration ${renamed.from} to ${renamed.to}`);
+    } catch (error) {
+      return result([...notes, `couldn't rename its app registration: ${error.message}`], true);
+    }
+    return result(notes);
   }
 
   async function ensureOpsAccess(tenant) {
@@ -225,24 +240,58 @@ export function createProvisioner({
     return `Added the support ${principal.type.toLowerCase()} as Viewer`;
   }
 
-  // Found by ID and name, so an old item that happens to sit under the same key is never reused by mistake.
-  async function ensureItem(tenant, client, { type, name }, key) {
-    const workspaceId = tenant.fabric.workspaceId;
-    const items = await client.listItems(workspaceId, type);
-    if (tenant.fabric[key] && items.some((i) => i.id === tenant.fabric[key] && i.displayName === name)) return `${name} exists`;
-    const byName = items.find((i) => i.displayName === name);
-    if (byName) {
-      tenant.fabric[key] = byName.id;
-      return `Found ${name}`;
+  // An item is found by the ID recorded for it, then by its current name, then by a name an earlier version gave it
+  // (legacy-names.js). One under another name is renamed in place: it keeps its ID, its data and everything that points
+  // at it, so a new name never leaves a second item behind.
+  async function findItem(tenant, client, { type, name, legacyNames = [] }, key, { unique = false } = {}) {
+    const items = await client.listItems(tenant.fabric.workspaceId, type);
+    const recorded = tenant.fabric[key] && items.find((i) => sameId(i.id, tenant.fabric[key]));
+    if (recorded) return recorded;
+    for (const candidate of [name, ...legacyNames]) {
+      const named = items.filter((i) => i.displayName === candidate);
+      // A retried create can leave two items with one name; never guess which one is in use.
+      if (unique && named.length > 1) throw new Error(`There are ${named.length} items named "${candidate}". Delete the extras, then run provisioning again.`);
+      if (named.length) return named[0];
     }
-    const created = await client.createItem(workspaceId, { displayName: name, type, description: `Managed by ${config.productName} for ${tenant.name}` });
+    return null;
+  }
+
+  // Fabric may refuse a rename. The item is then kept, and used, under its old name.
+  async function renameItem(tenant, client, item, { name, description }) {
+    if (item.displayName === name) return { item };
+    const kept = (why) => ({ item, note: `Kept ${item.displayName}: Fabric didn't rename it to ${name}${why ? ` (${why})` : ''}`, warning: true });
+    try {
+      const renamed = await client.updateItem(tenant.fabric.workspaceId, item.id, { displayName: name, description });
+      if (renamed?.displayName && renamed.displayName !== name) return kept();
+      return { item: { ...item, ...renamed, id: item.id, displayName: name }, note: `Renamed ${item.displayName} to ${name}` };
+    } catch (error) {
+      if (!refused(error)) throw error;
+      return kept(reasonOf(error));
+    }
+  }
+
+  async function ensureItem(tenant, client, spec, key) {
+    const { type, name } = spec;
+    const workspaceId = tenant.fabric.workspaceId;
+    const description = `Managed by ${config.productName} for ${tenant.name}`;
+    const recorded = tenant.fabric[key];
+    const found = await findItem(tenant, client, spec, key);
+    if (found) {
+      tenant.fabric[key] = found.id;
+      const { note, warning } = await renameItem(tenant, client, found, { name, description });
+      if (note) return result([note], warning);
+      return sameId(found.id, recorded) ? `${name} exists` : `Found ${name}`;
+    }
+    const created = await client.createItem(workspaceId, { displayName: name, type, description });
     tenant.fabric[key] = created?.id || (await client.listItems(workspaceId, type)).find((i) => i.displayName === name)?.id;
     if (!tenant.fabric[key]) throw new Error(`${type} ${name} was created but can't be found.`);
     return `Created ${name}`;
   }
 
+  // Never a second database: one recorded for this customer, or found under its current or an earlier name, is kept
+  // with its data even when Fabric won't rename it.
   async function ensureCrmDatabase(tenant, client) {
-    const detail = await ensureItem(tenant, client, CORE_ITEMS.sqlDatabase, 'crmDatabaseId');
+    const outcome = detailOf(await ensureItem(tenant, client, { ...CORE_ITEMS.sqlDatabase, legacyNames: LEGACY_ITEM_NAMES.crmDatabase }, 'crmDatabaseId'));
     const workspaceId = tenant.fabric.workspaceId;
     let properties = null;
     for (let attempt = 0; attempt < 30 && !properties?.serverFqdn; attempt++) {
@@ -251,9 +300,11 @@ export function createProvisioner({
     }
     if (!properties?.serverFqdn || !properties?.databaseName) throw new Error('The SQL database has no connection details yet. Run provisioning again in a minute.');
     const next = { sqlDatabaseId: tenant.fabric.crmDatabaseId, server: properties.serverFqdn, database: properties.databaseName };
+    const notes = [outcome.detail];
+    if (tenant.fabric.crm?.database && tenant.fabric.crm.database !== next.database) notes.push(`the CRM now connects to ${next.database}`);
     if (JSON.stringify(next) !== JSON.stringify(tenant.fabric.crm)) await crm.forget(tenant.id);
     tenant.fabric.crm = next;
-    return detail;
+    return result(notes, outcome.status === 'warning');
   }
 
   async function ensureCrmSchema(tenant) {
@@ -301,13 +352,22 @@ export function createProvisioner({
     return 'Ready';
   }
 
-  // Two Direct Lake models over the same OneLake tables (no data is copied): HiCRM Insights, with row-level security,
-  // for every report; and its twin without roles for the data agent, because Power BI doesn't let service principals
-  // query models with roles. Only people who see every territory reach the agent.
+  // Two Direct Lake models over the same OneLake tables (no data is copied): Platform app Insights, with row-level
+  // security, for every report; and its twin without roles for the data agent, because Power BI doesn't let service
+  // principals query models with roles. Only people who see every territory reach the agent.
   const MODELS = {
-    reports: { name: MODEL_NAME, rowLevelSecurity: true, id: 'semanticModelId', fingerprint: 'semanticModelFingerprint', connection: 'modelConnectionId', purpose: 'pipeline, revenue and activity analytics' },
+    reports: {
+      name: MODEL_NAME,
+      legacyNames: LEGACY_ITEM_NAMES.reportsModel,
+      rowLevelSecurity: true,
+      id: 'semanticModelId',
+      fingerprint: 'semanticModelFingerprint',
+      connection: 'modelConnectionId',
+      purpose: 'pipeline, revenue and activity analytics',
+    },
     assistant: {
       name: ASSISTANT_MODEL_NAME,
+      legacyNames: LEGACY_ITEM_NAMES.assistantModel,
       rowLevelSecurity: false,
       id: 'assistantModelId',
       fingerprint: 'assistantModelFingerprint',
@@ -316,25 +376,29 @@ export function createProvisioner({
     },
   };
 
+  // A model keeps its ID through a rename, so the reports bound to it, its connection and its owner stay as they are.
   async function ensureSemanticModel(tenant, client, kind = 'reports') {
     const spec = MODELS[kind];
     const workspaceId = tenant.fabric.workspaceId;
     const { definition, fingerprint } = buildSemanticModelDefinition({ workspaceId, sqlDatabaseId: tenant.fabric.crm.sqlDatabaseId, rowLevelSecurity: spec.rowLevelSecurity });
-    const named = async () => (await client.listItems(workspaceId, 'SemanticModel')).filter((i) => i.displayName === spec.name);
-    const models = await named();
+    const description = `${spec.name}: ${spec.purpose} for ${tenant.name}.`;
     // A retried create makes a second model with the same name; never guess which one the reports use.
-    if (models.length > 1) throw new Error(`There are ${models.length} models named "${spec.name}". Delete the extras, then run provisioning again.`);
-    if (!models.length) {
-      const created = await client.createItem(workspaceId, { displayName: spec.name, type: 'SemanticModel', description: `${spec.name}: ${spec.purpose} for ${tenant.name}.`, definition });
-      tenant.fabric[spec.id] = created?.id || (await named())[0]?.id;
+    const found = await findItem(tenant, client, { type: 'SemanticModel', name: spec.name, legacyNames: spec.legacyNames }, spec.id, { unique: true });
+    if (!found) {
+      const created = await client.createItem(workspaceId, { displayName: spec.name, type: 'SemanticModel', description, definition });
+      tenant.fabric[spec.id] = created?.id || (await client.listItems(workspaceId, 'SemanticModel')).find((i) => i.displayName === spec.name)?.id;
       Object.assign(tenant.fabric, { [spec.fingerprint]: fingerprint, [spec.connection]: null });
       return `Published ${spec.name}`;
     }
-    tenant.fabric[spec.id] = models[0].id;
-    if (tenant.fabric[spec.fingerprint] === fingerprint) return `${spec.name} is up to date`;
-    await client.updateItemDefinition(workspaceId, models[0].id, definition);
-    tenant.fabric[spec.fingerprint] = fingerprint;
-    return `Updated ${spec.name} to the current version`;
+    tenant.fabric[spec.id] = found.id;
+    const { item: model, note, warning } = await renameItem(tenant, client, found, { name: spec.name, description });
+    const notes = note ? [note] : [];
+    if (tenant.fabric[spec.fingerprint] !== fingerprint) {
+      await client.updateItemDefinition(workspaceId, model.id, definition);
+      tenant.fabric[spec.fingerprint] = fingerprint;
+      notes.push(`Updated ${model.displayName} to the current version`);
+    }
+    return notes.length ? result(notes, warning) : `${spec.name} is up to date`;
   }
 
   // Who a customer's work runs as, and so who owns the connections it creates: its own service account, or the
@@ -344,13 +408,57 @@ export function createProvisioner({
   const notModelOwner = (error) =>
     error?.code === 'BindNotModelOwner' || /not the owner of the semantic model/i.test(error?.message || '') || [401, 403].includes(error?.upstreamStatus);
 
-  async function ensureConnection(tenant, client, details) {
+  // A customer's connection is named after the product and its workspace, with its creator's app ID when another
+  // identity already holds that name (connection names are unique in the Fabric tenant). Earlier versions used another
+  // product name.
+  function connectionNames(tenant) {
+    const workspace = short(tenant.fabric.workspaceId);
+    const suffix = ` ${short(tenant.identity?.appId || config.clientId || 'platform')}`;
+    const named = (product) => [`${product} OneLake ${workspace}`, `${product} OneLake ${workspace}${suffix}`];
+    return { current: named(config.productName), legacy: LEGACY_PRODUCT_NAMES.filter((p) => p !== config.productName).flatMap(named), suffix };
+  }
+
+  // Renames a connection in place, keeping the app ID suffix if it had one; models stay bound to it. Null when Fabric
+  // refuses both names.
+  async function renameConnection(client, connection, names) {
+    const order = connection.displayName?.endsWith(names.suffix) ? [names.current[1], names.current[0]] : names.current;
+    for (const displayName of order) {
+      try {
+        const renamed = await client.updateConnection(connection.id, { connectivityType: connection.connectivityType || 'ShareableCloud', displayName });
+        if (!renamed?.displayName || renamed.displayName === displayName) return { ...connection, ...renamed, id: connection.id, displayName };
+      } catch (error) {
+        if (!refused(error)) throw error;
+      }
+    }
+    return null;
+  }
+
+  // The customer's connection to this OneLake location: the one the model is bound to (`bound`), one of the caller's
+  // found by its location under its current or an earlier name, or a new one. One under another name is renamed in
+  // place. If Fabric refuses, a new connection replaces it, and the old one is deleted once no model uses it.
+  async function ensureConnection(tenant, client, details, bound = null) {
     const location = new URL(details.path);
-    const base = `${config.productName} OneLake ${short(tenant.fabric.workspaceId)}`;
-    const names = [base, `${base} ${short(tenant.identity?.appId || config.clientId || 'platform')}`];
+    const naming = connectionNames(tenant);
+    const names = naming.current;
+    const skip = new Set((tenant.fabric.replacedConnections || []).map((id) => id.toLowerCase()));
     const visible = await client.listConnections();
-    const existing = visible.find((c) => names.includes(c.displayName) && c.connectionDetails?.path === details.path);
-    if (existing) return existing;
+    const atLocation = (c) => c.connectionDetails?.path === details.path && !skip.has(String(c.id).toLowerCase());
+    const candidates = [
+      () => bound && !skip.has(String(bound.id).toLowerCase()) && (visible.find((c) => sameId(c.id, bound.id)) || bound),
+      () => visible.find((c) => atLocation(c) && names.includes(c.displayName)),
+      () => visible.find((c) => atLocation(c) && naming.legacy.includes(c.displayName)),
+    ];
+    let replacedFrom = null;
+    for (const next of candidates) {
+      const candidate = next();
+      if (!candidate) continue;
+      if (names.includes(candidate.displayName)) return { connection: candidate, replacedFrom };
+      const renamed = await renameConnection(client, candidate, naming);
+      if (renamed) return { connection: renamed, renamedFrom: candidate.displayName || short(candidate.id), replacedFrom };
+      skip.add(String(candidate.id).toLowerCase());
+      tenant.fabric.replacedConnections = [...new Set([...(tenant.fabric.replacedConnections || []), candidate.id])];
+      replacedFrom ||= candidate.displayName || short(candidate.id);
+    }
     const request = (displayName) => ({
       connectivityType: 'ShareableCloud',
       displayName,
@@ -371,12 +479,12 @@ export function createProvisioner({
     // The connection test runs as the workspace identity, whose new role can take a minute to apply.
     for (let attempt = 1; ; attempt++) {
       try {
-        return await client.createConnection(request(name));
+        return { connection: await client.createConnection(request(name)), replacedFrom };
       } catch (error) {
         // A create whose response was lost may still have worked: look again before retrying, so a retry never
         // leaves a second connection behind.
         const created = mine(await client.listConnections().catch(() => []));
-        if (created) return created;
+        if (created) return { connection: created, replacedFrom };
         // Connection names are unique in the Fabric tenant, and a connection another identity owns doesn't show up in
         // the caller's list, so a clash only shows up as this error. The second name carries the caller's app ID.
         if (name === names[0] && (error.upstreamStatus === 409 || /already ?exists|duplicate|in use/i.test(`${error.code || ''} ${error.message}`))) {
@@ -424,30 +532,37 @@ export function createProvisioner({
     const owner = connectionOwner(tenant);
     const previous = tenant.fabric[spec.connection];
     const previousOwner = tenant.fabric[ownerKey] || 'platform';
-    const bound = reference.connectivityType === 'ShareableCloud' && reference.id && sameId(reference.id, previous);
+    const bound = reference.connectivityType === 'ShareableCloud' && reference.id && sameId(reference.id, previous) && previousOwner === owner;
     let detail;
-    if (bound && previousOwner === owner) {
-      detail = `Uses ${reference.displayName || 'its connection'}`;
+    if (bound && connectionNames(tenant).current.includes(reference.displayName)) {
+      detail = `Uses ${reference.displayName}`;
     } else {
-      const connection = await ensureConnection(tenant, client, reference.connectionDetails);
-      const binding = { id: connection.id, connectivityType: 'ShareableCloud', connectionDetails: { type: reference.connectionDetails.type, path: reference.connectionDetails.path } };
-      try {
-        await client.bindSemanticModelConnection(workspaceId, modelId, binding);
-      } catch (error) {
-        // Only the model's owner can bind it (Fabric answers 400 BindNotModelOwner); the service account takes it over
-        // (it is workspace Admin) and retries.
-        if (!notModelOwner(error)) throw error;
-        await client.pbiTakeOverDataset(workspaceId, modelId);
-        await client.bindSemanticModelConnection(workspaceId, modelId, binding);
+      const { connection, renamedFrom, replacedFrom } = await ensureConnection(tenant, client, reference.connectionDetails, bound ? reference : null);
+      if (reference.connectivityType === 'ShareableCloud' && sameId(reference.id, connection.id)) {
+        // Already bound to it; a rename kept its ID.
+        detail = renamedFrom ? `Renamed ${renamedFrom} to ${connection.displayName}` : `Uses ${connection.displayName}`;
+      } else {
+        const binding = { id: connection.id, connectivityType: 'ShareableCloud', connectionDetails: { type: reference.connectionDetails.type, path: reference.connectionDetails.path } };
+        try {
+          await client.bindSemanticModelConnection(workspaceId, modelId, binding);
+        } catch (error) {
+          // Only the model's owner can bind it (Fabric answers 400 BindNotModelOwner); the service account takes it over
+          // (it is workspace Admin) and retries.
+          if (!notModelOwner(error)) throw error;
+          await client.pbiTakeOverDataset(workspaceId, modelId);
+          await client.bindSemanticModelConnection(workspaceId, modelId, binding);
+        }
+        // The platform identity deletes the connection it no longer uses before it gives up the workspace. It's the one
+        // recorded here, which Fabric may not even show to the service account.
+        const handedOver = previous && previousOwner === 'platform' && owner !== 'platform' && !sameId(previous, connection.id);
+        if (handedOver) tenant.fabric.retiredConnections = [...new Set([...(tenant.fabric.retiredConnections || []), previous])];
+        const notes = [handedOver && `taken over by ${tenant.identity?.name || 'the service account'}`, replacedFrom && `replaces ${replacedFrom}, which Fabric didn't rename`].filter(Boolean);
+        detail = `Bound to ${connection.displayName} (workspace identity, no single sign-on${notes.map((n) => `; ${n}`).join('')})`;
       }
-      // The platform identity deletes the connection it no longer uses before it gives up the workspace. It's the one
-      // recorded here, which Fabric may not even show to the service account.
-      const handedOver = previous && previousOwner === 'platform' && owner !== 'platform' && !sameId(previous, connection.id);
-      if (handedOver) tenant.fabric.retiredConnections = [...new Set([...(tenant.fabric.retiredConnections || []), previous])];
       tenant.fabric[spec.connection] = connection.id;
       tenant.fabric[ownerKey] = owner;
-      detail = `Bound to ${connection.displayName} (workspace identity, no single sign-on${handedOver ? `; taken over by ${tenant.identity?.name || 'the service account'}` : ''})`;
     }
+    await deleteReplacedConnections(tenant, client);
     return `${detail}; ${await frame(client, workspaceId, modelId)}`;
   }
 
@@ -465,6 +580,43 @@ export function createProvisioner({
     }
     tenant.fabric.retiredConnections = left;
     return left;
+  }
+
+  // The connections the registry recorded, plus the ones Fabric shows each semantic model in the workspace bound to.
+  // The registry can miss one: an ID it lost, or a model whose step failed or isn't in this edition. Null when Fabric
+  // can't tell.
+  async function connectionsInUse(tenant, client) {
+    const workspaceId = tenant.fabric.workspaceId;
+    const ids = [tenant.fabric.modelConnectionId, tenant.fabric.assistantConnectionId];
+    try {
+      for (const model of await client.listItems(workspaceId, 'SemanticModel')) {
+        for (const reference of await client.listItemConnections(workspaceId, model.id)) ids.push(reference.id);
+      }
+    } catch {
+      return null;
+    }
+    return new Set(ids.filter(Boolean).map((id) => String(id).toLowerCase()));
+  }
+
+  // Connections replaced because Fabric wouldn't rename them, deleted by their owner (whoever runs the step) once no
+  // model uses them. One still in use, or when Fabric can't tell, stays on the list for a later run.
+  async function deleteReplacedConnections(tenant, client) {
+    if (!tenant.fabric.replacedConnections?.length) return;
+    const inUse = await connectionsInUse(tenant, client);
+    const left = [];
+    for (const id of tenant.fabric.replacedConnections) {
+      if (!inUse || inUse.has(id.toLowerCase())) {
+        left.push(id);
+        continue;
+      }
+      try {
+        await client.deleteConnection(id);
+      } catch (error) {
+        if (error.upstreamStatus !== 404) left.push(id);
+      }
+    }
+    if (left.length) tenant.fabric.replacedConnections = left;
+    else delete tenant.fabric.replacedConnections;
   }
 
   // Least privilege for the control plane: once the customer's service account runs everything, the platform
@@ -528,39 +680,48 @@ export function createProvisioner({
 
   async function ensureDataAgent(tenant, client) {
     const workspaceId = tenant.fabric.workspaceId;
+    const spec = { ...CORE_ITEMS.dataAgent, legacyNames: LEGACY_ITEM_NAMES.dataAgent };
+    // The agent names the model it reads, as Fabric has it: the earlier name if Fabric didn't rename it.
+    const models = await client.listItems(workspaceId, 'SemanticModel');
+    const modelName = models.find((m) => sameId(m.id, tenant.fabric.assistantModelId))?.displayName || ASSISTANT_MODEL_NAME;
+    const description = agentDescription(tenant.name);
     const definition = buildSemanticModelAgentDefinition({
       workspaceId,
       semanticModelId: tenant.fabric.assistantModelId,
-      semanticModelName: ASSISTANT_MODEL_NAME,
+      semanticModelName: modelName,
       tables: agentTables(),
       instructions: agentInstructions(tenant.name, { charts: config.dataAgentCodeInterpreter }),
-      description: agentDescription(tenant.name),
+      description,
       codeInterpreter: config.dataAgentCodeInterpreter,
     });
-    const agents = await client.listItems(workspaceId, CORE_ITEMS.dataAgent.type);
-    let agent = agents.find((a) => a.displayName === CORE_ITEMS.dataAgent.name);
     const fingerprint = createHash('sha256').update(JSON.stringify(definition.parts)).digest('hex').slice(0, 16);
-    let detail;
+    let agent = await findItem(tenant, client, spec, 'dataAgentId');
+    const notes = [];
+    let warning = false;
     if (!agent) {
-      agent = await client.createItem(workspaceId, { displayName: CORE_ITEMS.dataAgent.name, type: CORE_ITEMS.dataAgent.type, description: agentDescription(tenant.name), definition });
-      agent ||= (await client.listItems(workspaceId, CORE_ITEMS.dataAgent.type)).find((a) => a.displayName === CORE_ITEMS.dataAgent.name);
-      detail = `Created and published ${CORE_ITEMS.dataAgent.name} over ${ASSISTANT_MODEL_NAME}`;
+      agent = await client.createItem(workspaceId, { displayName: spec.name, type: spec.type, description, definition });
+      agent ||= (await client.listItems(workspaceId, spec.type)).find((a) => a.displayName === spec.name);
+      notes.push(`Created and published ${spec.name} over ${modelName}`);
     } else {
+      const renamed = await renameItem(tenant, client, agent, { name: spec.name, description });
+      agent = renamed.item;
+      warning = Boolean(renamed.warning);
+      if (renamed.note) notes.push(renamed.note);
       const source = agentModelSource((await client.getItemDefinition(workspaceId, agent.id))?.definition);
       // A new model version (new columns, measures or descriptions) is pushed to the agent as well.
       if (!sameId(source?.artifactId, tenant.fabric.assistantModelId) || tenant.fabric.dataAgentFingerprint !== fingerprint) {
         await client.updateItemDefinition(workspaceId, agent.id, definition);
-        detail = `Updated ${CORE_ITEMS.dataAgent.name} to the current ${ASSISTANT_MODEL_NAME} and published it`;
-      } else detail = `${CORE_ITEMS.dataAgent.name} is up to date`;
+        notes.push(`Updated ${agent.displayName} to the current ${modelName} and published it`);
+      } else if (!notes.length) notes.push(`${agent.displayName} is up to date`);
     }
     tenant.fabric.dataAgentId = agent.id;
     tenant.fabric.dataAgentFingerprint = fingerprint;
     // With the data integration add-on, the customer's own tables become a second source.
     if (entitlements(tenant).resources.lakehouse && tenant.fabric.lakehouseId) {
       const sync = await syncDataAgent({ fabric: client, tenant });
-      if (sync.added?.length) detail += `; added ${sync.added.length} loaded table(s)`;
+      if (sync.added?.length) notes.push(`added ${sync.added.length} loaded table(s)`);
     }
-    return detail;
+    return result(notes, warning);
   }
 
   function stepsFor(tenant) {
@@ -584,7 +745,10 @@ export function createProvisioner({
         title: "Publish the assistant's model",
         enabled: Boolean(resources.dataAgent),
         scoped: true,
-        run: async (t, c) => `${await ensureSemanticModel(t, c, 'assistant')}; ${await ensureModelConnection(t, c, 'assistant')}`,
+        run: async (t, c) => {
+          const parts = [detailOf(await ensureSemanticModel(t, c, 'assistant')), detailOf(await ensureModelConnection(t, c, 'assistant'))];
+          return result(parts.map((p) => p.detail), parts.some((p) => p.status === 'warning'));
+        },
       },
       { key: 'data-agent', title: 'Set up the assistant', enabled: resources.dataAgent, scoped: true, run: ensureDataAgent },
       { key: 'platform-access', title: 'Release the platform identity', enabled: releaseMode, noRetain: true, run: releasePlatformAccess },
@@ -674,7 +838,8 @@ export function createProvisioner({
       await store.save(tenant);
       // Connections live outside the workspace, so they'd outlive it. Both models normally share one; connections the
       // service account replaced belong to the platform identity.
-      for (const id of new Set([tenant.fabric.modelConnectionId, tenant.fabric.assistantConnectionId].filter(Boolean))) await client.deleteConnection(id).catch(() => {});
+      const own = [tenant.fabric.modelConnectionId, tenant.fabric.assistantConnectionId, ...(tenant.fabric.replacedConnections || [])];
+      for (const id of new Set(own.filter(Boolean))) await client.deleteConnection(id).catch(() => {});
       for (const id of tenant.fabric.retiredConnections || []) await fabric.deleteConnection(id).catch(() => {});
       try {
         await client.deleteWorkspace(tenant.fabric.workspaceId);

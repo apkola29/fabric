@@ -48,7 +48,23 @@ test("each customer's service account is Admin of its own workspace only and can
     await assert.rejects(client.deleteWorkspace(theirs.workspaceId), denied);
     await assert.rejects(client.getWorkspace(MOCK_TEMPLATE_ID), denied, 'the template workspace stays with the platform');
     assert.deepEqual((await client.listConnections()).map((c) => c.id), [me.fabric.modelConnectionId], 'it sees its own connection only');
+    await assert.rejects(client.updateItem(theirs.workspaceId, theirs.semanticModelId, { displayName: 'renamed' }), denied);
+    await assert.rejects(client.updateConnection(theirs.modelConnectionId, { connectivityType: 'ShareableCloud', displayName: 'renamed' }), denied);
   }
+});
+
+test('renaming takes write access: a Viewer cannot rename an item, and only its owner can rename a connection', async () => {
+  const kit = provisioningKit({ config: { opsPrincipal: OPS } });
+  const tenant = await kit.provisionNew();
+  const ws = tenant.fabric.workspaceId;
+  const owner = kit.fabric.as(tenant.identity.objectId);
+  await assert.rejects(kit.fabric.as(OPS.id).updateItem(ws, tenant.fabric.semanticModelId, { displayName: 'renamed' }), (error) => error.upstreamStatus === 403);
+  await assert.rejects(kit.fabric.updateConnection(tenant.fabric.modelConnectionId, { connectivityType: 'ShareableCloud', displayName: 'renamed' }), (error) => error.upstreamStatus === 404);
+  await assert.rejects(owner.updateConnection(tenant.fabric.modelConnectionId, { displayName: 'renamed' }), (error) => error.upstreamStatus === 400, 'the request names the connectivity type');
+  const [twin] = (await owner.listItems(ws, 'SemanticModel')).filter((m) => m.id === tenant.fabric.assistantModelId);
+  await assert.rejects(owner.updateItem(ws, tenant.fabric.semanticModelId, { displayName: twin.displayName }), (error) => error.upstreamStatus === 409, 'names are unique per item type');
+  assert.equal((await owner.updateItem(ws, tenant.fabric.semanticModelId, { displayName: 'renamed' })).id, tenant.fabric.semanticModelId);
+  assert.equal((await owner.updateConnection(tenant.fabric.modelConnectionId, { connectivityType: 'ShareableCloud', displayName: 'renamed' })).displayName, 'renamed');
 });
 
 test("defence in depth: if the registry mixed up two customers' accounts, Fabric refuses instead of leaking", async () => {

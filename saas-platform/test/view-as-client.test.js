@@ -177,7 +177,7 @@ async function client({ hash = '#home', live = false } = {}) {
   let nextTimer = 0;
   const startTimer = (fn) => { const id = ++nextTimer; timers.set(id, fn); return id; };
   const me = (email) => ({
-    email, name: email === MANAGER ? 'Manager' : 'Texas rep', company: 'Fabrikam', product: 'HiCRM', status: 'ready',
+    email, name: email === MANAGER ? 'Manager' : 'Texas rep', company: 'Fabrikam', product: 'Platform app', status: 'ready',
     role: email === MANAGER ? 'manager' : 'rep', roleName: email === MANAGER ? 'Sales manager' : 'Sales rep',
     territories: email === MANAGER ? null : ['Texas'], demo: !live, personaSwitcher: true,
     features: { crm: true, reports: true, authoring: true, ask: true, data: true },
@@ -198,7 +198,7 @@ async function client({ hash = '#home', live = false } = {}) {
       return response({});
     }
     if (route === '/api/session' && method === 'DELETE') { identity = null; return response({}); }
-    if (route === '/api/site') return response({ mode: 'customer', product: 'HiCRM', company: 'Fabrikam' });
+    if (route === '/api/site') return response({ mode: 'customer', product: 'Platform app', company: 'Fabrikam' });
     if (route === '/api/me') return email ? response(me(email)) : response({ error: 'Sign in' }, 401);
     if (route === '/api/personas') return response({ current: email, companies: [{ company: 'Fabrikam', here: true, personas: [me(MANAGER), me(REP)] }] });
     if (route === '/api/me/crm/options') return response({

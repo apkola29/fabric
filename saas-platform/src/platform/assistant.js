@@ -4,8 +4,8 @@ import { entitlements } from './plans.js';
 import { addActivity } from './store.js';
 
 // The assistant on the report page. With the Enterprise edition it asks the customer's data agent, which reads the
-// HiCRM Insights semantic model. When the agent can't answer (no agent yet, or a capacity that doesn't run data agents,
-// such as a trial), it falls back to quick answers computed from the CRM database with the same business rules.
+// Platform app Insights semantic model. When the agent can't answer (no agent yet, or a capacity that doesn't run data
+// agents, such as a trial), it falls back to quick answers computed from the CRM database with the same business rules.
 //
 // The data agent runs as the customer's service account, which sees every territory, so only people who see every
 // territory (managers) get it. People limited to some territories always get quick answers, scoped to those territories.

@@ -109,7 +109,7 @@ test('images: PNG, JPEG and WebP only, at most four, nothing large', () => {
 });
 
 test("the agent's code interpreter is off unless asked for, and then it's in both stages", () => {
-  const args = { workspaceId: 'ws', semanticModelId: 'm', semanticModelName: 'HiCRM Insights - Assistant', tables: [], instructions: 'x', description: 'y' };
+  const args = { workspaceId: 'ws', semanticModelId: 'm', semanticModelName: 'Platform app Insights - Assistant', tables: [], instructions: 'x', description: 'y' };
   const stages = (definition) => definition.parts.filter((p) => p.path.endsWith('stage_config.json')).map((p) => JSON.parse(decodePayload(p.payload)));
   assert.ok(stages(buildSemanticModelAgentDefinition(args)).every((s) => s.experimental === undefined));
   const on = stages(buildSemanticModelAgentDefinition({ ...args, codeInterpreter: true }));

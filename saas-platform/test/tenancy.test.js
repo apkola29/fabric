@@ -114,17 +114,17 @@ test('behind a trusted proxy the forwarded host decides the customer; otherwise 
 });
 
 test('over HTTPS the session cookie is __Host- prefixed: Secure, host-only, whole path', async () => {
-  const platform = makePlatform({ env: { APP_DOMAIN: 'hicrm.example.com', PUBLIC_ORIGIN: 'https://hicrm.example.com', ADMIN_KEY } });
+  const platform = makePlatform({ env: { APP_DOMAIN: 'platform.example.com', PUBLIC_ORIGIN: 'https://platform.example.com', ADMIN_KEY } });
   await platform.operatorSignIn(ADMIN_KEY);
   const id = await platform.addCustomer('Fabrikam', 'standard', 'fabrikam.com');
   const detail = (await platform.admin({ url: `/api/admin/tenants/${id}` })).json();
-  assert.equal(detail.url, 'https://fabrikam.hicrm.example.com/');
-  const res = await platform.call({ method: 'POST', url: '/api/session', headers: { ...WEB, host: 'fabrikam.hicrm.example.com' }, body: { email: 'ana@fabrikam.com' } });
+  assert.equal(detail.url, 'https://fabrikam.platform.example.com/');
+  const res = await platform.call({ method: 'POST', url: '/api/session', headers: { ...WEB, host: 'fabrikam.platform.example.com' }, body: { email: 'ana@fabrikam.com' } });
   const cookie = res.headers['set-cookie'];
   assert.match(cookie, /^__Host-fsp_session=/);
   assert.match(cookie, /; Path=\/; Secure/);
   assert.doesNotMatch(cookie, /Domain=/i);
-  assert.equal((await platform.call({ url: '/api/me', headers: { host: 'fabrikam.hicrm.example.com', cookie: cookie.split(';')[0] } })).status, 200);
+  assert.equal((await platform.call({ url: '/api/me', headers: { host: 'fabrikam.platform.example.com', cookie: cookie.split(';')[0] } })).status, 200);
 });
 
 test('addresses: unique, never reserved, checked at startup', () => {
@@ -144,12 +144,12 @@ test('addresses: unique, never reserved, checked at startup', () => {
   assert.equal(resolveSite('fabrikam.localhost', config, [...tenants, { slug: 'x', subdomain: 'fabrikam' }]).kind, 'unknown', 'a shared address belongs to no one');
 
   const base = { FABRIC_AUTH_MODE: 'mock', DATA_DIR: 'unused', ADMIN_KEY };
-  assert.throws(() => loadConfig({ ...base, APP_DOMAIN: 'https://hicrm.example.com' }), /APP_DOMAIN must be a host name/);
+  assert.throws(() => loadConfig({ ...base, APP_DOMAIN: 'https://platform.example.com' }), /APP_DOMAIN must be a host name/);
   assert.throws(() => loadConfig({ ...base, APP_DOMAIN: '10.0.0.1' }), /APP_DOMAIN must be a host name/);
-  assert.throws(() => loadConfig({ ...base, APP_DOMAIN: 'hicrm.example.com', PUBLIC_ORIGIN: 'https://other.example.com' }), /PUBLIC_ORIGIN must be the address of APP_DOMAIN/);
-  const live = loadConfig({ ...base, APP_DOMAIN: 'hicrm.example.com', PUBLIC_ORIGIN: 'https://hicrm.example.com' });
-  assert.equal(customerUrl(live, { slug: 'fabrikam' }), 'https://fabrikam.hicrm.example.com/');
-  assert.equal(platformUrl(live), 'https://hicrm.example.com/');
+  assert.throws(() => loadConfig({ ...base, APP_DOMAIN: 'platform.example.com', PUBLIC_ORIGIN: 'https://other.example.com' }), /PUBLIC_ORIGIN must be the address of APP_DOMAIN/);
+  const live = loadConfig({ ...base, APP_DOMAIN: 'platform.example.com', PUBLIC_ORIGIN: 'https://platform.example.com' });
+  assert.equal(customerUrl(live, { slug: 'fabrikam' }), 'https://fabrikam.platform.example.com/');
+  assert.equal(platformUrl(live), 'https://platform.example.com/');
   assert.equal(customerUrl(loadConfig(base), { slug: 'fabrikam' }), null);
 });
 

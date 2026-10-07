@@ -31,7 +31,7 @@ test('users sign in with their work email and land in their own company', async 
   const me = (await as({ url: '/api/me' })).json();
   assert.equal(me.company, 'Fabrikam');
   assert.equal(me.email, 'ana@fabrikam.com');
-  assert.equal(me.product, 'HiCRM');
+  assert.equal(me.product, 'Platform app');
   assert.equal(me.status, 'ready');
   assert.deepEqual(me.features, { crm: true, reports: true, authoring: true, ask: true, data: false });
   const text = JSON.stringify(me).toLowerCase();

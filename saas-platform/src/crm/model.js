@@ -2,18 +2,18 @@ import { createHash } from 'node:crypto';
 import { textPart } from '../util/definition.js';
 import { CLOSED_STAGES, CRM_RELATIONSHIPS, CRM_TABLES, TERRITORIES, tableByName } from './schema.js';
 
-// "HiCRM Insights": the semantic model every customer gets. It's generated from the CRM schema, so a new CRM column
-// reaches the reports and the assistant without hand-editing TMDL.
+// "Platform app Insights": the semantic model every customer gets. It's generated from the CRM schema, so a new CRM
+// column reaches the reports and the assistant without hand-editing TMDL.
 //
 // Storage mode is Direct Lake on OneLake: Fabric replicates the customer's SQL database to OneLake as Delta tables
 // (<workspace>/<sqlDatabaseId>/Tables/dbo/<table>) and the model reads those directly. No copy job, no refresh schedule.
 
-export const MODEL_NAME = 'HiCRM Insights';
+export const MODEL_NAME = 'Platform app Insights';
 // The same model without row-level security roles, for the data agent only. Power BI doesn't let service principals
 // query models that have roles (they can only embed them with an effective identity), and only people who see every
 // territory get the agent. Never embed it for customers.
-export const ASSISTANT_MODEL_NAME = 'HiCRM Insights - Assistant';
-export const DIRECT_LAKE_EXPRESSION = 'DirectLake - HiCRM';
+export const ASSISTANT_MODEL_NAME = 'Platform app Insights - Assistant';
+export const DIRECT_LAKE_EXPRESSION = 'DirectLake - Platform app';
 export const ONELAKE_DFS = 'https://onelake.dfs.fabric.microsoft.com';
 
 const DATA_TYPES = { id: 'string', text: 'string', money: 'decimal', int: 'int64', date: 'dateTime', datetime: 'dateTime', bool: 'boolean' };
@@ -479,7 +479,7 @@ export function buildSemanticModelDefinition({ workspaceId, sqlDatabaseId, rowLe
       CRM_TABLES.map((t) => `ref table ${tmdlName(t.model)}`).join('\n') +
       '\n',
     'definition/expressions.tmdl':
-      "/// The customer's HiCRM SQL database as replicated to OneLake (Delta tables under Tables/dbo).\n" +
+      "/// The customer's CRM database as replicated to OneLake (Delta tables under Tables/dbo).\n" +
       `expression ${tmdlName(DIRECT_LAKE_EXPRESSION)} =\n` +
       `${indent(2)}let\n` +
       `${indent(2)}    Source = AzureStorage.DataLake("${oneLakeLocation(workspaceId, sqlDatabaseId)}", [HierarchicalNavigation=true])\n` +
