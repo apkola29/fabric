@@ -11,6 +11,7 @@ Tools and scripts for working with [Microsoft Fabric](https://learn.microsoft.co
 | [`data-agent-spn/`](data-agent-spn/) | Query Data Agents via the OpenAI Assistants-compatible API |
 | [`mcp-client/`](mcp-client/) | Query Data Agents via the Model Context Protocol (MCP) |
 | [`semantic-model-dax/`](semantic-model-dax/) | List semantic models and run DAX queries via Power BI REST API |
+| [`saas-platform/`](saas-platform/) | A multitenant SaaS app on Fabric: a workspace and a service principal per customer, embedded Power BI reports with row-level security, data agents over MCP, credentials asked for at runtime, and a validator for every control |
 
 ## Disclaimer
 

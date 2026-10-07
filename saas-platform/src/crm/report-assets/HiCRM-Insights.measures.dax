@@ -1,0 +1,510 @@
+// HiCRM Insights: every measure (the semantic layer).
+//
+// Generated from MEASURES in src/crm/model.js by `node scripts/report-assets.js`: change model.js, not this file.
+// Reports bind to these measures by name and carry no DAX (see report-creation-prompt.md).
+//
+// Naming conventions (test/report-assets.test.js checks the names, references, prefixes and variables):
+// - Model names only: 'Opportunities'[Close Date], never the database's opportunities.close_date.
+// - Tables are quoted and columns always table-qualified: 'Opportunities'[Amount]. Measures never are: [Total Amount].
+// - Measure names are unique, in Title Case, and live on the table they describe. Counts start with "# ",
+//   time intelligence ends in "(ytd)" or "(ly)", and variables start with "_".
+// - Column filters use KEEPFILTERS (time intelligence replaces the date filter on purpose); ratios use DIVIDE.
+// - Every measure has a display folder, a format string and a description.
+//
+// To try it, run it in DAX query view or DAX Studio: DEFINE MEASURE overrides the model's measure of the same name
+// for this query only, and EVALUATE lists every measure by territory.
+//
+// Tables and columns, as model name <- database column. Hidden columns are for measures, not for report visuals.
+//
+// 'Sales Reps' <- dbo.sales_reps
+//     [Rep ID]     <- rep_id (hidden)
+//     [Sales Rep]  <- name
+//     [Rep Email]  <- email
+//     [Region]     <- region
+//
+// 'Accounts' <- dbo.accounts
+//     [Account ID]        <- account_id (hidden)
+//     [Account]           <- name
+//     [Industry]          <- industry
+//     [Country]           <- country
+//     [City]              <- city
+//     [State]             <- state
+//     [Annual Revenue]    <- annual_revenue
+//     [Employees]         <- employees
+//     [Account Owner ID]  <- owner_id (hidden)
+//     [Account Created]   <- created_at
+//
+// 'Contacts' <- dbo.contacts
+//     [Contact ID]          <- contact_id (hidden)
+//     [Contact Account ID]  <- account_id (hidden)
+//     [First Name]          <- first_name
+//     [Last Name]           <- last_name
+//     [Contact Email]       <- email
+//     [Phone]               <- phone
+//     [Job Title]           <- title
+//
+// 'Opportunities' <- dbo.opportunities
+//     [Opportunity ID]          <- opportunity_id
+//     [Opportunity Account ID]  <- account_id (hidden)
+//     [Opportunity]             <- name
+//     [Stage]                   <- stage
+//     [Amount]                  <- amount (hidden)
+//     [Probability]             <- probability
+//     [Close Date]              <- close_date
+//     [Opportunity Owner ID]    <- owner_id (hidden)
+//     [Opportunity Created]     <- created_at
+//
+// 'Activities' <- dbo.activities
+//     [Activity ID]              <- activity_id (hidden)
+//     [Activity Account ID]      <- account_id (hidden)
+//     [Activity Opportunity ID]  <- opportunity_id (hidden)
+//     [Activity Type]            <- type
+//     [Subject]                  <- subject
+//     [Activity Date]            <- activity_date
+//     [Duration (Minutes)]       <- duration_minutes (hidden)
+//     [Completed]                <- completed
+//     [Activity Owner ID]        <- owner_id (hidden)
+//
+// 'Calendar' <- dbo.calendar
+//     [Date]          <- date
+//     [Year]          <- year
+//     [Quarter]       <- quarter
+//     [Month Number]  <- month (hidden)
+//     [Month]         <- month_name
+//     [Year-Month]    <- year_month
+//     [Month Start]   <- month_start
+//     [Week Start]    <- week_start
+
+DEFINE
+    // ---- Accounts ----
+
+    // Number of customer accounts. Sales reps do not filter this measure; use # Accounts Owned per rep.
+    // Folder: Counts. Format: #,##0
+    MEASURE 'Accounts'[# Accounts] =
+        COUNTROWS('Accounts')
+
+    // Number of accounts each sales rep owns. Use it with Sales Rep or Region.
+    // Folder: Counts. Format: #,##0
+    MEASURE 'Accounts'[# Accounts Owned] =
+        IF(
+            ISCROSSFILTERED('Sales Reps'),
+            CALCULATE(
+                [# Accounts],
+                TREATAS(VALUES('Sales Reps'[Rep ID]), 'Accounts'[Account Owner ID])
+            ),
+            [# Accounts]
+        )
+
+    // Number of accounts that have at least one open deal.
+    // Folder: Counts. Format: #,##0
+    MEASURE 'Accounts'[# Accounts With Open Deals] =
+        VAR _closedStages = {"Closed Won", "Closed Lost"}
+        RETURN
+            CALCULATE(
+                DISTINCTCOUNT('Opportunities'[Opportunity Account ID]),
+                KEEPFILTERS(NOT 'Opportunities'[Stage] IN _closedStages)
+            )
+
+    // Number of accounts with at least one completed activity in the last 90 days.
+    // Folder: Counts. Format: #,##0
+    MEASURE 'Accounts'[# Active Accounts (90d)] =
+        CALCULATE(
+            DISTINCTCOUNT('Activities'[Activity Account ID]),
+            REMOVEFILTERS('Calendar'),
+            KEEPFILTERS('Activities'[Completed] = TRUE()),
+            KEEPFILTERS('Activities'[Activity Date] > TODAY() - 90)
+        )
+
+    // Number of accounts with at least one won deal.
+    // Folder: Counts. Format: #,##0
+    MEASURE 'Accounts'[# Won Customers] =
+        CALCULATE(
+            DISTINCTCOUNT('Opportunities'[Opportunity Account ID]),
+            KEEPFILTERS('Opportunities'[Stage] = "Closed Won")
+        )
+
+    // Average won revenue per account that has won deals.
+    // Folder: Results. Format: \$#,##0
+    MEASURE 'Accounts'[Won Revenue per Customer] =
+        DIVIDE([Won Revenue], [# Won Customers])
+
+    // Average number of employees at the accounts.
+    // Folder: Company size. Format: #,##0.0
+    MEASURE 'Accounts'[Average Employees] =
+        AVERAGE('Accounts'[Employees])
+
+    // ---- Contacts ----
+
+    // Number of people at customer accounts.
+    // Folder: Counts. Format: #,##0
+    MEASURE 'Contacts'[# Contacts] =
+        COUNTROWS('Contacts')
+
+    // ---- Opportunities ----
+
+    // Sum of deal amounts in every stage, open and closed. Use Pipeline Value for open deals and Won Revenue
+    // for won deals.
+    // Folder: Pipeline. Format: \$#,##0
+    MEASURE 'Opportunities'[Total Amount] =
+        SUM('Opportunities'[Amount])
+
+    // Total amount of open deals: every stage except Closed Won and Closed Lost.
+    // Folder: Pipeline. Format: \$#,##0
+    MEASURE 'Opportunities'[Pipeline Value] =
+        VAR _closedStages = {"Closed Won", "Closed Lost"}
+        RETURN
+            CALCULATE(
+                [Total Amount],
+                KEEPFILTERS(NOT 'Opportunities'[Stage] IN _closedStages)
+            )
+
+    // Open deal amounts multiplied by each deal's win probability: the share of the pipeline you can expect to
+    // win.
+    // Folder: Pipeline. Format: \$#,##0
+    MEASURE 'Opportunities'[Weighted Pipeline] =
+        VAR _closedStages = {"Closed Won", "Closed Lost"}
+        RETURN
+            CALCULATE(
+                SUMX('Opportunities', 'Opportunities'[Amount] * 'Opportunities'[Probability] / 100),
+                KEEPFILTERS(NOT 'Opportunities'[Stage] IN _closedStages)
+            )
+
+    // Total amount of won deals (stage Closed Won). Use Close Date or the Calendar to see revenue for a
+    // period.
+    // Folder: Results. Format: \$#,##0
+    MEASURE 'Opportunities'[Won Revenue] =
+        CALCULATE(
+            [Total Amount],
+            KEEPFILTERS('Opportunities'[Stage] = "Closed Won")
+        )
+
+    // Total amount of lost deals (stage Closed Lost).
+    // Folder: Results. Format: \$#,##0
+    MEASURE 'Opportunities'[Lost Amount] =
+        CALCULATE(
+            [Total Amount],
+            KEEPFILTERS('Opportunities'[Stage] = "Closed Lost")
+        )
+
+    // Number of deals in every stage, open and closed.
+    // Folder: Counts. Format: #,##0
+    MEASURE 'Opportunities'[# Opportunities] =
+        COUNTROWS('Opportunities')
+
+    // Number of open deals: every stage except Closed Won and Closed Lost.
+    // Folder: Counts. Format: #,##0
+    MEASURE 'Opportunities'[# Open Opportunities] =
+        VAR _closedStages = {"Closed Won", "Closed Lost"}
+        RETURN
+            CALCULATE(
+                [# Opportunities],
+                KEEPFILTERS(NOT 'Opportunities'[Stage] IN _closedStages)
+            )
+
+    // Number of won deals (stage Closed Won).
+    // Folder: Counts. Format: #,##0
+    MEASURE 'Opportunities'[# Won Deals] =
+        CALCULATE(
+            [# Opportunities],
+            KEEPFILTERS('Opportunities'[Stage] = "Closed Won")
+        )
+
+    // Number of lost deals (stage Closed Lost).
+    // Folder: Counts. Format: #,##0
+    MEASURE 'Opportunities'[# Lost Deals] =
+        CALCULATE(
+            [# Opportunities],
+            KEEPFILTERS('Opportunities'[Stage] = "Closed Lost")
+        )
+
+    // Share of closed deals that were won: won deals divided by won plus lost deals. Open deals are not
+    // counted.
+    // Folder: Results. Format: 0.0%
+    MEASURE 'Opportunities'[Win Rate] =
+        VAR _won = [# Won Deals]
+        VAR _lost = [# Lost Deals]
+        RETURN
+            DIVIDE(_won, _won + _lost)
+
+    // Average amount of a won deal: Won Revenue divided by the number of won deals.
+    // Folder: Results. Format: \$#,##0
+    MEASURE 'Opportunities'[Average Deal Size] =
+        DIVIDE([Won Revenue], [# Won Deals])
+
+    // Won revenue from January 1 of this year to today, by close date. For a past period, from January 1 of
+    // its year to the end of that period; blank for future periods.
+    // Folder: Time intelligence. Format: \$#,##0
+    MEASURE 'Opportunities'[Won Revenue (ytd)] =
+        VAR _first = MIN('Calendar'[Date])
+        VAR _end = MIN(MAX('Calendar'[Date]), TODAY())
+        RETURN
+            IF(
+                NOT ISBLANK(_first) && _first <= TODAY(),
+                CALCULATE([Won Revenue], DATESBETWEEN('Calendar'[Date], DATE(YEAR(_end), 1, 1), _end))
+            )
+
+    // Won revenue in the same period one year earlier, by close date. Needs a date from the Calendar.
+    // Folder: Time intelligence. Format: \$#,##0
+    MEASURE 'Opportunities'[Won Revenue (ly)] =
+        CALCULATE(
+            [Won Revenue],
+            SAMEPERIODLASTYEAR('Calendar'[Date])
+        )
+
+    // Open pipeline right now, whatever dates are selected, including deals expected to close later. Pipeline
+    // Value follows the selected dates by expected close date.
+    // Folder: Pipeline. Format: \$#,##0
+    MEASURE 'Opportunities'[Current Pipeline] =
+        CALCULATE(
+            [Pipeline Value],
+            REMOVEFILTERS('Calendar')
+        )
+
+    // Weighted pipeline right now, whatever dates are selected.
+    // Folder: Pipeline. Format: \$#,##0
+    MEASURE 'Opportunities'[Current Weighted Pipeline] =
+        CALCULATE(
+            [Weighted Pipeline],
+            REMOVEFILTERS('Calendar')
+        )
+
+    // Number of open deals right now, whatever dates are selected.
+    // Folder: Counts. Format: #,##0
+    MEASURE 'Opportunities'[# Current Open Deals] =
+        CALCULATE(
+            [# Open Opportunities],
+            REMOVEFILTERS('Calendar')
+        )
+
+    // Open deals whose expected close date has passed: pipeline that needs a new date or a decision.
+    // Folder: Pipeline. Format: \$#,##0
+    MEASURE 'Opportunities'[Past-Due Pipeline] =
+        CALCULATE(
+            [Pipeline Value],
+            REMOVEFILTERS('Calendar'),
+            KEEPFILTERS('Opportunities'[Close Date] < TODAY())
+        )
+
+    // Number of open deals whose expected close date has passed.
+    // Folder: Counts. Format: #,##0
+    MEASURE 'Opportunities'[# Past-Due Deals] =
+        CALCULATE(
+            [# Open Opportunities],
+            REMOVEFILTERS('Calendar'),
+            KEEPFILTERS('Opportunities'[Close Date] < TODAY())
+        )
+
+    // Number of deals created in the selected period, by the day they were created rather than their close
+    // date.
+    // Folder: Counts. Format: #,##0
+    MEASURE 'Opportunities'[# Deals Created] =
+        VAR _dates = VALUES('Calendar'[Date])
+        RETURN
+            CALCULATE(
+                [# Opportunities],
+                REMOVEFILTERS('Calendar'),
+                FILTER(
+                    ALL('Opportunities'[Opportunity Created]),
+                    DATE(YEAR('Opportunities'[Opportunity Created]), MONTH('Opportunities'[Opportunity Created]), DAY('Opportunities'[Opportunity Created])) IN _dates
+                )
+            )
+
+    // Share of closed deal value that was won: won revenue divided by won plus lost amounts. Win Rate counts
+    // deals instead.
+    // Folder: Results. Format: 0.0%
+    MEASURE 'Opportunities'[Win Rate (value)] =
+        DIVIDE([Won Revenue], [Won Revenue] + [Lost Amount])
+
+    // Average number of days from creating a deal to winning it, for won deals.
+    // Folder: Results. Format: #,##0.0
+    MEASURE 'Opportunities'[Sales Cycle (days)] =
+        AVERAGEX(
+            FILTER(
+                'Opportunities',
+                'Opportunities'[Stage] = "Closed Won"
+                    && INT('Opportunities'[Opportunity Created]) <= INT('Opportunities'[Close Date])
+            ),
+            INT('Opportunities'[Close Date]) - INT('Opportunities'[Opportunity Created])
+        )
+
+    // Expected won revenue per day from the open pipeline: open deals times win rate times average deal size,
+    // divided by the sales cycle in days.
+    // Folder: Pipeline. Format: \$#,##0
+    MEASURE 'Opportunities'[Pipeline Velocity (per day)] =
+        DIVIDE([# Current Open Deals] * [Win Rate] * [Average Deal Size], [Sales Cycle (days)])
+
+    // Won Revenue (ytd) for the same span one year earlier: from January 1 to the same day last year.
+    // Folder: Time intelligence. Format: \$#,##0
+    MEASURE 'Opportunities'[Won Revenue Last Year (ytd)] =
+        VAR _first = MIN('Calendar'[Date])
+        VAR _end = EDATE(MIN(MAX('Calendar'[Date]), TODAY()), -12)
+        RETURN
+            IF(
+                NOT ISBLANK(_first) && _first <= TODAY(),
+                CALCULATE([Won Revenue], DATESBETWEEN('Calendar'[Date], DATE(YEAR(_end), 1, 1), _end))
+            )
+
+    // Growth of Won Revenue (ytd) over Won Revenue Last Year (ytd), the same span one year earlier.
+    // Folder: Time intelligence. Format: +0.0%;-0.0%;0.0%
+    MEASURE 'Opportunities'[Won Revenue Growth (ytd)] =
+        VAR _lastYear = [Won Revenue Last Year (ytd)]
+        RETURN
+            IF(NOT ISBLANK(_lastYear), DIVIDE([Won Revenue (ytd)] - _lastYear, _lastYear))
+
+    // Open deals that have gone more than 30 days without a completed activity, counting from the day they
+    // were created if they have had none, whatever dates are selected: the deals whose Days Since Last Touch
+    // is over 30.
+    // Folder: Engagement. Format: #,##0
+    MEASURE 'Opportunities'[# Stale Open Deals (30d)] =
+        VAR _openDeals =
+            CALCULATETABLE(
+                SUMMARIZE('Opportunities', 'Opportunities'[Opportunity ID], 'Opportunities'[Opportunity Created]),
+                REMOVEFILTERS('Calendar'),
+                KEEPFILTERS(NOT 'Opportunities'[Stage] IN {"Closed Won", "Closed Lost"})
+            )
+        RETURN
+            COUNTROWS(
+                FILTER(
+                    _openDeals,
+                    VAR _id = 'Opportunities'[Opportunity ID]
+                    VAR _last =
+                        CALCULATE(
+                            MAX('Activities'[Activity Date]),
+                            REMOVEFILTERS('Calendar'),
+                            REMOVEFILTERS('Sales Reps'),
+                            'Activities'[Completed] = TRUE(),
+                            'Activities'[Activity Opportunity ID] = _id
+                        )
+                    VAR _since = IF(ISBLANK(_last), 'Opportunities'[Opportunity Created], _last)
+                    RETURN
+                        NOT ISBLANK(_since) && INT(_since) < INT(TODAY()) - 30
+                )
+            )
+
+    // For one open deal: days since its last completed activity, or since it was created if it has had none.
+    // Blank for closed deals. Use it in a table of deals that includes Opportunity ID.
+    // Folder: Engagement. Format: 0
+    MEASURE 'Opportunities'[Days Since Last Touch] =
+        VAR _last =
+            CALCULATE(
+                MAX('Activities'[Activity Date]),
+                REMOVEFILTERS('Calendar'),
+                REMOVEFILTERS('Sales Reps'),
+                'Activities'[Completed] = TRUE(),
+                TREATAS(VALUES('Opportunities'[Opportunity ID]), 'Activities'[Activity Opportunity ID])
+            )
+        VAR _since = IF(ISBLANK(_last), MAX('Opportunities'[Opportunity Created]), _last)
+        RETURN
+            IF(
+                HASONEVALUE('Opportunities'[Opportunity ID])
+                    && NOT SELECTEDVALUE('Opportunities'[Stage]) IN {"Closed Won", "Closed Lost"}
+                    && NOT ISBLANK(_since),
+                INT(TODAY()) - INT(_since)
+            )
+
+    // ---- Activities ----
+
+    // Number of calls, emails, meetings and demos, completed and planned.
+    // Folder: Counts. Format: #,##0
+    MEASURE 'Activities'[# Activities] =
+        COUNTROWS('Activities')
+
+    // Number of activities that are done.
+    // Folder: Counts. Format: #,##0
+    MEASURE 'Activities'[# Completed Activities] =
+        CALCULATE(
+            [# Activities],
+            KEEPFILTERS('Activities'[Completed] = TRUE())
+        )
+
+    // Number of activities that are scheduled but not done yet.
+    // Folder: Counts. Format: #,##0
+    MEASURE 'Activities'[# Planned Activities] =
+        CALCULATE(
+            [# Activities],
+            KEEPFILTERS('Activities'[Completed] = FALSE())
+        )
+
+    // Total time spent on activities, in hours.
+    // Folder: Effort. Format: #,##0.0
+    MEASURE 'Activities'[Activity Hours] =
+        DIVIDE(SUM('Activities'[Duration (Minutes)]), 60)
+
+    // Number of different deals that had at least one activity.
+    // Folder: Counts. Format: #,##0
+    MEASURE 'Activities'[# Opportunities Touched] =
+        DISTINCTCOUNTNOBLANK('Activities'[Activity Opportunity ID])
+
+    // Time spent on completed activities, in hours.
+    // Folder: Effort. Format: #,##0.0
+    MEASURE 'Activities'[Completed Activity Hours] =
+        CALCULATE(
+            [Activity Hours],
+            KEEPFILTERS('Activities'[Completed] = TRUE())
+        )
+
+    // Average number of completed activities per deal, for deals that had any.
+    // Folder: Effort. Format: #,##0.0
+    MEASURE 'Activities'[Touches per Deal] =
+        VAR _touches = CALCULATE([# Completed Activities], KEEPFILTERS(NOT ISBLANK('Activities'[Activity Opportunity ID])))
+        VAR _deals = CALCULATE(DISTINCTCOUNTNOBLANK('Activities'[Activity Opportunity ID]), KEEPFILTERS('Activities'[Completed] = TRUE()))
+        RETURN
+            DIVIDE(_touches, _deals)
+
+    // Number of planned activities in the next 14 days, whatever dates are selected.
+    // Folder: Counts. Format: #,##0
+    MEASURE 'Activities'[# Planned Next 14 Days] =
+        CALCULATE(
+            [# Planned Activities],
+            REMOVEFILTERS('Calendar'),
+            KEEPFILTERS('Activities'[Activity Date] >= TODAY()),
+            KEEPFILTERS('Activities'[Activity Date] < TODAY() + 14)
+        )
+
+EVALUATE
+    SUMMARIZECOLUMNS(
+        'Accounts'[State],
+        "Total Amount", [Total Amount],
+        "Pipeline Value", [Pipeline Value],
+        "Weighted Pipeline", [Weighted Pipeline],
+        "Won Revenue", [Won Revenue],
+        "Lost Amount", [Lost Amount],
+        "# Opportunities", [# Opportunities],
+        "# Open Opportunities", [# Open Opportunities],
+        "# Won Deals", [# Won Deals],
+        "# Lost Deals", [# Lost Deals],
+        "Win Rate", [Win Rate],
+        "Average Deal Size", [Average Deal Size],
+        "Won Revenue (ytd)", [Won Revenue (ytd)],
+        "Won Revenue (ly)", [Won Revenue (ly)],
+        "# Accounts", [# Accounts],
+        "# Accounts Owned", [# Accounts Owned],
+        "# Accounts With Open Deals", [# Accounts With Open Deals],
+        "# Contacts", [# Contacts],
+        "# Activities", [# Activities],
+        "# Completed Activities", [# Completed Activities],
+        "# Planned Activities", [# Planned Activities],
+        "Activity Hours", [Activity Hours],
+        "# Opportunities Touched", [# Opportunities Touched],
+        "Current Pipeline", [Current Pipeline],
+        "Current Weighted Pipeline", [Current Weighted Pipeline],
+        "# Current Open Deals", [# Current Open Deals],
+        "Past-Due Pipeline", [Past-Due Pipeline],
+        "# Past-Due Deals", [# Past-Due Deals],
+        "# Deals Created", [# Deals Created],
+        "Win Rate (value)", [Win Rate (value)],
+        "Sales Cycle (days)", [Sales Cycle (days)],
+        "Pipeline Velocity (per day)", [Pipeline Velocity (per day)],
+        "Won Revenue Last Year (ytd)", [Won Revenue Last Year (ytd)],
+        "Won Revenue Growth (ytd)", [Won Revenue Growth (ytd)],
+        "# Stale Open Deals (30d)", [# Stale Open Deals (30d)],
+        "Days Since Last Touch", [Days Since Last Touch],
+        "# Active Accounts (90d)", [# Active Accounts (90d)],
+        "# Won Customers", [# Won Customers],
+        "Won Revenue per Customer", [Won Revenue per Customer],
+        "Average Employees", [Average Employees],
+        "Completed Activity Hours", [Completed Activity Hours],
+        "Touches per Deal", [Touches per Deal],
+        "# Planned Next 14 Days", [# Planned Next 14 Days]
+    )
+ORDER BY 'Accounts'[State]

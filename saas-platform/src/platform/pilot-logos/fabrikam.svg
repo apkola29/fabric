@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="Fabrikam">
+  <title>Fabrikam</title>
+  <rect width="64" height="64" rx="14" fill="#a8431c"/>
+  <path d="M19 15h27v9H29v6h14v9H29v11H19z" fill="#fff8f2"/>
+  <rect x="37" y="41" width="9" height="9" rx="1.5" fill="#f2b38f"/>
+</svg>

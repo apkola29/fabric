@@ -1,0 +1,25 @@
+{
+  "name": "fabric-saas-platform",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Local MVP of a SaaS control plane that gives each customer its own Microsoft Fabric workspace for data integration, embedded reports and a data agent.",
+  "type": "module",
+  "engines": {
+    "node": ">=22.9"
+  },
+  "scripts": {
+    "start": "node --env-file-if-exists=.env server.js",
+    "dev": "node --watch --env-file-if-exists=.env server.js",
+    "setup": "node --env-file-if-exists=.env scripts/setup.js",
+    "pilot:remove": "node --env-file-if-exists=.env scripts/setup.js --remove",
+    "cli": "node --env-file-if-exists=.env scripts/platform-cli.js",
+    "preflight": "node --env-file-if-exists=.env scripts/preflight.js",
+    "validate": "node --env-file-if-exists=.env scripts/validate.js",
+    "test": "node --test --test-concurrency=1 \"test/**/*.test.js\"",
+    "check:publish": "node scripts/check-publish.js"
+  },
+  "dependencies": {
+    "@azure/msal-node": "^6.0.1",
+    "mssql": "^12.7.2"
+  }
+}

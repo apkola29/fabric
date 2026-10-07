@@ -1,0 +1,338 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>HiCRM back office · customers on Fabric</title>
+  <meta name="description" content="Local console that provisions and runs a Microsoft Fabric workspace for each SaaS customer: data loads, embedded reports and a data agent.">
+  <link rel="icon" href="data:,">
+  <link rel="stylesheet" href="/admin/admin.css">
+  <script src="https://cdn.jsdelivr.net/npm/powerbi-client@2.25.0/dist/powerbi.min.js" integrity="sha384-SrjLlpANfs97fxkXskhuVvaqQxGMLks+Gsp3CFR5s44ctRosSm7lCDqh24rhaNsp" crossorigin="anonymous" defer></script>
+  <script src="https://cdn.sheetjs.com/xlsx-0.20.3/package/dist/xlsx.full.min.js" integrity="sha384-EnyY0/GSHQGSxSgMwaIPzSESbqoOLSexfnSMN2AP+39Ckmn92stwABZynq1JyzdT" crossorigin="anonymous" defer></script>
+  <script type="module" src="/admin/admin.js"></script>
+</head>
+<body>
+  <a class="skip-link" href="#main">Skip to content</a>
+  <header class="masthead">
+    <p class="wordmark"><span class="wordmark-mark" aria-hidden="true"></span>Fabric SaaS platform <span class="wordmark-sub">platform admin</span></p>
+    <ul class="env" id="env" aria-label="Environment"></ul>
+  </header>
+
+  <div class="shell">
+    <aside class="customers" aria-labelledby="customers-title">
+      <div class="customers-head">
+        <h2 id="customers-title">Customers</h2>
+        <span class="count" id="customer-count"></span>
+      </div>
+      <ul class="customer-list" id="customer-list"></ul>
+
+      <form class="add-customer" id="add-form" novalidate>
+        <h3>Add a customer</h3>
+        <label class="field">
+          <span class="field-label">Company name</span>
+          <input id="new-name" name="name" required minlength="2" maxlength="60" autocomplete="off" placeholder="Contoso Dental">
+        </label>
+        <label class="field">
+          <span class="field-label">Email domain</span>
+          <input id="new-domain" name="domain" autocomplete="off" spellcheck="false" placeholder="contosodental.com">
+          <span class="form-note">People with this email domain sign in to the app as this customer.</span>
+        </label>
+        <fieldset class="plan-picker" id="new-plan">
+          <legend class="field-label">Edition</legend>
+        </fieldset>
+        <label class="check"><input type="checkbox" id="new-integration"> Data integration add-on (files and web feeds next to the CRM)</label>
+        <label class="check"><input type="checkbox" id="new-sample" checked> Load sample CRM data (for demos and trials)</label>
+        <details class="advanced">
+          <summary>Existing workspace or dedicated capacity</summary>
+          <label class="field">
+            <span class="field-label">Workspace ID</span>
+            <input id="new-workspace" name="workspaceId" autocomplete="off" spellcheck="false" placeholder="00000000-0000-0000-0000-000000000000">
+          </label>
+          <p class="form-note">Add the platform identity to that workspace as Admin first. The platform keeps the workspace's capacity.</p>
+          <label class="field">
+            <span class="field-label">Dedicated capacity ID</span>
+            <input id="new-capacity" name="capacityId" autocomplete="off" spellcheck="false" placeholder="Empty: the default capacity">
+          </label>
+          <p class="form-note">For customers who need their own compute (no noisy neighbours) or a specific region. The platform identity needs Contributor on the capacity.</p>
+        </details>
+        <button class="button primary" type="submit">Create customer</button>
+        <p class="form-note">Creates the customer's workspace, their service account, CRM database, reporting model and assistant.</p>
+      </form>
+    </aside>
+
+    <main id="main" tabindex="-1">
+      <section class="intro" id="intro">
+        <p class="eyebrow">Fabric as the data platform behind a SaaS app</p>
+        <h1>Give every customer their own analytics workspace</h1>
+        <p class="lede">Each HiCRM customer gets a Fabric workspace of their own, run by a service account that can reach nothing else. Their CRM data lives in a Fabric SQL database; reports and the assistant read it through one semantic model. The customer only ever sees HiCRM.</p>
+        <ol class="how">
+          <li><strong>Provision.</strong> Workspace, the customer's service account, the CRM database, the HiCRM Insights model bound to a workspace identity, and the assistant.</li>
+          <li><strong>Use.</strong> The CRM writes to SQL; Fabric replicates it to OneLake and the model reads it directly (Direct Lake), so reports stay current without copy jobs.</li>
+          <li><strong>Analyze.</strong> Embedded reports with short-lived tokens, report building with a describe-a-chart box, and an assistant that answers from the model.</li>
+        </ol>
+        <p class="form-note">Add a customer on the left to start.</p>
+      </section>
+
+      <section class="customer" id="customer" hidden aria-labelledby="c-name">
+        <header class="customer-head">
+          <p class="eyebrow" id="c-plan"></p>
+          <h1 class="customer-title"><img class="customer-logo" id="c-logo" alt="" hidden><span id="c-name"></span></h1>
+          <p class="customer-meta">
+            <span id="c-status"></span>
+            <span class="meta-sep" aria-hidden="true">·</span>
+            <span id="c-workspace" class="mono"></span>
+            <span class="meta-sep" aria-hidden="true">·</span>
+            <span id="c-domains"></span>
+            <a id="c-url" class="external" target="_blank" rel="noopener" hidden></a>
+            <a id="c-portal" class="external" target="_blank" rel="noopener" hidden>Open in Fabric</a>
+          </p>
+          <p class="customer-meta" id="c-identity"></p>
+          <p class="banner banner-error" id="c-error" role="alert" hidden></p>
+        </header>
+
+        <div class="tabs" role="tablist" aria-label="Customer sections" id="tabs">
+          <button role="tab" id="tab-overview" aria-controls="panel-overview" aria-selected="true">Overview</button>
+          <button role="tab" id="tab-data" aria-controls="panel-data" aria-selected="false" tabindex="-1">Data</button>
+          <button role="tab" id="tab-reports" aria-controls="panel-reports" aria-selected="false" tabindex="-1">Reports</button>
+          <button role="tab" id="tab-ask" aria-controls="panel-ask" aria-selected="false" tabindex="-1">Ask</button>
+          <button role="tab" id="tab-license" aria-controls="panel-license" aria-selected="false" tabindex="-1">License</button>
+        </div>
+
+        <section role="tabpanel" id="panel-overview" aria-labelledby="tab-overview" class="panel">
+          <div class="split">
+            <div>
+              <h2>Provisioning</h2>
+              <ol class="steps" id="steps"></ol>
+              <button class="button" type="button" id="retry">Run provisioning again</button>
+            </div>
+            <div>
+              <h2>In the workspace</h2>
+              <table class="data-table">
+                <thead><tr><th scope="col">Item</th><th scope="col">Type</th><th scope="col" class="id-col">ID</th></tr></thead>
+                <tbody id="items-body"></tbody>
+              </table>
+            </div>
+          </div>
+          <h2>Access check</h2>
+          <p class="form-note">Who can reach this customer's workspace and how the model signs in, compared with least privilege. Read-only; runs as the customer's service account.</p>
+          <ol class="steps audit" id="audit"></ol>
+          <button class="button" type="button" id="run-audit">Check access</button>
+          <h2>Activity</h2>
+          <ol class="activity" id="activity"></ol>
+          <h2>Assistant</h2>
+          <p class="form-note" id="assistant-endpoint"></p>
+          <button class="button" type="button" id="show-questions">Show the questions and answers</button>
+          <table class="data-table questions" id="questions-table" hidden>
+            <thead><tr><th scope="col">When</th><th scope="col">Who</th><th scope="col">Sees</th><th scope="col">Answered by</th><th scope="col">Question</th></tr></thead>
+            <tbody id="questions-body"></tbody>
+          </table>
+          <h2>Report usage</h2>
+          <p class="form-note">Who opened and saved which reports, and how long each took to load and render in their browser. Power BI's own activity log names the service account, not the person, so the app keeps this log; the token and correlation IDs tie each entry to Power BI's records.</p>
+          <button class="button" type="button" id="show-usage">Show report usage</button>
+          <p class="form-note" id="usage-summary" hidden></p>
+          <table class="data-table questions" id="usage-table" hidden>
+            <thead><tr><th scope="col">When</th><th scope="col">Who</th><th scope="col">Sees</th><th scope="col">What</th><th scope="col">Load, render</th><th scope="col">Correlation ID</th></tr></thead>
+            <tbody id="usage-body"></tbody>
+          </table>
+        </section>
+
+        <section role="tabpanel" id="panel-data" aria-labelledby="tab-data" class="panel" hidden>
+          <p class="lede">Every source lands in this customer's lakehouse in OneLake and becomes a Delta table that reports and the data agent can use.</p>
+          <div class="sources">
+            <form id="app-data-form" class="source">
+              <h3>The CRM app's data</h3>
+              <p>Copies this customer's accounts, opportunities and activities from the app. In production, use Fabric mirroring or have the app write to its SQL database in Fabric.</p>
+              <button class="button primary" type="submit">Sync CRM data</button>
+            </form>
+            <form id="upload-form" class="source" novalidate>
+              <h3>Upload a file</h3>
+              <label class="field">
+                <span class="field-label">CSV, TSV, JSON, Parquet or Excel</span>
+                <input type="file" id="upload-file" accept=".csv,.tsv,.txt,.json,.parquet,.xlsx,.xls" required>
+              </label>
+              <label class="field">
+                <span class="field-label">Table name</span>
+                <input id="upload-table" maxlength="100" autocomplete="off" placeholder="from the file name">
+              </label>
+              <fieldset class="inline-choice">
+                <legend class="field-label">If the table exists</legend>
+                <label><input type="radio" name="upload-mode" value="Overwrite" checked> Replace it</label>
+                <label><input type="radio" name="upload-mode" value="Append"> Add rows</label>
+              </fieldset>
+              <button class="button primary" type="submit">Upload and load</button>
+              <p class="form-note">Excel sheets are converted in your browser, one table per sheet.</p>
+            </form>
+            <form id="web-form" class="source" novalidate>
+              <h3>Import from the web</h3>
+              <label class="field">
+                <span class="field-label">URL that returns CSV, JSON or Parquet</span>
+                <input type="url" id="web-url" required placeholder="https://example.com/rates.csv" autocomplete="off">
+              </label>
+              <label class="field">
+                <span class="field-label">Table name</span>
+                <input id="web-table" maxlength="100" autocomplete="off" placeholder="from the URL">
+              </label>
+              <button class="button primary" type="submit">Import</button>
+              <p class="form-note">For one-off pulls. Scheduled or authenticated feeds belong in a Fabric pipeline.</p>
+            </form>
+          </div>
+          <p class="note"><strong>On-premises sources</strong> go through an on-premises data gateway that the customer installs on their network, registered to the platform's tenant. Fabric connections, pipelines and mirroring then use that gateway. This MVP doesn't automate that step.</p>
+          <div class="split">
+            <div>
+              <h2>Tables</h2>
+              <table class="data-table">
+                <thead><tr><th scope="col">Table</th><th scope="col">Source</th></tr></thead>
+                <tbody id="tables-body"></tbody>
+              </table>
+            </div>
+            <div>
+              <h2>Pipelines and notebooks</h2>
+              <ul class="runnables" id="runnables"></ul>
+            </div>
+          </div>
+          <h2>Recent loads</h2>
+          <table class="data-table">
+            <thead><tr><th scope="col">When</th><th scope="col">Source</th><th scope="col">Table</th><th scope="col" class="num">Size</th></tr></thead>
+            <tbody id="loads-body"></tbody>
+          </table>
+        </section>
+
+        <section role="tabpanel" id="panel-reports" aria-labelledby="tab-reports" class="panel" hidden>
+          <div class="reports">
+            <div class="report-index">
+              <h2>Reports</h2>
+              <ul class="plain-list" id="report-list"></ul>
+              <h2>Semantic models</h2>
+              <ul class="plain-list" id="dataset-list"></ul>
+              <p class="form-note" id="authoring-note"></p>
+            </div>
+            <div class="report-stage">
+              <div class="embed" id="embed-container">
+                <p class="embed-empty">Pick a report to open it here.</p>
+              </div>
+              <details class="token-details" id="token-details" hidden>
+                <summary>What the server asked Power BI for</summary>
+                <pre id="token-request"></pre>
+              </details>
+            </div>
+          </div>
+        </section>
+
+        <section role="tabpanel" id="panel-ask" aria-labelledby="tab-ask" class="panel" hidden>
+          <div class="ask">
+            <div>
+              <ol class="conversation" id="conversation" aria-live="polite"></ol>
+              <form id="ask-form" class="ask-form">
+                <label class="visually-hidden" for="question">Question</label>
+                <textarea id="question" rows="2" maxlength="2000" placeholder="How many opportunities are there?"></textarea>
+                <button class="button primary" type="submit">Ask</button>
+              </form>
+              <p class="form-note" id="ask-note"></p>
+            </div>
+            <aside class="suggestions" aria-labelledby="suggestions-title">
+              <h3 id="suggestions-title">Try asking</h3>
+              <ul class="plain-list" id="suggestions"></ul>
+            </aside>
+          </div>
+        </section>
+
+        <section role="tabpanel" id="panel-license" aria-labelledby="tab-license" class="panel" hidden>
+          <form id="plan-form" class="license-form">
+            <h2>Plan</h2>
+            <p>Changing the edition runs provisioning again. Upgrades add resources; downgrades keep existing data but hide the features.</p>
+            <fieldset class="plan-picker" id="plan-choice">
+              <legend class="visually-hidden">Plan</legend>
+            </fieldset>
+            <button class="button primary" type="submit">Apply edition</button>
+          </form>
+          <section class="branding" aria-labelledby="branding-title">
+            <h2 id="branding-title">Branding</h2>
+            <p id="branding-where">The logo and accent color this customer's people see on their sign-in page and in the app.</p>
+            <div class="branding-row">
+              <img class="branding-preview" id="branding-preview" alt="Current logo" hidden>
+              <form id="logo-form" novalidate>
+                <label class="field">
+                  <span class="field-label">Logo: SVG, PNG, JPEG or WebP, 64 KB at most</span>
+                  <input id="logo-file" type="file" accept=".svg,.png,.jpg,.jpeg,.webp,image/svg+xml,image/png,image/jpeg,image/webp">
+                </label>
+                <button class="button" type="submit">Upload logo</button>
+                <button class="button small danger" type="button" id="logo-remove" hidden>Remove logo</button>
+              </form>
+              <form id="color-form" novalidate>
+                <label class="field">
+                  <span class="field-label">Accent color (#RRGGBB, dark enough for text)</span>
+                  <input id="brand-color" type="text" inputmode="text" maxlength="7" spellcheck="false" placeholder="#3b3a98">
+                </label>
+                <button class="button" type="submit">Save color</button>
+              </form>
+            </div>
+          </section>
+          <section class="signins" aria-labelledby="signins-title">
+            <h2 id="signins-title">Sign-ins</h2>
+            <p>People who sign in to the app as this customer, each with their own password and access: sales managers see every territory, sales reps only the territories you give them, in the CRM, the reports and the assistant. Once there is one sign-in, only these people can sign in. Without any, anyone at the customer's email domain can use the demo sign-in.</p>
+            <table class="data-table">
+              <thead><tr><th scope="col">Email</th><th scope="col">Name</th><th scope="col">Access</th><th scope="col">Last sign-in</th><th scope="col"><span class="visually-hidden">Actions</span></th></tr></thead>
+              <tbody id="users-body"></tbody>
+            </table>
+            <form id="user-form" class="signin-add" novalidate>
+              <label class="field">
+                <span class="field-label">Email</span>
+                <input id="new-user-email" type="email" autocomplete="off" spellcheck="false" placeholder="ana@fabrikam.com">
+              </label>
+              <label class="field">
+                <span class="field-label">Name</span>
+                <input id="new-user-name" autocomplete="off" maxlength="80" placeholder="Ana Lopez">
+              </label>
+              <label class="field">
+                <span class="field-label">Role</span>
+                <select id="new-user-role">
+                  <option value="rep">Sales rep: named territories</option>
+                  <option value="manager">Sales manager: every territory</option>
+                </select>
+              </label>
+              <fieldset class="territory-checks" id="new-user-territories"></fieldset>
+              <fieldset class="territory-checks" id="new-user-reports">
+                <legend class="field-label">Reports</legend>
+                <label class="check"><input type="checkbox" id="new-user-can-edit"> Can edit</label>
+                <label class="check"><input type="checkbox" id="new-user-can-create"> Can create</label>
+              </fieldset>
+              <button class="button" type="submit">Add sign-in</button>
+            </form>
+            <p class="form-note">Everyone can view this customer's reports. Editing and creating reports apply where report authoring is on (<code>REPORT_AUTHORING</code>).</p>
+            <p class="banner banner-secret" id="new-password" role="status" hidden></p>
+          </section>
+          <form id="delete-form" class="danger-zone" novalidate>
+            <h2>Remove this customer</h2>
+            <p>Deletes the Fabric workspace and everything in it, unless you keep it below. Type the customer name to confirm.</p>
+            <label class="field">
+              <span class="field-label">Customer name</span>
+              <input id="delete-confirm" autocomplete="off">
+            </label>
+            <label class="check"><input type="checkbox" id="keep-workspace"> Keep the Fabric workspace; only remove the customer from the platform</label>
+            <button class="button danger" type="submit">Remove customer</button>
+          </form>
+        </section>
+      </section>
+    </main>
+  </div>
+
+  <dialog class="signin" id="operator-signin" aria-labelledby="signin-title">
+    <form id="operator-form" novalidate>
+      <h2 id="signin-title">Operator sign-in</h2>
+      <p class="form-note">This console creates, changes and deletes customers, so it needs the operator key (ADMIN_KEY). Opening a customer's reports or asking their assistant is recorded in that customer's activity log.</p>
+      <label class="field">
+        <span class="field-label">Your name</span>
+        <input id="operator-name" autocomplete="name" maxlength="40" placeholder="Shown in the activity log">
+      </label>
+      <label class="field">
+        <span class="field-label">Operator key</span>
+        <input id="operator-key" type="password" autocomplete="current-password" required minlength="24" spellcheck="false">
+      </label>
+      <p class="signin-error" id="operator-error" role="alert" hidden></p>
+      <button class="button primary" type="submit">Sign in</button>
+    </form>
+  </dialog>
+
+  <div class="toast" id="toast" role="status" aria-live="polite" hidden></div>
+</body>
+</html>

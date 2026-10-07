@@ -1,0 +1,13 @@
+# Local settings and data: never commit them. Credentials are asked for at runtime and never written here.
+.env
+.env.*
+!.env.example
+.data/
+node_modules/
+*.log
+
+# Certificates and keys (the bootstrap script deletes its own; this catches any you make by hand).
+*.pem
+*.pfx
+*.p12
+*.key

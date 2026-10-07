@@ -1,0 +1,272 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>HiCRM</title>
+  <meta name="description" content="Your accounts, opportunities and activities, with reports and answers about your pipeline.">
+  <link rel="icon" href="data:,">
+  <link rel="stylesheet" href="/app.css">
+  <script src="https://cdn.jsdelivr.net/npm/powerbi-client@2.25.0/dist/powerbi.min.js" integrity="sha384-SrjLlpANfs97fxkXskhuVvaqQxGMLks+Gsp3CFR5s44ctRosSm7lCDqh24rhaNsp" crossorigin="anonymous" defer></script>
+  <script src="https://cdn.jsdelivr.net/npm/powerbi-report-authoring@3.0.0/dist/powerbi-report-authoring.min.js" integrity="sha384-5YI3WvzL+5aMraWkEpe/Ty3ikb8mytyIvz5Yii+PERszihcmTt45y0/38nfV5lJK" crossorigin="anonymous" defer></script>
+  <script type="module" src="/app.js"></script>
+</head>
+<body>
+  <a class="skip-link" href="#main">Skip to content</a>
+
+  <section class="signin" id="signin" hidden aria-labelledby="signin-title">
+    <p class="brand"><img class="brand-logo" id="signin-logo" alt="" hidden><span class="brand-mark" aria-hidden="true"></span><span class="product-name" id="signin-name"></span></p>
+    <h1 id="signin-title">Sign in</h1>
+    <p class="notice" id="signin-notice" role="status" hidden></p>
+    <form id="signin-form" novalidate>
+      <label class="field">
+        <span class="field-label">Work email</span>
+        <input type="email" id="email" autocomplete="username" required placeholder="you@company.com">
+      </label>
+      <label class="field" id="password-field">
+        <span class="field-label">Password</span>
+        <input type="password" id="password" autocomplete="current-password" maxlength="256">
+      </label>
+      <button class="button primary" type="submit" id="signin-submit">Sign in</button>
+    </form>
+    <p class="fine-print" id="signin-help">Your administrator gives you your password. Demo companies without named sign-ins don't need one. A real deployment signs you in with your company account.</p>
+  </section>
+
+  <header class="topbar" id="topbar" hidden>
+    <p class="brand"><img class="brand-logo" id="topbar-logo" alt="" hidden><span class="brand-mark" aria-hidden="true"></span><span class="product-name"></span></p>
+    <p class="company" id="company"></p>
+    <nav class="primary-nav" id="nav" aria-label="Main"></nav>
+    <div class="user">
+      <span class="scope" id="user-scope"></span>
+      <span id="user-email"></span>
+      <button class="link-button" type="button" id="sign-out">Sign out</button>
+    </div>
+  </header>
+
+  <main id="main" tabindex="-1" hidden>
+    <section class="state" id="setting-up" hidden>
+      <span class="pulse" aria-hidden="true"></span>
+      <h1>We're setting up your CRM</h1>
+      <p>This usually takes a few minutes. The page updates on its own.</p>
+    </section>
+
+    <section class="state" id="unavailable" hidden>
+      <h1>Your CRM isn't available yet</h1>
+      <p>If you expected to see it, contact your administrator.</p>
+    </section>
+
+    <section class="view" id="view-home" hidden aria-labelledby="home-title">
+      <h1 class="visually-hidden" id="home-title">Overview</h1>
+      <div class="hero">
+        <p class="eyebrow">Open pipeline</p>
+        <p class="hero-number" id="kpi-pipeline">&nbsp;</p>
+        <p class="hero-note" id="kpi-pipeline-note">&nbsp;</p>
+      </div>
+      <dl class="kpis">
+        <div><dt>Won this year</dt><dd id="kpi-won">&nbsp;</dd></div>
+        <div><dt>Win rate this year</dt><dd id="kpi-winrate">&nbsp;</dd></div>
+        <div><dt>Accounts</dt><dd id="kpi-accounts">&nbsp;</dd></div>
+      </dl>
+      <div class="split">
+        <section aria-labelledby="closing-title">
+          <h2 id="closing-title">Closing soon</h2>
+          <table class="records compact"><tbody id="home-closing"></tbody></table>
+          <a class="more" href="#opportunities">All open opportunities</a>
+        </section>
+        <section aria-labelledby="upcoming-title">
+          <h2 id="upcoming-title">Coming up</h2>
+          <table class="records compact"><tbody id="home-upcoming"></tbody></table>
+          <a class="more" href="#activities">All activities</a>
+        </section>
+      </div>
+    </section>
+
+    <section class="view" id="view-accounts" hidden aria-labelledby="accounts-title">
+      <div class="view-head">
+        <h1 id="accounts-title">Accounts</h1>
+        <button class="button primary" type="button" id="new-account">New account</button>
+      </div>
+      <form class="filters" id="accounts-filters" role="search">
+        <label class="visually-hidden" for="accounts-search">Search accounts</label>
+        <input type="search" id="accounts-search" placeholder="Search by name, city or state" autocomplete="off">
+        <label class="visually-hidden" for="accounts-state">Territory</label>
+        <select id="accounts-state" hidden><option value="">All territories</option></select>
+        <label class="visually-hidden" for="accounts-industry">Industry</label>
+        <select id="accounts-industry"><option value="">All industries</option></select>
+        <label class="visually-hidden" for="accounts-sort">Sort by</label>
+        <select id="accounts-sort">
+          <option value="pipeline:desc">Largest pipeline</option>
+          <option value="name:asc">Name</option>
+          <option value="revenue:desc">Company size</option>
+        </select>
+      </form>
+      <table class="records">
+        <thead><tr><th scope="col">Account</th><th scope="col">Industry</th><th scope="col">Location</th><th scope="col">Owner</th><th scope="col" class="num">Open opportunities</th><th scope="col" class="num">Pipeline</th></tr></thead>
+        <tbody id="accounts-rows"></tbody>
+      </table>
+      <div class="pager" id="accounts-pager"></div>
+    </section>
+
+    <section class="view" id="view-account" hidden aria-labelledby="account-title">
+      <a class="back" href="#accounts">Accounts</a>
+      <div class="view-head">
+        <h1 id="account-title"></h1>
+        <div class="view-actions">
+          <button class="button" type="button" id="account-log">Log activity</button>
+          <button class="button primary" type="button" id="account-deal">New opportunity</button>
+        </div>
+      </div>
+      <dl class="facts" id="account-facts"></dl>
+      <section aria-labelledby="account-deals-title">
+        <h2 id="account-deals-title">Opportunities</h2>
+        <table class="records"><thead><tr><th scope="col">Opportunity</th><th scope="col">Stage</th><th scope="col" class="num">Amount</th><th scope="col">Close date</th><th scope="col">Owner</th></tr></thead><tbody id="account-deals"></tbody></table>
+      </section>
+      <div class="split">
+        <section aria-labelledby="account-activities-title">
+          <h2 id="account-activities-title">Activities</h2>
+          <table class="records compact"><tbody id="account-activities"></tbody></table>
+        </section>
+        <section aria-labelledby="account-contacts-title">
+          <div class="section-head"><h2 id="account-contacts-title">Contacts</h2><button class="link-button" type="button" id="account-contact">Add contact</button></div>
+          <table class="records compact"><tbody id="account-contacts"></tbody></table>
+        </section>
+      </div>
+    </section>
+
+    <section class="view" id="view-opportunities" hidden aria-labelledby="opportunities-title">
+      <div class="view-head">
+        <h1 id="opportunities-title">Opportunities</h1>
+        <button class="button primary" type="button" id="new-opportunity">New opportunity</button>
+      </div>
+      <form class="filters" id="opportunities-filters" role="search">
+        <label class="visually-hidden" for="opportunities-search">Search opportunities</label>
+        <input type="search" id="opportunities-search" placeholder="Search by opportunity or account" autocomplete="off">
+        <label class="visually-hidden" for="opportunities-status">Show</label>
+        <select id="opportunities-status">
+          <option value="open">Open</option>
+          <option value="won">Won</option>
+          <option value="lost">Lost</option>
+          <option value="">All</option>
+        </select>
+        <label class="visually-hidden" for="opportunities-owner">Owner</label>
+        <select id="opportunities-owner"><option value="">Everyone</option></select>
+      </form>
+      <p class="totals" id="opportunities-totals" aria-live="polite"></p>
+      <table class="records">
+        <thead><tr><th scope="col">Opportunity</th><th scope="col">Account</th><th scope="col">Stage</th><th scope="col" class="num">Amount</th><th scope="col">Close date</th><th scope="col">Owner</th></tr></thead>
+        <tbody id="opportunities-rows"></tbody>
+      </table>
+      <div class="pager" id="opportunities-pager"></div>
+    </section>
+
+    <section class="view" id="view-activities" hidden aria-labelledby="activities-title">
+      <div class="view-head">
+        <h1 id="activities-title">Activities</h1>
+        <button class="button primary" type="button" id="new-activity">Log activity</button>
+      </div>
+      <form class="filters" id="activities-filters" role="search">
+        <fieldset class="segmented">
+          <legend class="visually-hidden">Show</legend>
+          <label><input type="radio" name="activities-status" value="open" checked> Planned</label>
+          <label><input type="radio" name="activities-status" value="done"> Done</label>
+          <label><input type="radio" name="activities-status" value=""> All</label>
+        </fieldset>
+        <label class="visually-hidden" for="activities-type">Type</label>
+        <select id="activities-type"><option value="">All types</option></select>
+        <label class="visually-hidden" for="activities-owner">Owner</label>
+        <select id="activities-owner"><option value="">Everyone</option></select>
+      </form>
+      <table class="records">
+        <thead><tr><th scope="col">Date</th><th scope="col">Type</th><th scope="col">Subject</th><th scope="col">Account</th><th scope="col">Owner</th><th scope="col">Done</th></tr></thead>
+        <tbody id="activities-rows"></tbody>
+      </table>
+      <div class="pager" id="activities-pager"></div>
+    </section>
+
+    <section class="view" id="view-reports" hidden aria-labelledby="reports-title">
+      <div class="view-head">
+        <h1 id="reports-title">Reports</h1>
+        <div class="view-actions">
+          <button class="button" type="button" id="edit-report" hidden>Edit report</button>
+          <button class="button primary" type="button" id="new-report" hidden>New report</button>
+        </div>
+      </div>
+      <form class="describe" id="describe-form" hidden>
+        <label class="field-label" for="describe-text">Add a chart</label>
+        <div class="describe-row">
+          <input id="describe-text" maxlength="300" autocomplete="off" placeholder="Describe it, for example: won revenue by month">
+          <button class="button primary" type="submit">Add chart</button>
+        </div>
+        <p class="hint" id="describe-hint">Try “pipeline by stage”, “win rate by sales rep as a bar chart” or “activities by type”.</p>
+      </form>
+      <div class="reports">
+        <nav aria-label="Reports"><ul class="report-list" id="report-list"></ul></nav>
+        <div class="canvas" id="canvas"><p class="canvas-note">Choose a report.</p></div>
+      </div>
+    </section>
+
+    <section class="view" id="view-data" hidden aria-labelledby="data-title">
+      <div class="view-head"><h1 id="data-title">Your data</h1></div>
+      <p class="lede">Files and feeds you add here appear next to your CRM data in reports and answers.</p>
+      <table class="records">
+        <thead><tr><th scope="col">Data</th><th scope="col">Source</th><th scope="col" class="num">Rows</th><th scope="col">Updated</th></tr></thead>
+        <tbody id="datasets"></tbody>
+      </table>
+      <h2>Add data</h2>
+      <div class="options">
+        <form class="option" id="upload-form" novalidate>
+          <h3>Upload a file</h3>
+          <p>Excel, CSV, JSON or Parquet. Each Excel sheet becomes its own data set.</p>
+          <label class="field"><span class="field-label">File</span><input type="file" id="upload-file" accept=".xlsx,.xls,.csv,.tsv,.txt,.json,.parquet" required></label>
+          <label class="field"><span class="field-label">Name</span><input id="upload-name" maxlength="80" autocomplete="off" placeholder="From the file name"></label>
+          <button class="button primary" type="submit">Upload</button>
+        </form>
+        <form class="option" id="web-form" novalidate>
+          <h3>Connect a web source</h3>
+          <p>A public link that returns CSV, JSON or Parquet, such as a price list or exchange rates.</p>
+          <label class="field"><span class="field-label">Link</span><input type="url" id="web-url" required autocomplete="off" placeholder="https://example.com/rates.csv"></label>
+          <label class="field"><span class="field-label">Name</span><input id="web-name" maxlength="80" autocomplete="off" placeholder="From the link"></label>
+          <button class="button primary" type="submit">Connect</button>
+        </form>
+        <form class="option" id="request-form" novalidate>
+          <h3>Connect a system on your network</h3>
+          <p>An ERP, a SQL Server or another database your company runs. We set up a secure connection with your IT team.</p>
+          <label class="field"><span class="field-label">What should we connect?</span><textarea id="request-text" rows="3" maxlength="1000" placeholder="Our SQL Server with inventory data"></textarea></label>
+          <button class="button" type="submit">Send request</button>
+        </form>
+      </div>
+    </section>
+  </main>
+
+  <button class="assistant-launcher" type="button" id="assistant-launcher" hidden aria-controls="assistant" aria-expanded="false">
+    <span class="assistant-mark" aria-hidden="true">?</span> Ask about your data
+  </button>
+  <aside class="assistant" id="assistant" hidden aria-labelledby="assistant-title">
+    <div class="assistant-head">
+      <h2 id="assistant-title">Ask about your data</h2>
+      <button class="icon-button" type="button" id="assistant-close" aria-label="Close">×</button>
+    </div>
+    <ol class="conversation" id="conversation" aria-live="polite"></ol>
+    <ul class="suggestions" id="suggestions" aria-label="Examples"></ul>
+    <form class="ask-form" id="ask-form">
+      <label class="visually-hidden" for="question">Your question</label>
+      <textarea id="question" rows="2" maxlength="2000" placeholder="Which accounts have the largest open pipeline?"></textarea>
+      <button class="button primary" type="submit">Ask</button>
+    </form>
+  </aside>
+
+  <dialog class="dialog" id="dialog" aria-labelledby="dialog-title">
+    <form method="dialog" id="dialog-form" novalidate>
+      <h2 id="dialog-title"></h2>
+      <div id="dialog-fields"></div>
+      <p class="dialog-error" id="dialog-error" role="alert" hidden></p>
+      <div class="dialog-actions">
+        <button class="button" type="button" id="dialog-cancel">Cancel</button>
+        <button class="button primary" type="submit" id="dialog-submit">Save</button>
+      </div>
+    </form>
+  </dialog>
+
+  <div class="toast" id="toast" role="status" aria-live="polite" hidden></div>
+</body>
+</html>
