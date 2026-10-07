@@ -38,6 +38,22 @@ your computer against a Fabric emulator: no Azure, no credentials.
 In a pilot, one person can hold every role. In production, separate them: no single person should be able to both change
 the tenant settings and create credentials.
 
+### Only if a customer opts in
+
+Letting a customer's people sign in with their work accounts, and the data integration add-on, need roles in the
+**customer's** Entra tenant too. The customer's own admins act; you never hold these roles
+([IDENTITIES.md](IDENTITIES.md#5-who-does-what-on-each-side)).
+
+| Role | Where | Needed for |
+| --- | --- | --- |
+| **Cloud Application Administrator** or **Application Administrator** | The customer's Entra tenant | Admitting your sign-in app (admin consent) and assigning people to Manager and Rep; admitting the customer's connector, which asks for no API permissions |
+| **Owner**, **User Access Administrator** or **Role Based Access Control Administrator** | The customer's storage account | Giving the connector Storage Blob Data Reader on one container |
+| The server's **Microsoft Entra admin** | The customer's Azure SQL database | A database user for the connector, with `SELECT` |
+| **System Administrator** | The customer's Dataverse environment | The connector as an application user with a read-only security role |
+| **Fabric Administrator**, then someone with Read and Reshare on the item | The customer's Fabric | Turning on External data sharing, and sharing named tables to the customer's service account |
+| The customer's IT | The customer's network | An on-premises data gateway, and read-only accounts in the source systems |
+| One of your engineers, with an account in your tenant | Your Entra tenant | Registering that gateway to your tenant, which needs a person's account |
+
 ## 2. Identities
 
 | Identity | Kind | Created by | How it signs in | Permissions | Count |
@@ -48,9 +64,12 @@ the tenant settings and create credentials.
 | **User-assigned managed identity** | Azure managed identity | An Azure contributor | Azure | Nothing in Fabric itself: the platform app and the service accounts trust it (federated identity credentials), and it reads Key Vault | 1, production |
 | **Security group for service principals** | Entra security group | Groups Administrator | | Scopes the tenant settings to HiCRM's identities | 1, recommended |
 | **Support group** | Entra security group (`FABRIC_OPS_PRINCIPAL_ID`) | Groups Administrator | | Viewer of every customer workspace | 0 or 1 |
+| **Sign-in app** (only for work-account sign-in) | Multi-tenant app registration, with a service principal in each customer tenant that admits it | An Entra admin, once | A certificate, or a federated credential trusting the app's managed identity | Sign-in only (`openid`, `profile`, `email`), and the app roles Manager and Rep | 0 or 1 |
+| **Customer connector**, for example *HiCRM connector for Fabrikam* (only for the add-on) | Multi-tenant app registration, with a service principal in that customer's tenant only | The platform, or an Entra admin | A client secret held only by that customer's Fabric connections, which take a secret for a service principal | What the customer grants in its own tenant, read-only; nothing in yours | 1 per customer with the add-on |
 
 The customers' own people need **no** Entra account and **no** Power BI license: they sign in to HiCRM, and the
-platform embeds reports for them with tokens it creates ("app owns data").
+platform embeds reports for them with tokens it creates ("app owns data"). A customer can instead let its people sign
+in with their own work accounts; they still get nothing in your tenant ([IDENTITIES.md](IDENTITIES.md)).
 
 Why one service account per customer: every call made for a customer runs as that customer's service account, which
 can reach only that customer's workspace. A bug that mixes up customers meets a refusal from Fabric, not another
@@ -92,6 +111,7 @@ rather than the whole organization.
 | Data sent to Azure OpenAI can be processed outside your capacity's geographic region | Copilot and Azure OpenAI Service | Only when the capacity is outside the US and the EU Data Boundary |
 | Service principals can access read-only admin APIs | Admin API settings | Optional: lets the validator read these settings (IDN-06). Allow it for a group holding only the platform identity |
 | Service principals can access admin APIs used for updates | Admin API settings | Never for HiCRM's identities |
+| Users can accept external data shares | Export and sharing settings | Only for the data integration add-on, when a customer shares data from its own Fabric. Allow it for the service accounts' group only |
 
 ## 5. Workspace rules
 

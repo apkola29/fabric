@@ -27,7 +27,8 @@ Related documents:
 ## 1. Who and what has to exist
 
 **The customer brings people, nothing else.** HiCRM embeds reports with "app owns data", so the customer's people
-need no Microsoft Entra account in your tenant, no Power BI or Fabric license, and no admin consent. Everything in
+need no Microsoft Entra account in your tenant, no Power BI or Fabric license, and no admin consent (unless the customer
+opts into the options in [IDENTITIES.md](IDENTITIES.md)). Everything in
 Fabric runs as identities the platform owns.
 
 ```mermaid

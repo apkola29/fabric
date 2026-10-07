@@ -8,7 +8,8 @@ the things to prove before committing are listed in [section 7](#7-proofs-of-con
 
 **Who's who.** "You" and "your" are HiCRM, the SaaS provider that builds and runs the platform. "Customers" are the
 companies that subscribe to it, such as Fabrikam and Contoso ([README.md](README.md#whos-who)). The future data
-integration add-on, with Data Factory pipelines and Spark notebooks, is designed in [DATA-INTEGRATION.md](DATA-INTEGRATION.md).
+integration add-on, with Data Factory pipelines and Spark notebooks, is designed in
+[DATA-INTEGRATION.md](DATA-INTEGRATION.md).
 
 | | Plan 1: hybrid | Plan 2: Azure | Plan 3: all on-premises |
 | --- | --- | --- | --- |
@@ -321,8 +322,11 @@ The gateway dials out to Azure Relay over TLS (1.3 by default). It needs no inbo
 encrypted in the cloud and decrypted only on the gateway. Run gateways as clusters of two or more machines for high
 availability ([gateway in depth](https://learn.microsoft.com/data-integration/gateway/service-gateway-onprem-indepth),
 [clusters](https://learn.microsoft.com/data-integration/gateway/service-gateway-high-availability-clusters)). A gateway
-in a customer's network registers to your tenant through whoever signs in during setup. Use a per-customer installer
-account, and let the customer's service principal own the connections.
+in a customer's network registers to your tenant through whoever signs in during setup, and that must be a person's
+account. Have one of your engineers sign in with a per-customer installer account, in a session with the customer's IT,
+and let the customer's service principal own the connections. Most of these sources sit in the customer's own Entra
+tenant: which identity reaches each one, and what the customer grants, is in
+[IDENTITIES.md](IDENTITIES.md#44-the-add-on-reads-the-customers-systems-future).
 
 ## 3. Plan 2: Azure, the recommended SaaS deployment
 

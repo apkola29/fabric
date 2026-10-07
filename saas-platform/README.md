@@ -33,37 +33,40 @@ customers.
 
 | Name | Who they are | What they own |
 | --- | --- | --- |
-| **HiCRM** (blue) | The SaaS provider: it builds, sells and runs the CRM. "You" in [REQUIREMENTS.md](REQUIREMENTS.md), [BUILDOUT.md](BUILDOUT.md) and [DEPLOYMENT-ARCHITECTURES.md](DEPLOYMENT-ARCHITECTURES.md) | Everything in Azure and Fabric: the app, the Microsoft Entra tenant and every identity in it, the Fabric capacity, and a workspace and a service account for each customer. It pays for all of it |
-| **Fabrikam** (orange), **Contoso** (green) | Customers: two fictional companies that subscribe to HiCRM | Their people (a sales manager and three reps each) and their business data. They need no Entra accounts and no Fabric or Power BI licenses |
+| **HiCRM** (blue) | The SaaS provider: it builds, sells and runs the CRM. "You" in [REQUIREMENTS.md](REQUIREMENTS.md), [BUILDOUT.md](BUILDOUT.md) and [DEPLOYMENT-ARCHITECTURES.md](DEPLOYMENT-ARCHITECTURES.md) | Everything in Azure and Fabric: the app, its own Microsoft Entra tenant and every identity in it, the Fabric capacity, and a workspace and a service account for each customer. It pays for all of it |
+| **Fabrikam** (orange), **Contoso** (green) | Customers: two fictional companies that subscribe to HiCRM | Their people (a sales manager and three reps each), their business data and their own Microsoft Entra tenant. Their people need no account in HiCRM's tenant and no Fabric or Power BI license |
 | **Microsoft** (grey) | The cloud provider | Runs Microsoft Entra ID, Fabric and Power BI, which HiCRM uses |
 
 Two phrases to read with care:
 - **"Fabrikam's workspace"** is the workspace HiCRM runs for Fabrikam: HiCRM owns it, and it holds only Fabrikam's
   data. Likewise `fabrikamsa` is HiCRM's service account for Fabrikam's work.
 - **"Tenant"**, in the code and in [FRAMEWORK.md](FRAMEWORK.md), is one of HiCRM's customers (the registry is
-  `tenants.json`), not a Microsoft Entra tenant. There's only one Entra tenant: HiCRM's.
+  `tenants.json`), not a Microsoft Entra tenant. Each company has an Entra tenant of its own. Today every identity
+  HiCRM runs as lives in HiCRM's. A customer's own tenant takes part only if the customer opts in: to let its people
+  sign in with their work accounts, or to bring in its own data. [IDENTITIES.md](IDENTITIES.md) shows every identity
+  and how each sign-in works.
 
 ```mermaid
 flowchart TB
   %% Who owns what. Orange: Fabrikam, green: Contoso (two customers of HiCRM). Blue: HiCRM, the SaaS provider.
   %% Grey: Microsoft. Dashed: the future data integration add-on.
 
-  subgraph FAB["FABRIKAM · customer 1 · owns its people and its business data"]
+  subgraph FAB["FABRIKAM · customer 1 · owns its people, its data and its own Entra tenant"]
     direction LR
-    FPPL["Fabrikam's people<br/>a sales manager and three reps<br/>no Microsoft account, no license"]
+    FPPL["Fabrikam's people<br/>a sales manager and three reps<br/>no account in HiCRM's tenant, no license"]
     FSYS[("Fabrikam's own systems<br/>ERP, spreadsheets, SaaS apps")]
   end
 
-  subgraph CON["CONTOSO · customer 2 · owns its people and its business data"]
+  subgraph CON["CONTOSO · customer 2 · owns its people, its data and its own Entra tenant"]
     direction LR
-    CPPL["Contoso's people<br/>a sales manager and three reps<br/>no Microsoft account, no license"]
+    CPPL["Contoso's people<br/>a sales manager and three reps<br/>no account in HiCRM's tenant, no license"]
     CSYS[("Contoso's own systems<br/>ERP, spreadsheets, SaaS apps")]
   end
 
   subgraph HI["HICRM · the SaaS provider · owns, runs and pays for everything in this box"]
     direction TB
     APP["HiCRM app and back office<br/>one deployment for every customer<br/>fabrikam.hicrm… · contoso.hicrm…"]
-    subgraph IDS["HiCRM's Microsoft Entra tenant · the only Entra tenant involved"]
+    subgraph IDS["HiCRM's Microsoft Entra tenant · HiCRM's own identities"]
       direction LR
       FSA["fabrikamsa<br/>HiCRM's service account<br/>for Fabrikam's work"]
       PID["Platform identity<br/>builds workspaces,<br/>then lets go"]
@@ -230,8 +233,9 @@ flowchart TB
 **Future add-on (dashed).** The data integration add-on would bring in Fabrikam's other data, only what Fabrikam
 allows. A Data Factory pipeline copies it from Fabrikam's systems into a lakehouse (bronze); Spark notebooks clean it
 (silver) and shape business tables keyed by account (gold); the gold tables join the same semantic model, under the
-same roles, and the assistant's model. All of it runs as `fabrikamsa`, in Fabrikam's workspace. The design, with its
-own diagram, is in [DATA-INTEGRATION.md](DATA-INTEGRATION.md).
+same roles, and the assistant's model. All of it runs as `fabrikamsa`, in Fabrikam's workspace, and reaches into
+Fabrikam's own Entra tenant only through access Fabrikam grants and can withdraw ([IDENTITIES.md](IDENTITIES.md)). The
+design, with its own diagram, is in [DATA-INTEGRATION.md](DATA-INTEGRATION.md).
 
 ## Quick start: demo mode (no Azure needed)
 
@@ -357,6 +361,7 @@ the project in CI.
 | [FRAMEWORK.md](FRAMEWORK.md) | The framework: principles, reference architecture, building blocks, design decisions, 34 controls, validation |
 | [EMBEDDING.md](EMBEDDING.md) | How the embedded reports work: every credential, the token request, row-level security, refresh, best practices, and a comparison with Microsoft's App-Owns-Data samples |
 | [ARCHITECTURE.md](ARCHITECTURE.md) | Diagrams of the system, identities, provisioning and the runtime flows |
+| [IDENTITIES.md](IDENTITIES.md) | Every identity in HiCRM's and the customers' Microsoft Entra tenants, and how each sign-in works: today, with work accounts, and for the data integration add-on |
 | [DATA-INTEGRATION.md](DATA-INTEGRATION.md) | The future data integration add-on: Data Factory pipelines, Spark notebooks and lakehouse layers, who owns what, and the identities they run as |
 | [MULTITENANCY.md](MULTITENANCY.md) | The multitenancy, least-privilege and robustness review, with evidence |
 | [BUILDOUT.md](BUILDOUT.md) | How the pilot was built: identities and their counts, permissions, and the as-built record |

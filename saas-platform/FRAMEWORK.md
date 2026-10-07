@@ -7,7 +7,8 @@ need no Microsoft Entra account and no Power BI license.
 **Who's who in the sample.** HiCRM is the provider: it owns and runs the application, the Microsoft Entra tenant and
 every identity in it, the capacity, and a workspace for each tenant. Its tenants, Fabrikam and Contoso, are customer
 companies that own only their people and their data. "Tenant" in this document always means such a customer, never a
-Microsoft Entra tenant: the whole deployment uses one Entra tenant, the provider's ([README.md](README.md#whos-who)).
+Microsoft Entra tenant. Today every identity the platform runs as lives in the provider's Entra tenant; a tenant's own
+Entra tenant takes part only in the options in [IDENTITIES.md](IDENTITIES.md) ([README.md](README.md#whos-who)).
 
 This repository is the framework, plus a sample built on it: **HiCRM**, a small CRM whose customers each have a SQL
 database, a semantic model with row-level security, an embedded Power BI report and a data agent. The framework
@@ -40,6 +41,8 @@ Related documents:
 - [MULTITENANCY.md](MULTITENANCY.md): the security review.
 - [BUILDOUT.md](BUILDOUT.md): the build record, with every identity and permission.
 - [DEPLOYMENT-ARCHITECTURES.md](DEPLOYMENT-ARCHITECTURES.md): production designs.
+- [IDENTITIES.md](IDENTITIES.md): every identity, in the provider's and the tenants' own Entra tenants, and how each
+  sign-in works.
 - [DATA-INTEGRATION.md](DATA-INTEGRATION.md): the future data integration add-on (Data Factory, Spark notebooks, a
   lakehouse).
 

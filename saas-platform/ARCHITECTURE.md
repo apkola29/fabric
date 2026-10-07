@@ -23,22 +23,22 @@ flowchart TB
   %% Who owns what. Orange: Fabrikam, green: Contoso (two customers of HiCRM). Blue: HiCRM, the SaaS provider.
   %% Grey: Microsoft. Dashed: the future data integration add-on.
 
-  subgraph FAB["FABRIKAM · customer 1 · owns its people and its business data"]
+  subgraph FAB["FABRIKAM · customer 1 · owns its people, its data and its own Entra tenant"]
     direction LR
-    FPPL["Fabrikam's people<br/>a sales manager and three reps<br/>no Microsoft account, no license"]
+    FPPL["Fabrikam's people<br/>a sales manager and three reps<br/>no account in HiCRM's tenant, no license"]
     FSYS[("Fabrikam's own systems<br/>ERP, spreadsheets, SaaS apps")]
   end
 
-  subgraph CON["CONTOSO · customer 2 · owns its people and its business data"]
+  subgraph CON["CONTOSO · customer 2 · owns its people, its data and its own Entra tenant"]
     direction LR
-    CPPL["Contoso's people<br/>a sales manager and three reps<br/>no Microsoft account, no license"]
+    CPPL["Contoso's people<br/>a sales manager and three reps<br/>no account in HiCRM's tenant, no license"]
     CSYS[("Contoso's own systems<br/>ERP, spreadsheets, SaaS apps")]
   end
 
   subgraph HI["HICRM · the SaaS provider · owns, runs and pays for everything in this box"]
     direction TB
     APP["HiCRM app and back office<br/>one deployment for every customer<br/>fabrikam.hicrm… · contoso.hicrm…"]
-    subgraph IDS["HiCRM's Microsoft Entra tenant · the only Entra tenant involved"]
+    subgraph IDS["HiCRM's Microsoft Entra tenant · HiCRM's own identities"]
       direction LR
       FSA["fabrikamsa<br/>HiCRM's service account<br/>for Fabrikam's work"]
       PID["Platform identity<br/>builds workspaces,<br/>then lets go"]
@@ -248,6 +248,10 @@ flowchart TB
 | Support group | Entra group (`FABRIC_OPS_PRINCIPAL_ID`) | Viewer | Looking at the workspace in the Fabric portal. |
 | Operators | People using the back office | None in Fabric | Sign in with `ADMIN_KEY` (required whenever the server is reachable from other machines). Opening a customer's reports, asking their assistant or loading data is written to that customer's activity log. |
 | Fabrikam users | Signed in to HiCRM | None in Fabric | Embed tokens for their own reports and model, 30 minutes by default (`EMBED_TOKEN_MINUTES`, 5 to 60). |
+
+Every identity above lives in HiCRM's Entra tenant. What changes when a customer's own Entra tenant takes part (its
+people signing in with work accounts, or the data integration add-on reading its systems) is in
+[IDENTITIES.md](IDENTITIES.md).
 
 `node scripts/platform-cli.js audit <customer>` (or **Check access** in the back office) compares the workspace with this
 table and flags drift: missing or extra roles, people with direct access, items that are gone, a connection that signs

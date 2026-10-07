@@ -29,6 +29,19 @@ test('the data integration add-on is documented, with its diagram, and linked fr
   assert.match(read('README.md'), /\[DATA-INTEGRATION\.md\]\(DATA-INTEGRATION\.md\)/);
 });
 
+test('IDENTITIES.md maps every identity across Entra tenants, and the other documents point at it', () => {
+  const doc = read('IDENTITIES.md');
+  const map = diagrams('IDENTITIES.md').filter((d) => d.includes('%% Where each identity lives.'));
+  assert.equal(map.length, 1, 'one map of where each identity lives');
+  for (const tenant of ["HICRM'S ENTRA TENANT", "FABRIKAM'S ENTRA TENANT", "CONTOSO'S ENTRA TENANT"]) assert.ok(map[0].includes(tenant), tenant);
+  for (const identity of ['fabrikamsa', 'contososa', 'Workspace identity', 'Platform identity', 'sign-in app', 'Connector for Fabrikam']) assert.ok(map[0].includes(identity), identity);
+  assert.equal(diagrams('IDENTITIES.md').filter((d) => /^\s*sequenceDiagram/.test(d)).length, 3, 'work-account sign-in, calls to Fabric, the add-on');
+  assert.match(doc, /## 7\. Checked, and to test/);
+  for (const file of ['README.md', 'DATA-INTEGRATION.md', 'REQUIREMENTS.md', 'FRAMEWORK.md', 'ARCHITECTURE.md']) assert.match(read(file), /\]\(IDENTITIES\.md(#[\w-]+)?\)/, `${file} links IDENTITIES.md`);
+  // Each company has its own Entra tenant: no document may say otherwise again.
+  for (const file of DOCS) assert.doesNotMatch(read(file), /only (one )?Entra tenant|one Entra tenant, the provider/i, file);
+});
+
 test('diagrams color each owner the same way everywhere and style every box they draw', () => {
   const palette = {};
   const problems = [];
