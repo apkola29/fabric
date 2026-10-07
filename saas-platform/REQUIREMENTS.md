@@ -42,14 +42,14 @@ the tenant settings and create credentials.
 
 Letting a customer's people sign in with their work accounts, and the data integration add-on, need roles in the
 **customer's** Entra tenant too. The customer's own admins act; you never hold these roles
-([IDENTITIES.md](IDENTITIES.md#5-who-does-what-on-each-side)).
+([IDENTITIES.md](IDENTITIES.md#6-who-does-what-on-each-side)).
 
 | Role | Where | Needed for |
 | --- | --- | --- |
-| **Cloud Application Administrator** or **Application Administrator** | The customer's Entra tenant | Admitting your sign-in app (admin consent) and assigning people to Manager and Rep; admitting the customer's connector, which asks for no API permissions |
-| **Owner**, **User Access Administrator** or **Role Based Access Control Administrator** | The customer's storage account | Giving the connector Storage Blob Data Reader on one container |
-| The server's **Microsoft Entra admin** | The customer's Azure SQL database | A database user for the connector, with `SELECT` |
-| **System Administrator** | The customer's Dataverse environment | The connector as an application user with a read-only security role |
+| **Cloud Application Administrator** or **Application Administrator** | The customer's Entra tenant | Admitting your sign-in app (admin consent) and assigning people to Manager and Rep; admitting the customer's reader (`<customer>reader`), which asks for no API permissions |
+| **Owner**, **User Access Administrator** or **Role Based Access Control Administrator** | The customer's storage account | Giving the reader's service principal Storage Blob Data Reader on one container |
+| The server's **Microsoft Entra admin** | The customer's Azure SQL database | A database user for the reader, with `SELECT` |
+| **System Administrator** | The customer's Dataverse environment | The reader as an application user with a read-only security role |
 | **Fabric Administrator**, then someone with Read and Reshare on the item | The customer's Fabric | Turning on External data sharing, and sharing named tables to the customer's service account |
 | The customer's IT | The customer's network | An on-premises data gateway, and read-only accounts in the source systems |
 | One of your engineers, with an account in your tenant | Your Entra tenant | Registering that gateway to your tenant, which needs a person's account |
@@ -65,7 +65,7 @@ Letting a customer's people sign in with their work accounts, and the data integ
 | **Security group for service principals** | Entra security group | Groups Administrator | | Scopes the tenant settings to HiCRM's identities | 1, recommended |
 | **Support group** | Entra security group (`FABRIC_OPS_PRINCIPAL_ID`) | Groups Administrator | | Viewer of every customer workspace | 0 or 1 |
 | **Sign-in app** (only for work-account sign-in) | Multi-tenant app registration, with a service principal in each customer tenant that admits it | An Entra admin, once | A certificate, or a federated credential trusting the app's managed identity | Sign-in only (`openid`, `profile`, `email`), and the app roles Manager and Rep | 0 or 1 |
-| **Customer connector**, for example *HiCRM connector for Fabrikam* (only for the add-on) | Multi-tenant app registration, with a service principal in that customer's tenant only | The platform, or an Entra admin | A client secret held only by that customer's Fabric connections, which take a secret for a service principal | What the customer grants in its own tenant, read-only; nothing in yours | 1 per customer with the add-on |
+| **Customer reader** `<customer>reader`, for example `fabrikamreader` (only for the add-on) | Multi-tenant app registration, with a service principal in that customer's tenant only. The customer's connections to its own systems sign in as it | The platform, or an Entra admin | A client secret held only by that customer's Fabric connections, which take a secret for a service principal | What the customer grants that service principal in its own tenant, read-only; nothing in yours | 1 per customer with the add-on |
 
 The customers' own people need **no** Entra account and **no** Power BI license: they sign in to HiCRM, and the
 platform embeds reports for them with tokens it creates ("app owns data"). A customer can instead let its people sign

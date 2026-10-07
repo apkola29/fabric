@@ -34,9 +34,17 @@ test('IDENTITIES.md maps every identity across Entra tenants, and the other docu
   const map = diagrams('IDENTITIES.md').filter((d) => d.includes('%% Where each identity lives.'));
   assert.equal(map.length, 1, 'one map of where each identity lives');
   for (const tenant of ["HICRM'S ENTRA TENANT", "FABRIKAM'S ENTRA TENANT", "CONTOSO'S ENTRA TENANT"]) assert.ok(map[0].includes(tenant), tenant);
-  for (const identity of ['fabrikamsa', 'contososa', 'Workspace identity', 'Platform identity', 'sign-in app', 'Connector for Fabrikam']) assert.ok(map[0].includes(identity), identity);
+  for (const identity of ['fabrikamsa', 'contososa', 'Workspace identity', 'Platform identity', 'sign-in app', 'fabrikamreader', 'contosoreader']) assert.ok(map[0].includes(identity), identity);
   assert.equal(diagrams('IDENTITIES.md').filter((d) => /^\s*sequenceDiagram/.test(d)).length, 3, 'work-account sign-in, calls to Fabric, the add-on');
-  assert.match(doc, /## 7\. Checked, and to test/);
+  assert.match(doc, /## 8\. Checked, and to test/);
+  // Connections: who owns each one, and who it signs in as, with each credential type as Fabric names it.
+  const connections = diagrams('IDENTITIES.md').filter((d) => d.includes('%% Connections: who owns each one'));
+  assert.equal(connections.length, 1, 'one diagram of the connections');
+  for (const part of ['fabrikamsa', 'fabrikamreader', "Fabrikam's workspace identity", '"Workspace identity"', '"Service principal"', '"OAuth"', '"Basic or Windows"']) assert.ok(connections[0].includes(part), part);
+  const section = doc.slice(doc.indexOf('## 4. Connections'), doc.indexOf('## 5.'));
+  assert.match(section, /\| The semantic models' OneLake connection \(Direct Lake\) \| Built \| `fabrikamsa`/);
+  // The reader is an identity, not a Fabric connector: the old name mustn't come back.
+  for (const file of DOCS) assert.doesNotMatch(read(file), /connector for (Fabrikam|Contoso)|Customer connector|HiCRM connector/i, file);
   for (const file of ['README.md', 'DATA-INTEGRATION.md', 'REQUIREMENTS.md', 'FRAMEWORK.md', 'ARCHITECTURE.md']) assert.match(read(file), /\]\(IDENTITIES\.md(#[\w-]+)?\)/, `${file} links IDENTITIES.md`);
   // Each company has its own Entra tenant: no document may say otherwise again.
   for (const file of DOCS) assert.doesNotMatch(read(file), /only (one )?Entra tenant|one Entra tenant, the provider/i, file);

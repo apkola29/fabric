@@ -325,8 +325,8 @@ availability ([gateway in depth](https://learn.microsoft.com/data-integration/ga
 in a customer's network registers to your tenant through whoever signs in during setup, and that must be a person's
 account. Have one of your engineers sign in with a per-customer installer account, in a session with the customer's IT,
 and let the customer's service principal own the connections. Most of these sources sit in the customer's own Entra
-tenant: which identity reaches each one, and what the customer grants, is in
-[IDENTITIES.md](IDENTITIES.md#44-the-add-on-reads-the-customers-systems-future).
+tenant: which connection reaches each one, and who it signs in as, is in
+[IDENTITIES.md](IDENTITIES.md#4-connections-who-owns-each-one-and-who-it-signs-in-as).
 
 ## 3. Plan 2: Azure, the recommended SaaS deployment
 
