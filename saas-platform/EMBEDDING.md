@@ -175,8 +175,8 @@ For the seeded Fabrikam data:
 | Arjun Mehta, `arjun.mehta@fabrikam.com` | `New Mexico` | New Mexico |
 | Amara Okoye, `amara.okoye@fabrikam.com` | `Georgia` | Georgia |
 
-The diagrams show the same flow: the [static page source](site/index.html),
-[credential-flow.svg](site/credential-flow.svg) and [who-sees-what.svg](site/who-sees-what.svg).
+The diagrams show the same flow: [credential-flow.svg](site/credential-flow.svg) and
+[who-sees-what.svg](site/who-sees-what.svg).
 
 **No relationship functions over secured tables.** `USERELATIONSHIP` (and `CROSSFILTER`) return an error when a role
 filters a table they touch ([remarks](https://learn.microsoft.com/dax/userelationship-function-dax#remarks)), so a

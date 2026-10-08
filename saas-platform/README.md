@@ -298,10 +298,11 @@ outside Key Vault, or a back office without sign-in. [.env.example](.env.example
 
 ## Diagrams
 
-The diagrams page is [published on GitHub Pages](https://apkola29.github.io/fabric/saas-platform/); its source is
-[site/index.html](site/index.html). It uses only HTML and three SVG images, with no scripts:
-[who-sees-what.svg](site/who-sees-what.svg), [credential-flow.svg](site/credential-flow.svg) and
-[all-in-one.svg](site/all-in-one.svg), a design in which a customer runs its own Fabric.
+The page [published on GitHub Pages](https://apkola29.github.io/fabric/saas-platform/) shows the all-in-one design,
+in which a customer runs its own Fabric: [all-in-one.svg](site/all-in-one.svg). Its source is
+[site/index.html](site/index.html), static HTML with no scripts. Two more diagrams explain the isolated pilot, and the
+documents link to them: [who-sees-what.svg](site/who-sees-what.svg) and
+[credential-flow.svg](site/credential-flow.svg).
 
 Each diagram is drawn by its own module: [who-sees-what.mjs](site/who-sees-what.mjs),
 [credential-flow.mjs](site/credential-flow.mjs) and [all-in-one.mjs](site/all-in-one.mjs), with shared helpers in
@@ -407,7 +408,7 @@ the project in CI.
 | `src/routes/`, `public/` | The customer and back-office APIs; the platform app and its back office |
 | `src/util/publishing.js`, `scripts/check-publish.js` | The pre-publish check for credentials and environment IDs |
 | `scripts/` | Setup, CLI, identity bootstrap, preflight check and validator |
-| `site/` | The static diagrams page, published to GitHub Pages: HTML, three SVG diagrams, one module per diagram and the official Fabric icons |
+| `site/` | The GitHub Pages page (the all-in-one design), the three SVG diagrams, one module per diagram and the official Fabric icons |
 
 ## License
 
