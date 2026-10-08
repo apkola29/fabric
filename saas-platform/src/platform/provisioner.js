@@ -1,7 +1,8 @@
 import { createHash } from 'node:crypto';
 import { ASSISTANT_MODEL_NAME, MODEL_NAME, STARTER_REPORT_NAME, agentTables, buildSemanticModelDefinition, buildStarterReportDefinition, sampleSeedOf } from '../crm/workload.js';
+import { decodePayload } from '../util/definition.js';
 import { agentDescription, agentInstructions, agentModelSource, buildSemanticModelAgentDefinition, syncDataAgent } from './agent.js';
-import { LEGACY_ITEM_NAMES, LEGACY_PRODUCT_NAMES } from './legacy-names.js';
+import { LEGACY_DIRECT_LAKE_EXPRESSIONS, LEGACY_ITEM_NAMES, LEGACY_PRODUCT_NAMES } from './legacy-names.js';
 import { CORE_ITEMS, entitlements } from './plans.js';
 import { addActivity } from './store.js';
 import { stampTemplates } from './templates.js';
@@ -29,6 +30,57 @@ const detailOf = (value) => (typeof value === 'object' && value ? value : { stat
 
 export function workspaceNameFor(config, tenant) {
   return `${config.workspacePrefix}${tenant.slug}-${tenant.id.slice(0, 4)}`;
+}
+
+// The shared Direct Lake expression a deployed semantic model's tables read through: the one their partitions name
+// (expressionSource), else the only one the model declares. Reads TMDL, what getDefinition returns by default, and
+// TMSL (model.bim). Null when the definition doesn't tell.
+export function directLakeExpressionOf(definition) {
+  const unquote = (name) => (/^'.*'$|^".*"$/s.test(name) ? name.slice(1, -1).replaceAll(name[0].repeat(2), name[0]) : name);
+  const sources = [];
+  const declared = [];
+  for (const part of definition?.parts || []) {
+    const text = decodePayload(part.payload || '');
+    if (/\.tmdl$/i.test(part.path || '')) {
+      for (const [, name] of text.matchAll(/^expression[ \t]+('(?:[^']|'')*'|[^\s=']+)[ \t]*=/gm)) declared.push(unquote(name));
+      for (const [, name] of text.matchAll(/^[ \t]*expressionSource[ \t]*:[ \t]*(.*?)[ \t]*\r?$/gm)) sources.push(unquote(name));
+    } else if (/\.bim$/i.test(part.path || '')) {
+      let model = null;
+      try {
+        model = JSON.parse(text)?.model;
+      } catch {
+        // Not TMSL.
+      }
+      for (const expression of model?.expressions || []) declared.push(expression?.name);
+      for (const table of model?.tables || []) for (const partition of table?.partitions || []) sources.push(partition?.source?.expressionSource);
+    }
+  }
+  const used = [...new Set(sources.filter(Boolean))];
+  if (used.length) return used.length === 1 ? used[0] : null;
+  const names = [...new Set(declared.filter(Boolean))];
+  return names.length === 1 ? names[0] : null;
+}
+
+// What this version publishes for a deployed semantic model, and its fingerprint. Analysis Services can't rename the
+// shared Direct Lake expression in a definition update (TMSavePoint::ThrowObjectNotFoundError), so it keeps the name the
+// model has: the one this version published it under, as the recorded fingerprint shows; else the one in its
+// definition; else, when Fabric doesn't return that (it's blocked for a model with an encrypted sensitivity label), the
+// earlier name. `failure` says why the definition didn't tell.
+export async function currentSemanticModelVersion({ client, workspaceId, modelId, sqlDatabaseId, rowLevelSecurity = true, published }) {
+  const build = (expressionName) => buildSemanticModelDefinition({ workspaceId, sqlDatabaseId, rowLevelSecurity, expressionName });
+  const versions = [build(), ...LEGACY_DIRECT_LAKE_EXPRESSIONS.map(build)];
+  const kept = versions.find((v) => v.fingerprint === published);
+  if (kept) return { ...kept, failure: null };
+  let expressionName = null;
+  let failure = null;
+  try {
+    expressionName = directLakeExpressionOf((await client.getItemDefinition(workspaceId, modelId))?.definition);
+    if (!expressionName) failure = 'its definition names no Direct Lake expression';
+  } catch (error) {
+    failure = `Fabric didn't return its definition (${error.upstreamStatus ? reasonOf(error) : error.message})`;
+  }
+  expressionName ||= LEGACY_DIRECT_LAKE_EXPRESSIONS[0] || versions[0].expressionName;
+  return { ...(versions.find((v) => v.expressionName === expressionName) || build(expressionName)), failure };
 }
 
 const SKIP_REASONS = {
@@ -377,6 +429,7 @@ export function createProvisioner({
   };
 
   // A model keeps its ID through a rename, so the reports bound to it, its connection and its owner stay as they are.
+  // An update keeps the name of its Direct Lake expression too (see currentSemanticModelVersion).
   async function ensureSemanticModel(tenant, client, kind = 'reports') {
     const spec = MODELS[kind];
     const workspaceId = tenant.fabric.workspaceId;
@@ -393,9 +446,12 @@ export function createProvisioner({
     tenant.fabric[spec.id] = found.id;
     const { item: model, note, warning } = await renameItem(tenant, client, found, { name: spec.name, description });
     const notes = note ? [note] : [];
-    if (tenant.fabric[spec.fingerprint] !== fingerprint) {
-      await client.updateItemDefinition(workspaceId, model.id, definition);
-      tenant.fabric[spec.fingerprint] = fingerprint;
+    const published = tenant.fabric[spec.fingerprint];
+    const current = await currentSemanticModelVersion({ client, workspaceId, modelId: model.id, sqlDatabaseId: tenant.fabric.crm.sqlDatabaseId, rowLevelSecurity: spec.rowLevelSecurity, published });
+    if (current.failure) addActivity(tenant, `${model.displayName}: ${current.failure}, so the update keeps the Direct Lake expression name ${current.expressionName}`, 'warning');
+    if (published !== current.fingerprint) {
+      await client.updateItemDefinition(workspaceId, model.id, current.definition);
+      tenant.fabric[spec.fingerprint] = current.fingerprint;
       notes.push(`Updated ${model.displayName} to the current version`);
     }
     return notes.length ? result(notes, warning) : `${spec.name} is up to date`;

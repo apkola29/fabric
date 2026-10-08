@@ -14,6 +14,10 @@ export const LEGACY_ITEM_NAMES = Object.freeze({
   dataAgent: Object.freeze(['HiCRM Assistant']),
 });
 
+// The shared Direct Lake expression inside a semantic model. This one isn't renamed: Analysis Services can't rename it
+// in a definition update, so a model published under one of these keeps it.
+export const LEGACY_DIRECT_LAKE_EXPRESSIONS = Object.freeze(['DirectLake - HiCRM']);
+
 // Microsoft Graph tags on the app registrations and service principals the platform created for customers.
 export const legacyTenantTags = (tenantId) => [`hicrm-tenant-${tenantId}`];
 export const LEGACY_SERVICE_ACCOUNT_TAGS = Object.freeze(['hicrm-service-account']);

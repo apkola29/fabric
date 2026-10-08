@@ -179,6 +179,13 @@ export function createMockFabric({ stateFile = null, latencyMs = 0, jobDurationM
     return { type: 'AzureDataLakeStorage', path: url.endsWith('/') ? url : `${url}/` };
   }
 
+  // A semantic model's shared expressions (TMDL "expression <name> ="), and those its partitions read through.
+  function expressionsOf(definition) {
+    const tmdl = (definition?.parts || []).filter((p) => String(p.path || '').endsWith('.tmdl')).map((p) => decodePayload(p.payload || '')).join('\n');
+    const names = (pattern) => [...tmdl.matchAll(pattern)].map(([, name]) => (/^'.*'$/.test(name) ? name.slice(1, -1).replace(/''/g, "'") : name));
+    return { declared: names(/^expression\s+('(?:[^']|'')*'|[^\s=']+)\s*=/gm), read: names(/^\s*expressionSource:\s*(.+?)\s*$/gm) };
+  }
+
   function buildGold(workspaceId) {
     const lakehouse = itemsIn(workspaceId).find((i) => i.type === 'Lakehouse');
     const accounts = lakehouse && state.tables[lakehouse.id]?.crm_accounts;
@@ -492,7 +499,18 @@ export function createMockFabric({ stateFile = null, latencyMs = 0, jobDurationM
       },
       async updateItemDefinition(workspaceId, itemId, definition) {
         await pause();
-        itemFor(workspaceId, itemId, 'Contributor', 'update an item definition');
+        const item = itemFor(workspaceId, itemId, 'Contributor', 'update an item definition');
+        // As live Fabric answers (2026-10-07): Analysis Services can't rename, or drop, an expression the model's
+        // partitions read through in a definition update.
+        if (item.type === 'SemanticModel') {
+          const { declared } = expressionsOf(definition);
+          if (expressionsOf(state.definitions[itemId]).read.some((name) => !declared.includes(name))) {
+            throw new FabricApiError(
+              `Long-running operation failed: Dataset Workload failed to import the dataset with dataset id ${itemId}. Analysis Services error. Failed to save modifications to the server. Error returned: 'An unexpected error occurred (file 'TMSavePoint.cpp', line 1303, function 'TMSavePoint::ThrowObjectNotFoundError').'.`,
+              { code: null },
+            );
+          }
+        }
         state.definitions[itemId] = clone(definition);
         save();
         return null;

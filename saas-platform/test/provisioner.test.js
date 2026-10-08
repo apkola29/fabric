@@ -1,12 +1,13 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { ASSISTANT_MODEL_NAME, DIRECT_LAKE_EXPRESSION, MODEL_NAME } from '../src/crm/model.js';
+import { ASSISTANT_MODEL_NAME, DIRECT_LAKE_EXPRESSION, MODEL_NAME, buildSemanticModelDefinition } from '../src/crm/model.js';
 import { FabricApiError } from '../src/fabric/client.js';
 import { MOCK_TEMPLATE_ID, createMockFabric } from '../src/fabric/mock.js';
 import { agentModelSource } from '../src/platform/agent.js';
 import { entraDisplayName } from '../src/platform/identities.js';
-import { LEGACY_ITEM_NAMES, LEGACY_PRODUCT_NAMES } from '../src/platform/legacy-names.js';
+import { LEGACY_DIRECT_LAKE_EXPRESSIONS, LEGACY_ITEM_NAMES, LEGACY_PRODUCT_NAMES } from '../src/platform/legacy-names.js';
 import { CORE_ITEMS } from '../src/platform/plans.js';
+import { currentSemanticModelVersion, directLakeExpressionOf } from '../src/platform/provisioner.js';
 import { decodePayload, encodePayload } from '../src/util/definition.js';
 import { provisioningKit } from './support.js';
 
@@ -178,6 +179,16 @@ test('without a service account, required mode stops and preferred mode carries 
   assert.match(carried.steps['service-account'].detail, /shared platform identity/);
 });
 
+// Replaces an item's definition with `parts`, as an earlier version published it. Like Analysis Services, the emulator
+// won't rename the Direct Lake expression a model's tables read through in one update, so a model's tables move to the
+// new name while it declares both, then the old one goes.
+async function publishEarlierDefinition(client, workspaceId, itemId, parts) {
+  const path = 'definition/expressions.tmdl';
+  const old = (await client.getItemDefinition(workspaceId, itemId)).definition.parts.find((p) => p.path === path);
+  if (old) await client.updateItemDefinition(workspaceId, itemId, { parts: parts.map((p) => (p.path === path ? { ...p, payload: encodePayload(decodePayload(p.payload) + decodePayload(old.payload)) } : p)) });
+  await client.updateItemDefinition(workspaceId, itemId, { parts });
+}
+
 // A provisioned customer as an earlier version left it: items, connection and app registration under the earlier
 // names, model and agent definitions that named the product too, and the IDs the registry recorded. Returns the
 // connection's earlier name and a CRM account added before the upgrade.
@@ -186,13 +197,13 @@ async function rewindToEarlierNames(kit, tenant, client, { suffixed = false, dat
   const [product] = LEGACY_PRODUCT_NAMES;
   const earlierText = (text) =>
     text
-      .replaceAll(DIRECT_LAKE_EXPRESSION, `DirectLake - ${product}`)
+      .replaceAll(DIRECT_LAKE_EXPRESSION, LEGACY_DIRECT_LAKE_EXPRESSIONS[0])
       .replaceAll(ASSISTANT_MODEL_NAME, LEGACY_ITEM_NAMES.assistantModel[0])
       .replaceAll(MODEL_NAME, LEGACY_ITEM_NAMES.reportsModel[0]);
   for (const id of [tenant.fabric.semanticModelId, tenant.fabric.assistantModelId, tenant.fabric.dataAgentId]) {
     const { definition } = await client.getItemDefinition(ws, id);
     const parts = definition.parts.map((p) => ({ ...p, path: earlierText(p.path), payload: encodePayload(earlierText(decodePayload(p.payload))) }));
-    await client.updateItemDefinition(ws, id, { parts });
+    await publishEarlierDefinition(client, ws, id, parts);
   }
   const earlierNames = [
     [tenant.fabric.crmDatabaseId, database],
@@ -263,10 +274,12 @@ test('customers deployed under the earlier names are renamed in place: same IDs,
     assert.equal((await repo.counts()).accounts, accountsBefore, 'no rows lost or loaded again');
     assert.equal((await repo.scoped(null).getAccount(earlier.marker.id))?.name, earlier.marker.name);
 
-    // The definitions name the product as it is now.
+    // The definitions name the product as it is now, except the models' Direct Lake expression, whose earlier name
+    // Analysis Services can't change in an update: the models keep it, and their tables still read through it.
     const model = (await account.getItemDefinition(ws, ids.semanticModelId)).definition;
     const expressions = decodePayload(model.parts.find((p) => p.path === 'definition/expressions.tmdl').payload);
-    assert.ok(expressions.includes(DIRECT_LAKE_EXPRESSION) && !expressions.includes(LEGACY_PRODUCT_NAMES[0]), expressions);
+    assert.ok(expressions.includes(`expression '${LEGACY_DIRECT_LAKE_EXPRESSIONS[0]}' =`) && !expressions.includes(DIRECT_LAKE_EXPRESSION), expressions);
+    assert.equal(directLakeExpressionOf(model), LEGACY_DIRECT_LAKE_EXPRESSIONS[0]);
     const source = agentModelSource((await account.getItemDefinition(ws, ids.dataAgentId)).definition);
     assert.deepEqual([source.displayName, source.artifactId], [ASSISTANT_MODEL_NAME, ids.assistantModelId]);
     assert.equal(renamed.identity.displayName, entraDisplayName(kit.config, renamed));
@@ -418,5 +431,201 @@ test("a connection Fabric won't rename is deleted only once no model is bound to
     assert.deepEqual(connectionsOf(kit, ws).map((c) => c.id), [replacement]);
     for (const model of [reports, assistant]) assert.equal(live().bindings[model].connectionId, replacement);
     assert.equal(second.fabric.assistantConnectionId, replacement);
+  }
+});
+
+// The model definitions the provisioner's clients read and update in the emulated Fabric. Reading the definition of an
+// item in `unreadable` fails, as it does for a model with an encrypted sensitivity label.
+function recordDefinitionCalls(kit, { unreadable = new Set() } = {}) {
+  const calls = { reads: [], updates: [] };
+  const as = kit.fabric.as;
+  kit.fabric.as = (principal) => {
+    const client = as(principal);
+    return {
+      ...client,
+      async getItemDefinition(workspaceId, itemId) {
+        calls.reads.push(itemId);
+        if (unreadable.has(itemId)) throw new FabricApiError('POST /getDefinition failed (HTTP 400, OperationNotSupportedForItem): blocked', { upstreamStatus: 400, code: 'OperationNotSupportedForItem' });
+        return client.getItemDefinition(workspaceId, itemId);
+      },
+      async updateItemDefinition(workspaceId, itemId, definition) {
+        calls.updates.push({ itemId, definition: structuredClone(definition) });
+        return client.updateItemDefinition(workspaceId, itemId, definition);
+      },
+    };
+  };
+  return calls;
+}
+
+// A customer's two models as they were published before the product was renamed: their tables read OneLake through
+// the Direct Lake expression's earlier name, and the registry has an earlier version's fingerprints. `build` gives what
+// this version publishes for a model under an expression name.
+async function publishedBeforeTheRename(kit, tenant) {
+  const ws = tenant.fabric.workspaceId;
+  const account = kit.fabric.as(tenant.identity.objectId);
+  const models = { [tenant.fabric.semanticModelId]: true, [tenant.fabric.assistantModelId]: false };
+  const build = (modelId, expressionName) => buildSemanticModelDefinition({ workspaceId: ws, sqlDatabaseId: tenant.fabric.crm.sqlDatabaseId, rowLevelSecurity: models[modelId], expressionName });
+  for (const id of Object.keys(models)) await publishEarlierDefinition(account, ws, id, build(id, LEGACY_DIRECT_LAKE_EXPRESSIONS[0]).definition.parts);
+  Object.assign(tenant.fabric, { semanticModelFingerprint: 'earlier', assistantModelFingerprint: 'earlier' });
+  await kit.store.save(tenant);
+  return { account, models, build };
+}
+
+test("a model published before the product was renamed is updated under its Direct Lake expression's earlier name, then stays current", async () => {
+  const kit = provisioningKit();
+  const tenant = await kit.provisionNew();
+  assert.equal(tenant.status, 'ready', tenant.error);
+  const ws = tenant.fabric.workspaceId;
+  const { account, models, build } = await publishedBeforeTheRename(kit, tenant);
+  const [earlier] = LEGACY_DIRECT_LAKE_EXPRESSIONS;
+  // What the provisioner used to send, the model under the current name, fails as it did in live Fabric.
+  await assert.rejects(account.updateItemDefinition(ws, tenant.fabric.semanticModelId, build(tenant.fabric.semanticModelId).definition), /TMSavePoint::ThrowObjectNotFoundError/);
+
+  const calls = recordDefinitionCalls(kit);
+  const upgraded = await kit.provisioner.provision(tenant.id);
+  assert.equal(upgraded.status, 'ready', upgraded.error);
+  assert.equal(upgraded.steps['semantic-model'].detail, `Updated ${MODEL_NAME} to the current version`);
+  assert.ok(upgraded.steps['assistant-model'].detail.startsWith(`Updated ${ASSISTANT_MODEL_NAME} to the current version; `), upgraded.steps['assistant-model'].detail);
+  // Each model received this version's definition under the expression name it has: declared, and read through by
+  // every table.
+  const received = calls.updates.filter((u) => u.itemId in models);
+  assert.deepEqual(received.map((u) => u.itemId).sort(), Object.keys(models).sort());
+  for (const { itemId, definition } of received) {
+    assert.deepEqual(definition, build(itemId, earlier).definition);
+    const files = Object.fromEntries(definition.parts.map((p) => [p.path, decodePayload(p.payload)]));
+    assert.ok(files['definition/expressions.tmdl'].split('\n').includes(`expression '${earlier}' =`), files['definition/expressions.tmdl']);
+    const tables = Object.entries(files).filter(([path]) => path.startsWith('definition/tables/'));
+    assert.ok(tables.length > 0 && tables.every(([, tmdl]) => tmdl.endsWith(`\t\t\texpressionSource: '${earlier}'\n`)));
+    assert.ok(!Object.values(files).some((text) => text.includes(DIRECT_LAKE_EXPRESSION)));
+    assert.deepEqual((await account.getItemDefinition(ws, itemId)).definition, definition, 'the model has it');
+  }
+  assert.equal(upgraded.fabric.semanticModelFingerprint, build(tenant.fabric.semanticModelId, earlier).fingerprint);
+  assert.equal(upgraded.fabric.assistantModelFingerprint, build(tenant.fabric.assistantModelId, earlier).fingerprint);
+
+  // The next run finds both models current from their fingerprints: nothing read back, no update.
+  calls.reads.length = 0;
+  calls.updates.length = 0;
+  const again = await kit.provisioner.provision(tenant.id);
+  assert.equal(again.status, 'ready', again.error);
+  assert.equal(again.steps['semantic-model'].detail, `${MODEL_NAME} is up to date`);
+  assert.ok(again.steps['assistant-model'].detail.startsWith(`${ASSISTANT_MODEL_NAME} is up to date; `), again.steps['assistant-model'].detail);
+  assert.deepEqual([...calls.reads, ...calls.updates.map((u) => u.itemId)].filter((id) => id in models), []);
+});
+
+test("a new customer's models are published under DIRECT_LAKE_EXPRESSION", async () => {
+  const kit = provisioningKit();
+  const tenant = await kit.provisionNew();
+  assert.equal(tenant.status, 'ready', tenant.error);
+  const ws = tenant.fabric.workspaceId;
+  const account = kit.fabric.as(tenant.identity.objectId);
+  const models = [
+    [tenant.fabric.semanticModelId, tenant.fabric.semanticModelFingerprint, true],
+    [tenant.fabric.assistantModelId, tenant.fabric.assistantModelFingerprint, false],
+  ];
+  for (const [id, fingerprint, rowLevelSecurity] of models) {
+    const { definition } = await account.getItemDefinition(ws, id);
+    const published = buildSemanticModelDefinition({ workspaceId: ws, sqlDatabaseId: tenant.fabric.crm.sqlDatabaseId, rowLevelSecurity });
+    assert.equal(published.expressionName, DIRECT_LAKE_EXPRESSION);
+    assert.deepEqual(definition, published.definition);
+    assert.equal(fingerprint, published.fingerprint);
+    assert.equal(directLakeExpressionOf(definition), DIRECT_LAKE_EXPRESSION);
+    const texts = definition.parts.map((p) => decodePayload(p.payload));
+    assert.ok(texts.some((text) => text.split('\n').includes(`expression '${DIRECT_LAKE_EXPRESSION}' =`)));
+    assert.ok(!texts.some((text) => LEGACY_DIRECT_LAKE_EXPRESSIONS.some((name) => text.includes(name))));
+  }
+});
+
+test("when Fabric doesn't return a model's definition, a model this version didn't publish keeps the earlier expression name", async () => {
+  const kit = provisioningKit();
+  const before = await kit.provisionNew({ name: 'Fabrikam' });
+  const current = await kit.provisionNew({ name: 'Contoso' });
+  const { models, build } = await publishedBeforeTheRename(kit, before);
+  const [earlier] = LEGACY_DIRECT_LAKE_EXPRESSIONS;
+  const unreadable = new Set([...Object.keys(models), current.fabric.semanticModelId, current.fabric.assistantModelId]);
+  const calls = recordDefinitionCalls(kit, { unreadable });
+
+  const upgraded = await kit.provisioner.provision(before.id);
+  assert.equal(upgraded.status, 'ready', upgraded.error);
+  const received = calls.updates.filter((u) => u.itemId in models);
+  assert.deepEqual(received.map((u) => u.itemId).sort(), Object.keys(models).sort());
+  for (const { itemId, definition } of received) assert.deepEqual(definition, build(itemId, earlier).definition);
+  const warnings = upgraded.activity.filter((a) => a.level === 'warning').map((a) => a.message);
+  for (const name of [MODEL_NAME, ASSISTANT_MODEL_NAME]) {
+    const expected = `${name}: Fabric didn't return its definition (HTTP 400, OperationNotSupportedForItem), so the update keeps the Direct Lake expression name ${earlier}`;
+    assert.ok(warnings.includes(expected), warnings.join('\n'));
+  }
+
+  // Contoso's models were published by this version, under the current name, as their fingerprints show; and Fabrikam's
+  // are now. Neither needs reading or updating.
+  calls.reads.length = 0;
+  calls.updates.length = 0;
+  for (const tenant of [current, before]) {
+    const again = await kit.provisioner.provision(tenant.id);
+    assert.equal(again.status, 'ready', again.error);
+    assert.equal(again.steps['semantic-model'].detail, `${MODEL_NAME} is up to date`);
+  }
+  assert.deepEqual([...calls.reads, ...calls.updates.map((u) => u.itemId)].filter((id) => unreadable.has(id)), []);
+});
+
+test('the Direct Lake expression a deployed model reads through is found in its definition, as Fabric returns it', () => {
+  const definition = (files) => ({ parts: Object.entries(files).map(([path, text]) => ({ path, payload: encodePayload(text), payloadType: 'InlineBase64' })) });
+  const [earlier] = LEGACY_DIRECT_LAKE_EXPRESSIONS;
+  for (const expressionName of [DIRECT_LAKE_EXPRESSION, earlier, "Lake o'Data", 'DatabaseQuery']) {
+    assert.equal(directLakeExpressionOf(buildSemanticModelDefinition({ workspaceId: 'ws', sqlDatabaseId: 'db', expressionName }).definition), expressionName);
+  }
+  // As the service serializes TMDL: CRLF line ends, lineage tags, annotations.
+  const serialized = definition({
+    'definition/expressions.tmdl': `expression '${earlier}' =\r\n\t\tlet\r\n\t\t    Source = AzureStorage.DataLake("https://onelake/ws/db", [HierarchicalNavigation=true])\r\n\t\tin\r\n\t\t    Source\r\n\tlineageTag: 6a1b\r\n\r\n\tannotation PBI_IncludeFutureArtifacts = False\r\n`,
+    'definition/tables/Accounts.tmdl': `table Accounts\r\n\tlineageTag: 7c2d\r\n\r\n\tpartition Accounts = entity\r\n\t\tmode: directLake\r\n\t\tsource\r\n\t\t\tentityName: accounts\r\n\t\t\tschemaName: dbo\r\n\t\t\texpressionSource: '${earlier}'\r\n`,
+  });
+  assert.equal(directLakeExpressionOf(serialized), earlier);
+  // The one the partitions read through when the model declares more than one; else the only one it declares.
+  const parameter = "expression 'It''s a parameter' = \"x\"\n";
+  assert.equal(directLakeExpressionOf(definition({ 'definition/expressions.tmdl': `${parameter}expression Lake =\n\t\tlet\n`, 'definition/tables/A.tmdl': '\tpartition A = entity\n\t\tsource\n\t\t\texpressionSource: Lake\n' })), 'Lake');
+  assert.equal(directLakeExpressionOf(definition({ 'definition/expressions.tmdl': parameter })), "It's a parameter");
+  // TMSL, when the definition comes as model.bim.
+  const bim = { name: 'm', model: { expressions: [{ name: 'Lake', kind: 'm', expression: ['let'] }], tables: [{ name: 'A', partitions: [{ name: 'A', mode: 'directLake', source: { type: 'entity', entityName: 'a', expressionSource: 'Lake' } }] }] } };
+  assert.equal(directLakeExpressionOf(definition({ 'model.bim': JSON.stringify(bim) })), 'Lake');
+  // Nothing to go by.
+  const two = definition({ 'definition/tables/A.tmdl': '\t\t\texpressionSource: One\n', 'definition/tables/B.tmdl': '\t\t\texpressionSource: Two\n' });
+  for (const unknown of [undefined, null, { parts: [] }, definition({ 'model.bim': 'not JSON' }), two]) assert.equal(directLakeExpressionOf(unknown), null);
+});
+
+test('a deployed model is published under the expression name it has, with a fingerprint that then stays the same', async () => {
+  const options = { workspaceId: 'ws', modelId: 'model', sqlDatabaseId: 'db' };
+  const build = (expressionName) => buildSemanticModelDefinition({ workspaceId: 'ws', sqlDatabaseId: 'db', expressionName });
+  const [earlier] = LEGACY_DIRECT_LAKE_EXPRESSIONS;
+  const reads = [];
+  const serving = (definition) => ({ getItemDefinition: async (...args) => (reads.push(args), { definition }) });
+  const failing = (error) => ({
+    getItemDefinition: async () => {
+      throw error;
+    },
+  });
+  const summary = (version) => [version.expressionName, version.fingerprint, version.failure];
+
+  // This version published it, under the current or the earlier name: the fingerprint tells, nothing is read.
+  for (const expressionName of [DIRECT_LAKE_EXPRESSION, earlier]) {
+    const version = await currentSemanticModelVersion({ ...options, client: serving(null), published: build(expressionName).fingerprint });
+    assert.deepEqual(summary(version), [expressionName, build(expressionName).fingerprint, null]);
+  }
+  assert.deepEqual(reads, []);
+
+  // Otherwise, the name in its definition, even one no version gave it; published, its fingerprint stays the same.
+  const lake = build('Lake');
+  const first = await currentSemanticModelVersion({ ...options, client: serving(lake.definition), published: 'earlier' });
+  assert.deepEqual(summary(first), ['Lake', lake.fingerprint, null]);
+  assert.deepEqual(first.definition, lake.definition);
+  assert.deepEqual(reads, [['ws', 'model']]);
+  assert.equal((await currentSemanticModelVersion({ ...options, client: serving(lake.definition), published: first.fingerprint })).fingerprint, first.fingerprint);
+
+  // When Fabric doesn't tell, the earlier name.
+  const cases = [
+    [failing(new FabricApiError('POST /getDefinition failed (HTTP 400, OperationNotSupportedForItem): blocked', { upstreamStatus: 400, code: 'OperationNotSupportedForItem' })), "Fabric didn't return its definition (HTTP 400, OperationNotSupportedForItem)"],
+    [failing(new FabricApiError('Long-running operation failed: no details', { code: null })), "Fabric didn't return its definition (Long-running operation failed: no details)"],
+    [serving({ parts: [] }), 'its definition names no Direct Lake expression'],
+  ];
+  for (const [client, failure] of cases) {
+    assert.deepEqual(summary(await currentSemanticModelVersion({ ...options, client, published: 'earlier' })), [earlier, build(earlier).fingerprint, failure]);
   }
 });

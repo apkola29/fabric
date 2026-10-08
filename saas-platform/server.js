@@ -34,7 +34,7 @@ server.headersTimeout = 30 * 1000;
 server.listen(config.port, config.host, () => {
   const address = server.address();
   const base = config.appDomain || config.publicOrigin ? platformUrl(config) : `http://${config.host === '0.0.0.0' ? 'localhost' : config.host}:${address.port}/`;
-  console.log(`${config.productName} platform: ${base} (back office at ${base}admin)`);
+  console.log(`${config.productName}: ${base} (back office at ${base}admin)`);
   // Each customer's own address (APP_DOMAIN), where its people sign in.
   if (config.appDomain) for (const tenant of store.list()) console.log(`  ${tenant.name}: ${customerUrl(config, tenant)}`);
   console.log(`Mode: ${config.authMode}${mock ? ' (no calls to Fabric)' : ''} | environment: ${config.appEnv} | data: ${config.dataDir}`);

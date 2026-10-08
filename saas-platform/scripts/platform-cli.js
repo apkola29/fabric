@@ -9,7 +9,7 @@ import { PromptCancelled, askForSecrets } from '../src/auth/runtime-secrets.js';
 import { createTokenProvider } from '../src/auth/tokens.js';
 import { isGuid, loadConfig } from '../src/config.js';
 import { createCrmService } from '../src/crm/index.js';
-import { MODEL_NAME, buildSemanticModelDefinition, rolesFor } from '../src/crm/model.js';
+import { MODEL_NAME, rolesFor } from '../src/crm/model.js';
 import { TERRITORIES } from '../src/crm/schema.js';
 import { sampleSeedOf } from '../src/crm/seed.js';
 import { createFabricClient, dataAgentMcpUrl } from '../src/fabric/client.js';
@@ -21,7 +21,7 @@ import { brandOf, parseColor, setLogo } from '../src/platform/branding.js';
 import { createIdentityBroker } from '../src/platform/identities.js';
 import { importFromWeb, ingestBytes, refreshAgentAfterLoad } from '../src/platform/ingest.js';
 import { ADDONS, entitlements, getPlan, listPlans } from '../src/platform/plans.js';
-import { createProvisioner } from '../src/platform/provisioner.js';
+import { createProvisioner, currentSemanticModelVersion } from '../src/platform/provisioner.js';
 import { createEmbedConfig, listReporting } from '../src/platform/reporting.js';
 import { createSecretStore } from '../src/platform/secrets.js';
 import { parseDomains } from '../src/platform/sessions.js';
@@ -452,8 +452,11 @@ const commands = {
     const client = await scoped(tenant);
     const { workspaceId, semanticModelId, crm: db } = tenant.fabric;
     if (!semanticModelId) fail('The model is not published yet.');
-    const current = buildSemanticModelDefinition({ workspaceId, sqlDatabaseId: db.sqlDatabaseId }).fingerprint;
-    console.log(`${MODEL_NAME} ${semanticModelId}: version ${tenant.fabric.semanticModelFingerprint}${current === tenant.fabric.semanticModelFingerprint ? ' (current)' : ` (current is ${current}; run provision)`}`);
+    // The version provisioning would publish, under the name the model's Direct Lake expression keeps.
+    const version = tenant.fabric.semanticModelFingerprint;
+    const current = await currentSemanticModelVersion({ client, workspaceId, modelId: semanticModelId, sqlDatabaseId: db.sqlDatabaseId, published: version });
+    console.log(`${MODEL_NAME} ${semanticModelId}: version ${version}${current.fingerprint === version ? ' (current)' : ` (current is ${current.fingerprint}; run provision)`}`);
+    if (current.failure) console.log(`  ${current.failure}; provisioning keeps the Direct Lake expression name ${current.expressionName}`);
     for (const c of await client.listItemConnections(workspaceId, semanticModelId)) {
       console.log(`  Data source ${c.connectionDetails.type} ${c.connectionDetails.path}: ${c.connectivityType}${c.displayName ? ` "${c.displayName}" (${c.id})` : ''}`);
     }

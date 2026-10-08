@@ -13,6 +13,8 @@ export const MODEL_NAME = 'Platform app Insights';
 // query models that have roles (they can only embed them with an effective identity), and only people who see every
 // territory get the agent. Never embed it for customers.
 export const ASSISTANT_MODEL_NAME = 'Platform app Insights - Assistant';
+// The shared expression every table's partition reads OneLake through. A deployed model keeps the name it was published
+// with: Analysis Services can't rename it in a definition update.
 export const DIRECT_LAKE_EXPRESSION = 'DirectLake - Platform app';
 export const ONELAKE_DFS = 'https://onelake.dfs.fabric.microsoft.com';
 
@@ -397,7 +399,7 @@ function hierarchyTmdl(table) {
   return `${indent(1)}hierarchy ${tmdlName(table.hierarchy.name)}\n${levels.join('')}`;
 }
 
-function tableTmdl(table) {
+function tableTmdl(table, expressionName) {
   const blocks = [];
   const header = description(table.description, 0) + `table ${tmdlName(table.model)}\n` + (table.dateTable ? `${indent(1)}dataCategory: Time\n` : '');
   blocks.push(header);
@@ -411,7 +413,7 @@ function tableTmdl(table) {
       `${indent(2)}source\n` +
       `${indent(3)}entityName: ${table.name}\n` +
       `${indent(3)}schemaName: dbo\n` +
-      `${indent(3)}expressionSource: ${tmdlName(DIRECT_LAKE_EXPRESSION)}\n`,
+      `${indent(3)}expressionSource: ${tmdlName(expressionName)}\n`,
   );
   return blocks.join('\n');
 }
@@ -457,8 +459,10 @@ function roleFiles() {
 
 // Returns the Fabric item definition (TMDL parts) plus a fingerprint, so provisioning can tell when a customer's
 // model is behind the current template and push the update. `rowLevelSecurity: false` builds the assistant's twin.
-export function buildSemanticModelDefinition({ workspaceId, sqlDatabaseId, rowLevelSecurity = true }) {
+// `expressionName` names the shared Direct Lake expression: an update keeps the one the deployed model has.
+export function buildSemanticModelDefinition({ workspaceId, sqlDatabaseId, rowLevelSecurity = true, expressionName = DIRECT_LAKE_EXPRESSION }) {
   if (!workspaceId || !sqlDatabaseId) throw new Error('The semantic model needs the workspace and SQL database IDs.');
+  if (typeof expressionName !== 'string' || !expressionName.trim()) throw new Error("The semantic model's Direct Lake expression needs a name.");
   const files = {
     'definition.pbism': JSON.stringify(
       {
@@ -480,20 +484,20 @@ export function buildSemanticModelDefinition({ workspaceId, sqlDatabaseId, rowLe
       '\n',
     'definition/expressions.tmdl':
       "/// The customer's CRM database as replicated to OneLake (Delta tables under Tables/dbo).\n" +
-      `expression ${tmdlName(DIRECT_LAKE_EXPRESSION)} =\n` +
+      `expression ${tmdlName(expressionName)} =\n` +
       `${indent(2)}let\n` +
       `${indent(2)}    Source = AzureStorage.DataLake("${oneLakeLocation(workspaceId, sqlDatabaseId)}", [HierarchicalNavigation=true])\n` +
       `${indent(2)}in\n` +
       `${indent(2)}    Source\n`,
     'definition/relationships.tmdl': relationshipsTmdl(),
   };
-  for (const table of CRM_TABLES) files[`definition/tables/${table.model}.tmdl`] = tableTmdl(table);
+  for (const table of CRM_TABLES) files[`definition/tables/${table.model}.tmdl`] = tableTmdl(table, expressionName);
   if (rowLevelSecurity) Object.assign(files, roleFiles());
   const fingerprint = createHash('sha256')
     .update(JSON.stringify(Object.entries(files).sort()))
     .digest('hex')
     .slice(0, 16);
-  return { definition: { parts: Object.entries(files).map(([path, text]) => textPart(path, text)) }, fingerprint, files };
+  return { definition: { parts: Object.entries(files).map(([path, text]) => textPart(path, text)) }, fingerprint, files, expressionName };
 }
 
 // What the data agent gets to see: visible columns and measures, with their descriptions. IDs are left out: they help

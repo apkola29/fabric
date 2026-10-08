@@ -1,12 +1,13 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { QUICK_ANSWER_MEASURES, describeVisual, parseRequest } from '../src/crm/insights.js';
-import { ALL_TERRITORIES_ROLE, MEASURES, agentTables, buildSemanticModelDefinition, fieldCatalog, rolesFor } from '../src/crm/model.js';
+import { ALL_TERRITORIES_ROLE, DIRECT_LAKE_EXPRESSION, MEASURES, agentTables, buildSemanticModelDefinition, fieldCatalog, rolesFor } from '../src/crm/model.js';
 import { createCrmRepository } from '../src/crm/repository.js';
 import { CRM_RELATIONSHIPS, CRM_SCHEMA_VERSION, CRM_TABLES, TERRITORIES, schemaStatements } from '../src/crm/schema.js';
 import { fabricateCrm } from '../src/crm/seed.js';
 import { SQL_RETRY_DELAYS_MS, createFabricSqlStore, createSqliteStore, sqlRetryable } from '../src/crm/stores.js';
 import { buildSemanticModelAgentDefinition } from '../src/platform/agent.js';
+import { LEGACY_DIRECT_LAKE_EXPRESSIONS } from '../src/platform/legacy-names.js';
 import { decodePayload } from '../src/util/definition.js';
 
 const TODAY = new Date('2026-10-01T12:00:00Z');
@@ -349,6 +350,31 @@ test('the semantic model is generated from the schema: Direct Lake, hidden keys,
   const relationshipFunctions = MEASURES.filter((m) => /\b(USERELATIONSHIP|CROSSFILTER)\s*\(/i.test(m.expression)).map((m) => m.name);
   assert.deepEqual(relationshipFunctions, [], 'measures that would fail under row-level security');
   assert.match(MEASURES.find((m) => m.name === '# Accounts Owned').expression, /TREATAS\(VALUES\('Sales Reps'\[Rep ID\]\), 'Accounts'\[Account Owner ID\]\)/);
+});
+
+test("the model's Direct Lake expression is named DIRECT_LAKE_EXPRESSION, or the name a deployed model keeps", () => {
+  const options = { workspaceId: 'ws-1', sqlDatabaseId: 'db-1' };
+  const current = buildSemanticModelDefinition(options);
+  assert.equal(current.expressionName, DIRECT_LAKE_EXPRESSION);
+  assert.deepEqual(buildSemanticModelDefinition({ ...options, expressionName: DIRECT_LAKE_EXPRESSION }), current);
+  const tmdlName = (name) => (/^[A-Za-z_]\w*$/.test(name) ? name : `'${name.replace(/'/g, "''")}'`);
+  for (const expressionName of [DIRECT_LAKE_EXPRESSION, ...LEGACY_DIRECT_LAKE_EXPRESSIONS, "Lake o'Data", 'DatabaseQuery']) {
+    for (const rowLevelSecurity of [true, false]) {
+      const model = buildSemanticModelDefinition({ ...options, rowLevelSecurity, expressionName });
+      assert.equal(model.expressionName, expressionName);
+      assert.ok(model.files['definition/expressions.tmdl'].split('\n').includes(`expression ${tmdlName(expressionName)} =`), model.files['definition/expressions.tmdl']);
+      for (const table of CRM_TABLES) {
+        assert.ok(model.files[`definition/tables/${table.model}.tmdl`].endsWith(`\t\t\texpressionSource: ${tmdlName(expressionName)}\n`), `${table.model} reads through ${expressionName}`);
+      }
+      // Nothing else changes, and the fingerprint is stable for the name.
+      const same = buildSemanticModelDefinition({ ...options, rowLevelSecurity });
+      for (const [path, text] of Object.entries(same.files)) assert.equal(model.files[path], text.replaceAll(tmdlName(DIRECT_LAKE_EXPRESSION), () => tmdlName(expressionName)), path);
+      assert.deepEqual(Object.keys(model.files), Object.keys(same.files));
+      assert.equal(buildSemanticModelDefinition({ ...options, rowLevelSecurity, expressionName }).fingerprint, model.fingerprint);
+      assert.equal(model.fingerprint === same.fingerprint, expressionName === DIRECT_LAKE_EXPRESSION);
+    }
+  }
+  for (const expressionName of ['', ' ', null]) assert.throws(() => buildSemanticModelDefinition({ ...options, expressionName }), /expression needs a name/);
 });
 
 test('the data agent sees the semantic model with measures and descriptions, but not hidden keys', () => {
