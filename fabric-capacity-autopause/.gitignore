@@ -1,0 +1,9 @@
+# Test and tooling output
+testResults.xml
+TestResults*.xml
+coverage.xml
+*.log
+
+# Live acceptance test result files
+uat-results*.json
+autopause-uat-*.json

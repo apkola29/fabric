@@ -1,0 +1,49 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentParameters.json#",
+  "contentVersion": "1.0.0.0",
+  "parameters": {
+    "location": {
+      "value": "<azure-region>"
+    },
+    "resourceGroupName": {
+      "value": "<resource-group-name>"
+    },
+    "namePrefix": {
+      "value": "<name-prefix>"
+    },
+    "timeZone": {
+      "value": "UTC"
+    },
+    "scheduleStartTime": {
+      "value": "<future-ISO-8601-time-with-offset>"
+    },
+    "backstopStartTime": {
+      "value": ""
+    },
+    "alertEmails": {
+      "value": [
+        "ops@example.com"
+      ]
+    },
+    "includeWritePermission": {
+      "value": false
+    },
+    "assignRoleAtSubscription": {
+      "value": true
+    },
+    "customRoleName": {
+      "value": "<custom-role-name>"
+    },
+    "additionalAssignableScopes": {
+      "value": []
+    },
+    "tags": {
+      "value": {
+        "environment": "example"
+      }
+    },
+    "azPackageVersion": {
+      "value": "12.3.0"
+    }
+  }
+}
