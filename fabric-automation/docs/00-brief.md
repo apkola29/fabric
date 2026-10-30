@@ -1,0 +1,81 @@
+# Fabric Code Factory — Project brief
+
+Version 0.1 · 2026-10-30 · Status: design phase (nothing is built yet)
+
+## 1. The idea (from the requester)
+
+- Fabric workspaces are backed up in Git.
+- When a new requirement (a change or a feature) comes in, a **code factory** that holds all the necessary knowledge, skills and templates picks it up and implements it **silently**.
+- It opens a **new branch**, does the work, and **waits for the changes to be approved/tested** by a human.
+- It behaves like an **automation-led data engineer**: it does the work **plus** validation and quality tests, and delivers a final result automatically.
+- It takes **intakes**, runs **behind the scenes**, and does so **securely**.
+- It should use the **latest and greatest skills and top knowledge**.
+- Scope is the **whole Fabric / Power BI estate**: reports, semantic models, data-agent creation, ontologies, notebooks, pipelines, lakehouses, warehouses, real-time items and more. Project Osmos (autonomous Lakehouse/OneLake engineering) is one workload pack among many, not the whole factory.
+
+## 2. Way of working
+
+1. Deep research on existing code factories and autonomous development systems (natural language in, iterative work with checks and balances out).
+2. Work out what we need, plan, design, and **validate the design with multiple models**.
+3. Solid design first, then implement slowly (phased, each phase gated by exit criteria).
+
+## 3. Operating model
+
+| Role | Model |
+|---|---|
+| Orchestrator, caretaker, default worker | Claude Sonnet 5.5, max reasoning |
+| Cross-verification and extra parallel workers | GPT 6.1 Sol, Gemini 4 Argon, Grok 4.7 |
+
+Independent work runs in parallel. Verification is risk-based. Disagreements are settled by evidence (running builds/tests, reading primary sources), not by vote.
+
+## 4. Research ground rules (apply to every research thread)
+
+1. Today is 2026-10-30. Establish the state of the art as of NOW using live web research. Do not rely on training-data memory: products are renamed, acquired or discontinued quickly. Verify that every system named in your thread exists and what it can do today. If something named does not exist, was renamed, merged or discontinued, or you cannot verify it, say so explicitly instead of guessing. Also add notable systems that were not listed.
+2. Prefer primary sources: official docs and Microsoft Learn pages, vendor engineering blogs, GitHub repos (README, releases, changelogs, issues), papers, benchmark leaderboards. Record the publication or last-updated date of every source. Treat sources older than about 12 months as stale unless foundational, and flag them.
+3. Separate facts (cite a URL) from your own inferences. Write UNVERIFIED next to any claim you could not confirm in a source. Flag vendor marketing claims as such. Never fabricate URLs, versions, metrics or quotes.
+4. Read-only research. Do not modify any existing file or any external system.
+5. Depth over breadth where it affects a design decision. Stop when the listed items are covered or after roughly 40 distinct sources, whichever comes first.
+6. CHECKPOINT YOUR WORK. A host restart can cancel every running agent without warning (it happened on 2026-10-30 at 10:56 CDT and wiped out a full run). Within your first 5 tool calls, create your raw report file with the section skeleton and `STATUS: PARTIAL` as its first line. After roughly every 5 sources, or every 3 minutes, update that file in place (edit the existing file; do not recreate it) with the findings so far. When you finish, set the first line to `STATUS: COMPLETE`. If your file already exists with `STATUS: PARTIAL` when you start, you are a relaunch: read it and continue from it instead of starting over.
+7. Flat topology. Do not spawn sub-agents; do the work yourself.
+8. Do not use the orchestrator's SQL or todo tools. Your only write target is your own raw report file.
+
+## 5. Research report format
+
+Markdown, about 2,500 words excluding sources:
+
+1. Executive findings: at most 10 bullets, most decision-relevant first.
+2. Evidence tables as specified in the thread.
+3. Transferable patterns for a Fabric code factory, plus anti-patterns and failure modes actually observed (with evidence).
+4. Decision-driving claims: up to 10 claims the design would rest on, each with source URL, source date and confidence (H/M/L). Other models will cross-verify these.
+5. Gaps and uncertainties.
+6. Sources: URL | title | publication or updated date | primary or secondary.
+
+## 6. Research threads
+
+| Thread | Topic | Raw report |
+|---|---|---|
+| T1 | Commercial and hosted autonomous coding-agent platforms | research/raw/t1-platforms.md |
+| T2 | OSS agents, frameworks, protocols, skills standards, reference architectures | research/raw/t2-oss-frameworks.md |
+| T3a | Microsoft-native agentic analytics: Copilot in Fabric and Power BI, data agents, Fabric IQ, MCP servers, CLI, official skills, Project Osmos | research/raw/t3a-ms-native.md |
+| T3b | Data-platform agents: Databricks, Snowflake, dbt, Google, AWS | research/raw/t3b-data-platforms.md |
+| T3c | BI, semantic-layer, ELT and data-testing/observability vendors | research/raw/t3c-bi-elt-testing.md |
+| T4 | Fabric and Power BI platform mechanics (Git, APIs, CI/CD, testing, limits) | research/raw/t4-fabric-mechanics.md |
+| T5 | Security, safety and governance | research/raw/t5-security-governance.md |
+| T6 | Runtime, hosting, orchestration and model gateway options | research/raw/t6-runtime-hosting.md |
+| T7 | Intake, spec, iteration, verification, evaluation and metrics | research/raw/t7-patterns-evals.md |
+
+## 7. Log
+
+- 2026-10-30: brief created; threads T1–T7 launched.
+- 2026-10-30 10:56 CDT: the host session shut down (routine) and resumed twice. All 9 running agents were cancelled before writing any file; about 7.6 minutes of research per agent was lost. Disk state was unaffected.
+- 2026-10-30, after the restart: relaunched with the checkpoint rule (6), flat topology (7), and T3 split into T3a/T3b/T3c (the original T3 had started delegating to its own sub-agents because its scope was too wide).
+- 2026-10-30 11:53–11:56 CDT: model route smoke test. Session log confirms gpt-6.1-sol, gemini-4-argon, grok-4.7 and claude-sonnet-5.5 each ran as requested with no fallback, and all four reached live web search. File writes: Sonnet 5.5 and Grok 4.7 can; GPT 6.1 Sol and Gemini 4 Argon research agents cannot, so their reviews come back inline and the orchestrator saves them.
+- 2026-10-30 11:58 CDT: 9 research agents (T1, T2, T3a, T3b, T3c, T4, T5, T6, T7) and 2 local survey agents relaunched. All 9 skeleton checkpoints were on disk within about a minute.
+- 2026-10-30 12:00 CDT: docs/01-requirements.md v0.1 written (28 functional and 14 non-functional requirements, 9 assumptions, proposed pilot success criteria).
+- 2026-10-30 12:2x CDT: requester directive: use the official Fabric skills and, where needed, the Fabric Core and FabricIQ MCP servers. T3a and T4 were told to treat skills-for-fabric and the Fabric MCP docs tools as primary sources and to add an "MCP coverage" column.
+- 2026-10-30 12:3x CDT: orchestrator grounding done with read-only calls only (Core command listing, docs item-type list, one capacity inventory). Written to research/raw/o1-fabric-surface-grounding.md. Local surveys (L1 on the skills repository, L2 on the requester's lab) were kept out of this repository and never sent to external verifiers. Requirements bumped to v0.2: 34 functional and 17 non-functional requirements, 13 assumptions, 10 open questions.
+- 2026-10-30 12:5x to 13:09 CDT: all 9 research threads complete. Decision register v0.1 (24 decisions) and landscape digest written.
+- 2026-10-30 13:1x to 13:27 CDT: cross-verification by Gemini, GPT and Grok over 100 claims: 72 confirmed, 27 partly, 1 contradicted, 0 unverifiable. All corrections applied. Design v0.1 written (3 parts).
+- 2026-10-30 13:3x to 13:51 CDT: design review by three model families (GPT 6.1 Sol: architecture, Gemini 4 Argon: completeness and Fabric fidelity, Grok 4.7: red team) plus the author's own review. 70 findings.
+- 2026-10-30 13:53 to about 14:12 CDT: disposition log (44 accepted, 6 modified, 3 phased, 17 merged, 0 rejected), requirements v0.3, decision register v0.2 (32 decisions), design v0.2. Four groups of facts were re-checked directly against Microsoft Learn and the gh-aw documentation (see the log). v0.1 files archived in `archive/`.
+- 2026-10-30 about 14:12 CDT: closure check sent to the three reviewers.
+- 2026-10-30 14:12 to 14:37 CDT: closure replies in and applied. Gemini: 12 closed, 1 partly, 5 new problems. GPT: 16 closed, 2 partly, 3 new. Grok: 9 closed, 1 partly (phased on purpose), 3 new. All three said the design is good enough to start Phase 0. Two more facts re-fetched (the recoverable-item delete permission, and the gh-aw network and safe-output defaults). Design v0.2 now carries four rulesets, the I-8 capability pin, a stale-worker handover rule and a corrected ready-for-review condition. Nothing has been built or deployed. The only tenant calls this whole project were read-only.

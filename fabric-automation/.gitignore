@@ -1,0 +1,19 @@
+# Local-only material is never published.
+private/
+research/local/
+docs/research/local/
+
+# Secrets and credentials
+*.env
+.env.*
+*.pfx
+*.pem
+*.key
+credentials.*
+
+# Tooling output
+__pycache__/
+*.pyc
+.pytest_cache/
+tmp*/
+*.tmp

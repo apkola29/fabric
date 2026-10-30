@@ -13,6 +13,7 @@ Tools and scripts for working with [Microsoft Fabric](https://learn.microsoft.co
 | [`semantic-model-dax/`](semantic-model-dax/) | List semantic models and run DAX queries via Power BI REST API |
 | [`saas-platform/`](saas-platform/) | A multitenant SaaS app on Fabric: a workspace and a service principal per customer, embedded Power BI reports with row-level security, data agents over MCP, credentials asked for at runtime, and a validator for every control |
 | [`fabric-capacity-autopause/`](fabric-capacity-autopause/) | Pause Fabric capacities on a schedule (for example every night) with an Azure Automation runbook, a managed identity and no stored secrets. Cuts pay-as-you-go cost for test, dev and periodic workloads (Bicep + PowerShell) |
+| [`fabric-automation/`](fabric-automation/) | Design and research for an autonomous, Git-backed code factory for Fabric and Power BI: a requirement goes in, a verified pull request comes out, and a person approves. Requirements, decisions, architecture and security design, and the multi-model review trail. Documentation only; nothing is built yet |
 
 ## Disclaimer
 

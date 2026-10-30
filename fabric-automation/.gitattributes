@@ -1,0 +1,2 @@
+# Keep line endings identical on every machine so file hashes can be compared with GitHub.
+* text=auto eol=lf

@@ -1,0 +1,26 @@
+# Checks the concrete claims in the fabric-automation documents (versions, packages,
+# documentation wording) against their public sources. Run it by hand: it needs the
+# open internet, which a GitHub-hosted runner has and some networks do not.
+name: fabric-automation facts
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  facts:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Check the claims
+        working-directory: fabric-automation
+        run: |
+          python3 scripts/verify_facts.py --write "$RUNNER_TEMP/fact-check-results.md"
+          cat "$RUNNER_TEMP/fact-check-results.md" >> "$GITHUB_STEP_SUMMARY"
