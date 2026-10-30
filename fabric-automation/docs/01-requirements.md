@@ -112,7 +112,7 @@ Priority: M = must, S = should, C = could.
 |---|---|---|
 | FR-35 | M | One authoritative run store (compare-and-swap, fenced leases, operation intents with provider IDs). A reconciler resumes stale runs. An ambiguous outcome after a lost response is resolved by querying the provider, and then by adopting, rebuilding or quarantining. |
 | FR-36 | M | Four separate lifetimes: compute lease, item reservation, workspace expiry and the pull request. One must not end another. |
-| FR-37 | M | A required approval-policy check enforces separation of duties: at least one eligible human approval (two for T2), never the requester and never a bot, bound to the head commit, the tier and the approved spec digest, and re-evaluated on every push or review. Required checks are pinned to the publishing App. |
+| FR-37 | M | A required approval-policy check enforces separation of duties: at least one eligible human approval (two for T2), never the requester and never a bot, bound to the head commit, the tier and the approved spec digest, and re-evaluated on every push, review and code-owners team change, with the window bounded in the design (3.6). Required checks are pinned to the publishing App. |
 | FR-38 | M | Plan first, then classify, then approve a digest of spec and plan. The tier is recomputed from the actual semantic diff. A higher tier or a wider scope voids the approval. |
 | FR-39 | M | Test integrity by construction: the spec, fixtures, generators and oracle tests are frozen against the implementer after approval. Hidden checks are unreachable from the agent job. Failure feedback to the implementer is a fixed set of categories. At least one held-out input exists even for T1. Oracle tests are declarative data run by a pinned harness. |
 | FR-40 | M | A complete deployment manifest (dependency closure, schedules removed, every reference and data source resolved against an allow-list and a connection catalogue) is validated before anything is created. The policy engine parses item definitions and rejects connection, role, label, schedule and external-URL changes anywhere in an item. |
@@ -160,7 +160,7 @@ These were set by default because the requester was unavailable for the scoping 
 | A7 | First audience is a personal proof of concept in a single tenant. | Team or customer use needs tenancy, onboarding and support design. |
 | A8 | No live tenant discovery has been done. Feasibility is proven by Phase 0 spikes, not assumed. | Platform limits could force design changes. |
 | A9 | Models: Sonnet 5.5 (max reasoning) leads. GPT 6.1 Sol, Gemini 4 Argon and Grok 4.7 verify. All four are reachable today through the Copilot agent harness. | Another gateway may be needed for an enterprise-controlled path. |
-| A10 | The pilot tenant has one existing capacity, shared with demo workspaces. A dedicated small sandbox capacity is needed. | Validation could throttle or pause demos, or fail while the shared capacity is paused. |
+| A10 | A dedicated small sandbox capacity is needed, because a capacity shared with other workloads can be throttled or paused by them. | Validation could throttle or pause other workloads, or fail while a shared capacity is paused. |
 | A11 | The Git provider choice depends on tenant settings. GitHub needs a tenant switch (off by default) and a personal access token stored in a Fabric connection. Azure DevOps works by default and supports a service principal credential. **v0.3:** this now affects only the one-time backup of the workspace to Git and any later automated dev sync, not the validation path. | The pilot may have to use Azure DevOps for the backup step. |
 | A12 | Git integration status, checked against Learn on 2026-10-30 (the supported-items page, updated 2026-10-17): semantic model and report are preview, the ontology is listed and is preview, and data agents are listed with no preview tag while the data-agent source-control page still calls the feature preview. The installed skill reference had shown the ontology as absent. | Preview limits or API changes could break the pipeline. |
 | A13 | The requester directed use of the official Fabric skills and, where needed, the Fabric Core and FabricIQ MCP servers. Only read-only calls have been made so far. | Writes and non-MCP (REST or CLI) live calls need explicit scoping and approval. |
@@ -181,7 +181,7 @@ Named PS-1 to PS-6 from v0.3. Earlier drafts called them S1 to S6, which collide
 | # | Criterion |
 |---|---|
 | PS-1 | At least 70% of a golden requirement set for the pilot slice ends in a PR that passes every gate within two iterations. |
-| PS-2 | Zero policy violations: no write outside the factory branch and the ephemeral workspace, no secret in a diff or log. |
+| PS-2 | Zero policy violations: no write outside the factory branch and the ephemeral workspace, no secret in a diff or log, and no merge without the required eligible approvals (checked by the merge-time audit). |
 | PS-3 | At least 90% of seeded defects (a red-team set of bad requirements and regressions) are caught by a gate or by the verifier. |
 | PS-4 | Median reviewer time per PR is 15 minutes or less. |
 | PS-5 | At least 60% of PRs are accepted with at most one revision. |

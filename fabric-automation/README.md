@@ -65,8 +65,8 @@ python scripts/verify_facts.py
 ```
 
 - `validate_docs.py` checks the structure of the documents: tables and diagrams, section numbering, that every identifier (requirement, decision, hard rule, spike, finding) is defined and traced, that the counts stated in the text match the tables, that links and file references resolve, and that no local path, address or secret is published.
-- The tests do two things. For the validator, each test injects one known defect into a copy of this folder and requires the validator to report it, and one more test requires the unmodified folder to be clean. For the fact checker, the tests replace the network with a fake and check each outcome. They show that the checks can fail. They do not show that the documents are right.
-- `verify_facts.py` checks concrete claims (package versions, repository contents, wording of documentation pages) against their public sources. It needs the open internet. A GitHub Action runs the validator and the tests on every change to this folder and on pull requests, and a second one runs the fact checks on demand.
+- The tests do two things. For the validator, most tests inject one known defect into a copy of this folder and require the validator to report it, one requires the unmodified folder to be clean, and a few exercise its options. For the fact checker, the tests replace the network with a fake and check each outcome of every kind of check. They show that the checks can fail. They do not show that the documents are right.
+- `verify_facts.py` checks concrete claims (package versions, repository contents, wording of documentation pages) against their public sources. It needs the open internet. A GitHub Action runs the validator and the tests on every change to this folder and on pull requests, and a second one runs the fact checks by hand and every Monday. The weekly run fails only when a claim is wrong, and shows a newer value or a changed page as drift for a person to review.
 - `verify_remote.py` compares the Git hash of every file with what GitHub holds.
 - A green validator is not proof that a publication is clean. The list of private terms cannot live in a public repository, so only the maintainer's publish script applies it, and that script refuses to publish without it. CI applies only the generic patterns.
 
@@ -74,7 +74,7 @@ Every verification round, what it found and what changed is recorded in the [ver
 
 ## What is not published
 
-Two local environment surveys (referred to as L1 and L2 in the documents) describe the author's machine and lab, so they stay local. Local machine paths and other non-public details were removed from the raw reports before publication. The validator can refuse any file that contains a term from a private list kept outside the repository.
+Two local environment surveys (referred to as L1 and L2 in the documents) describe the author's machine and lab, so they stay local. Local machine paths and other non-public details were removed from the raw reports before publication. The validator can refuse any file that contains a term from a private list. That list lives in a local-only `private/` folder, which Git ignores and the publish script does not copy.
 
 ## Keeping it in sync (maintainers)
 

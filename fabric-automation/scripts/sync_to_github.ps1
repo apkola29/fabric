@@ -22,8 +22,9 @@ The local clone of the repository. Defaults to ..\repo next to this project.
 
 .PARAMETER DenyList
 File of private terms that must never be published. Defaults to $env:FABRIC_AUTOMATION_DENYLIST, then to
-the private folder next to the project if it exists. Publishing stops when no list is found, because the
-generic leak patterns cannot see private terms. -NoDenylist overrides that for one run.
+private\denylist.txt in the project folder (Git, the mirror and the validators all ignore that folder), then
+to private\denylist.txt next to the project. Publishing stops when no list is found, because the generic
+leak patterns cannot see private terms. -NoDenylist overrides that for one run.
 
 .PARAMETER NoDenylist
 Publish without the private term check. Use only when the list really does not exist; the run prints a warning.
@@ -59,8 +60,9 @@ $FabricDir = Split-Path $Project -Parent
 if (-not $CloneDir) { $CloneDir = Join-Path $FabricDir 'repo' }
 if (-not $DenyList) { $DenyList = $env:FABRIC_AUTOMATION_DENYLIST }
 if (-not $DenyList) {
-    $candidate = Join-Path (Split-Path $FabricDir -Parent) 'fabric-code-factory\private\denylist.txt'
-    if (Test-Path $candidate) { $DenyList = $candidate }
+    foreach ($candidate in @((Join-Path $Project 'private\denylist.txt'), (Join-Path $FabricDir 'private\denylist.txt'))) {
+        if (Test-Path $candidate) { $DenyList = $candidate; break }
+    }
 }
 
 $Workflows = @('fabric-automation-validate.yml', 'fabric-automation-facts.yml')
@@ -84,13 +86,22 @@ function Invoke-Git([string[]]$GitArgs, [switch]$AllowFailure) {
     Invoke-Native -Exe 'git' -Arguments (@('-C', $CloneDir) + $GitArgs) -AllowFailure:$AllowFailure
 }
 
+function Assert-ManagedPaths([string]$Range) {
+    # Every commit in the range, not just the net diff, may touch only the managed paths and none may be a merge.
+    $merges = [int](Invoke-Git @('rev-list', '--merges', '--count', $Range)).Output
+    if ($merges -gt 0) { throw "refusing to push: $Range holds $merges merge commit(s)" }
+    $touched = @((Invoke-Git @('log', '--format=', '--name-only', $Range)).Output -split "`n" | Where-Object { $_ } | Sort-Object -Unique)
+    $outside = @($touched | Where-Object { -not ($_ -like 'fabric-automation/*' -or $WorkflowPaths -contains $_ -or ($IncludeReadme -and $_ -eq 'README.md')) })
+    if ($outside.Count -gt 0) { throw "refusing to push: $($outside.Count) path(s) outside the managed set are in $Range, for example '$($outside[0])'" }
+}
+
 Step 'Checking tools and accounts'
 foreach ($tool in 'git', 'gh', 'python') {
     if (-not (Get-Command $tool -ErrorAction SilentlyContinue)) { throw "$tool is not installed or not on PATH" }
 }
 if (-not (Test-Path (Join-Path $CloneDir '.git'))) { throw "$CloneDir is not a git clone" }
 $origin = (Invoke-Git @('remote', 'get-url', 'origin')).Output
-if ($origin -notmatch [regex]::Escape($Repo)) { throw "origin is $($origin -replace '(?<=://)[^/@]*@', ''), expected $Repo" }
+if ($origin -notmatch ('(^|[/:@])' + [regex]::Escape($Repo) + '(\.git)?/?$')) { throw "origin is $($origin -replace '(?<=://)[^/@]*@', ''), expected $Repo" }
 $owner = $Repo.Split('/')[0]
 $login = (Invoke-Native -Exe 'gh' -Arguments @('api', 'user', '--jq', '.login')).Output
 if ($login -ne $owner) { throw "gh is signed in as '$login', not '$owner'. Run: gh auth switch -u $owner" }
@@ -129,6 +140,13 @@ if ($behind -gt 0) {
     Invoke-Git @('merge', '--ff-only', "origin/$Branch") | Out-Null
     Write-Host '    fast-forwarded'
 }
+if ($ahead -gt 0 -and $behind -eq 0) {
+    # Commits left by an earlier run were not scanned by this run's validator. The mirror below rebuilds their
+    # net effect from the validated folder, so they are folded away instead of being pushed as they are.
+    Assert-ManagedPaths "origin/$Branch..HEAD"
+    Invoke-Git @('reset', '--soft', "origin/$Branch") | Out-Null
+    Write-Host "    folded $ahead earlier local commit(s) into this run"
+}
 
 Step 'Mirroring the folder into the clone'
 $destination = Join-Path $CloneDir 'fabric-automation'
@@ -162,14 +180,7 @@ if (-not $changed) {
 
 $pending = [int](Invoke-Git @('rev-list', '--count', "origin/$Branch..HEAD")).Output
 $head = (Invoke-Git @('rev-parse', 'HEAD')).Output
-if ($pending -gt 0) {
-    # Everything that would go with this push, including commits made earlier, must touch only the managed paths.
-    $merges = [int](Invoke-Git @('rev-list', '--merges', '--count', "origin/$Branch..HEAD")).Output
-    if ($merges -gt 0) { throw "refusing to push: the range holds $merges merge commit(s)" }
-    $touched = @((Invoke-Git @('log', '--format=', '--name-only', "origin/$Branch..HEAD")).Output -split "`n" | Where-Object { $_ } | Sort-Object -Unique)
-    $outside = @($touched | Where-Object { -not ($_ -like 'fabric-automation/*' -or $WorkflowPaths -contains $_ -or ($IncludeReadme -and $_ -eq 'README.md')) })
-    if ($outside.Count -gt 0) { throw "refusing to push: $($outside.Count) path(s) outside the managed set would go with it, for example '$($outside[0])'" }
-}
+if ($pending -gt 0) { Assert-ManagedPaths "origin/$Branch..HEAD" }
 $pushed = $false
 if ($NoPush) {
     Write-Host "    -NoPush given: $pending commit(s) stay local"

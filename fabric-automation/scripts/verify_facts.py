@@ -38,9 +38,17 @@ def http_get(url, timeout=40):
     except urlerror.HTTPError as exc:
         if exc.code == 403 and exc.headers.get("X-RateLimit-Remaining") == "0":
             raise Unreachable("GitHub API rate limit reached")
+        if exc.code == 429 or exc.code >= 500:
+            raise Unreachable("HTTP %s from %s" % (exc.code, url[:70]))
         return exc.code, ""
     except Exception as exc:
         raise Unreachable(str(exc)[:120])
+
+
+def require_ok(status, what):
+    """A page that did not answer 200 says nothing about the claim, so it is never read as evidence."""
+    if status != 200:
+        raise Unreachable("%s answered HTTP %s" % (what, status))
 
 
 def plain_text(raw):
@@ -53,6 +61,7 @@ def check_pypi(fact):
     status, body = http_get("https://pypi.org/pypi/%s/json" % fact["package"])
     if status == 404:
         return FAIL, "package not found on PyPI"
+    require_ok(status, "PyPI")
     data = json.loads(body)
     version, latest = fact["version"], data["info"]["version"]
     if not data["releases"].get(version):
@@ -66,6 +75,7 @@ def check_npm(fact):
     status, body = http_get("https://registry.npmjs.org/" + fact["package"].replace("/", "%2f"))
     if status == 404:
         return FAIL, "package not found on npm"
+    require_ok(status, "the npm registry")
     data = json.loads(body)
     latest = data.get("dist-tags", {}).get("latest")
     if fact.get("version") and fact["version"] not in data.get("versions", {}):
@@ -88,6 +98,7 @@ def check_github_file(fact):
     status, body = http_get(url)
     if status == 404:
         return FAIL, "file not found at %s" % ref
+    require_ok(status, "raw.githubusercontent.com")
     found = bool(re.search(fact["regex"], body))
     changed = FAIL if fact.get("stable", True) else DRIFT
     if fact.get("expect") == "absent":

@@ -104,7 +104,7 @@ EMAIL_ALLOW = ("@users.noreply.github.com", "cursoragent@cursor.com")
 # Patterns are assembled from pieces so that this file does not match its own scan.
 LEAK_PATTERNS = [
     ("user-path", re.compile(
-        r"(?:[A-Za-z]:" + r"\\" + r"Users" + r"\\[^\\\s]+|/Users/[a-z][^/\s]*/|/home/[a-z][^/\s]*/|"
+        r"(?:[A-Za-z]:" + r"\\" + r"Users" + r"\\[^\\\s]+|/Users/[A-Za-z][^/\s]*/|/home/[A-Za-z][^/\s]*/|"
         + r"\\" + r"AppData" + r"\\|" + "OneDrive" + r" - )")),
     ("email", re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+")),
     ("guid", re.compile(r"\b[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\b")),
@@ -117,7 +117,7 @@ LEAK_PATTERNS = [
     ("internal-host", re.compile(
         r"(?i)(?:pkgs\.visual" + r"studio\.com|\.share" + r"point\.com|onmicro" + r"soft\.com|corp\.micro" + r"soft\.com|\.msft\.net|\beng\.ms\b)")),
     ("ipv4", re.compile(r"\b(?!127\.0\.0\.1\b|0\.0\.0\.0\b)(?:(?:25[0-5]|2[0-4]\d|1?\d?\d)\.){3}(?:25[0-5]|2[0-4]\d|1?\d?\d)\b")),
-    ("local-tool-path", re.compile(r"~[\\/]\." + r"copilot[\\/]")),
+    ("local-tool-path", re.compile(r"~[\\/]\." + r"(?:copilot|claude)[\\/]")),
 ]
 MOJIBAKE = re.compile("\u00e2\u20ac|\u00c3[\u0080-\u00bf]|\u00c2[\u0080-\u00bf]|\ufffd")
 PLACEHOLDER = re.compile(r"\b(?:TODO|TBD|FIXME|XXX)\b|<<<<<<<|>>>>>>>")
@@ -1028,12 +1028,19 @@ def run(root, denylist=None, check_urls_flag=False, include_raw=False, require_d
     root = Path(root).resolve()
     report = Report()
     terms = []
+    unreadable = False
     if denylist:
-        for line in Path(denylist).read_text(encoding="utf-8").splitlines():
+        try:
+            lines = Path(denylist).read_text(encoding="utf-8").splitlines()
+        except (OSError, UnicodeDecodeError) as exc:
+            report.error("leak-denylist", "(denylist)", 0, "cannot read the denylist file (%s)" % type(exc).__name__)
+            unreadable = True
+            lines = []
+        for line in lines:
             line = line.strip()
             if line and not line.startswith("#"):
                 terms.append(line)
-    if require_denylist and not terms:
+    if require_denylist and not terms and not unreadable:
         report.error("leak-denylist", "(denylist)", 0, "a private denylist is required here, but none was given or it holds no terms")
     ctx = Context(root, report, terms)
     check_required(ctx)
@@ -1060,7 +1067,7 @@ def main(argv=None):
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--root", type=Path, default=Path(__file__).resolve().parent.parent, help="project folder")
-    parser.add_argument("--denylist", type=Path, help="file of private terms, one per line (never published)")
+    parser.add_argument("--denylist", type=Path, help="file of private terms, one per line (never published). Defaults to private/denylist.txt in the project folder when that exists")
     parser.add_argument("--require-denylist", action="store_true", help="fail when no denylist is given or it holds no terms (use when publishing)")
     parser.add_argument("--scan-file", type=Path, action="append", default=[], help="also scan this file, which may be outside the project (repeatable)")
     parser.add_argument("--check-urls", action="store_true", help="also fetch every URL in the main documents (network)")
@@ -1068,6 +1075,8 @@ def main(argv=None):
     parser.add_argument("--strict", action="store_true", help="treat warnings as errors")
     parser.add_argument("--quiet", action="store_true", help="print findings only")
     args = parser.parse_args(argv)
+    if args.denylist is None and (args.root / "private" / "denylist.txt").is_file():
+        args.denylist = args.root / "private" / "denylist.txt"
     report = run(args.root, args.denylist, args.check_urls, args.include_raw, args.require_denylist, args.scan_file)
     print(report.render(args.quiet))
     failed = report.count("ERROR") > 0 or (args.strict and report.count("WARN") > 0)

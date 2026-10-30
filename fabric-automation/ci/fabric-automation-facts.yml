@@ -1,17 +1,21 @@
 # Checks the concrete claims in the fabric-automation documents (versions, packages,
-# documentation wording) against their public sources. Run it by hand: it needs the
-# open internet, which a GitHub-hosted runner has and some networks do not.
+# documentation wording) against their public sources. It needs the open internet,
+# which a GitHub-hosted runner has and some networks do not. It runs by hand and
+# every Monday. The run fails only when a claim is wrong (FAIL); a newer value or a
+# changed page is shown as DRIFT in the run summary for a person to review.
 name: fabric-automation facts
 
 on:
   workflow_dispatch:
+  schedule:
+    - cron: "17 6 * * 1"
 
 permissions:
   contents: read
 
 jobs:
   facts:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
       - name: Checkout
@@ -22,5 +26,9 @@ jobs:
       - name: Check the claims
         working-directory: fabric-automation
         run: |
-          python3 scripts/verify_facts.py --write "$RUNNER_TEMP/fact-check-results.md"
-          cat "$RUNNER_TEMP/fact-check-results.md" >> "$GITHUB_STEP_SUMMARY"
+          rc=0
+          python3 scripts/verify_facts.py --write "$RUNNER_TEMP/fact-check-results.md" || rc=$?
+          if [ -f "$RUNNER_TEMP/fact-check-results.md" ]; then
+            cat "$RUNNER_TEMP/fact-check-results.md" >> "$GITHUB_STEP_SUMMARY"
+          fi
+          exit "$rc"

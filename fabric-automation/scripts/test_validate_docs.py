@@ -8,6 +8,8 @@ warnings. Run from the project folder:
     python -m unittest discover -s scripts -p "test_*.py" -v
 """
 
+import contextlib
+import io
 import os
 import re
 import shutil
@@ -181,6 +183,30 @@ class ValidatorTests(unittest.TestCase):
     def test_local_tool_path_leak(self):
         self.append("README.md", "~" + "/." + "copilot" + "/installed-" + "plugins/x\n")
         self.assert_flagged(self.validate(), "leak")
+
+    def test_the_other_local_tool_path_is_flagged_too(self):
+        self.append("README.md", "~" + "/." + "claude" + "/skills/x\n")
+        self.assert_flagged(self.validate(), "leak")
+
+    def test_a_capitalised_user_name_in_a_unix_path(self):
+        self.append("README.md", "/" + "Users" + "/Alice/notes.md\n")
+        self.assert_flagged(self.validate(), "leak")
+
+    def test_an_unreadable_denylist_is_an_error_not_a_crash(self):
+        missing = Path(self.tmp.name) / "no-such-denylist.txt"
+        self.assert_flagged(validate_docs.run(self.root, denylist=missing), "leak-denylist")
+
+    def run_main(self):
+        with contextlib.redirect_stdout(io.StringIO()):
+            return validate_docs.main(["--root", str(self.root), "--quiet"])
+
+    def test_a_private_list_in_the_project_is_used_without_being_asked(self):
+        (self.root / "private").mkdir()
+        (self.root / "private" / "denylist.txt").write_text("# private\nHard rules\n", encoding="utf-8")
+        self.assertEqual(1, self.run_main())
+
+    def test_a_project_without_a_private_list_is_not_checked_against_one(self):
+        self.assertEqual(0, self.run_main())
 
     def test_publishing_requires_a_denylist(self):
         report = validate_docs.run(self.root, require_denylist=True)
