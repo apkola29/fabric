@@ -18,4 +18,15 @@ The repository is public, so the first question was what must not be published.
 
 Confirmed against their sources: `fabric-cicd` 1.4.0 and `ms-fabric-cli` 1.8.0 are the current releases; the skills plugin is at 0.3.20; `actions/checkout` v7.0.1 resolves to the commit pinned in the CI workflow; the `tj-actions/changed-files` advisory is CVE-2025-30066; "Comment and Control" is arXiv 2605.11229; variable libraries list no semantic-model or report consumers; the Fabric Delete Item and Delete Recoverable Item pages say what the design says (the two pages disagree on the role needed to purge a soft-deleted item, which the design records and spike S2 tests); Azure Table batches are atomic within one partition, up to 100 entities and 4 MiB; Entra allows 20 federated credentials and does no wildcard matching; the gh-aw defaults are as described.
 
-Unreachable from the machine that ran the checks: the two npm packages (the network blocks the npm registry). The GitHub Action `fabric-automation facts` runs the same checks on a hosted runner.
+Unreachable from the machine that ran the checks: the two npm packages (the network blocks the npm registry). The GitHub Action `fabric-automation facts` runs the same checks on a hosted runner (see loop 1).
+
+Published as commit `2e1ca1b814`. `scripts/verify_remote.py` compared the Git blob hash of every file with the one GitHub holds: 40 files plus the 2 workflow files were identical.
+
+## Loop 1: the first clean-room run
+
+| Check | Method | Result |
+|---|---|---|
+| Do the documents and the validator work on a clean Linux checkout | The GitHub Action `fabric-automation validate` on a hosted runner | The baseline test passed, so the documents validate on Linux. **One test failed**: `test_mixed_line_endings` assumed files have CRLF endings, but on Linux `.gitattributes` makes them LF, so appending an LF line made no mix. The test was wrong, not the validator. It now builds its own mixed endings. Confirmed by running the validator and all 33 tests on a local copy converted to LF. |
+| The claims that this network could not reach | The GitHub Action `fabric-automation facts` on a hosted runner | 25 confirmed, 1 drift, 0 wrong, 0 unreachable. Both npm packages are published: `@microsoft/powerbi-modeling-mcp` at 1.0.0 and `@microsoft/powerbi-report-authoring-cli` at 0.5.0. |
+| Open item 9 of the digest ("npm publication could not be verified") | The npm check above | Resolved in part. The report authoring CLI is published, at a pre-1.0 version. The digest and the design were updated. Installability and headless use in the sandbox remain spike work (S3, S10). |
+

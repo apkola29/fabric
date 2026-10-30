@@ -182,7 +182,8 @@ class ValidatorTests(unittest.TestCase):
 
     def test_mixed_line_endings(self):
         path = self.root / BRIEF
-        path.write_bytes(path.read_bytes() + b"stray line\n")
+        data = path.read_bytes().replace(b"\r\n", b"\n")
+        path.write_bytes(data.replace(b"\n", b"\r\n", 1))
         self.assert_flagged(self.validate(), "hygiene")
 
     def test_garbled_text(self):

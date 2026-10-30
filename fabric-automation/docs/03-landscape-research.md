@@ -44,7 +44,7 @@ Create the Git branch (provider API), create the workspace and assign a capacity
 | Item | Git | Unattended identity | Headless test route | Notes |
 |---|---|---|---|---|
 | Semantic model | Yes, TMDL. Git is preview | Yes | `executeQueries` DAX (needs two tenant switches, no RLS or SSO, 120 per minute, 100k rows); local Power BI Authoring MCP (GA) | Enhanced refresh causes Git diffs. Direct Lake does not auto-bind in deployment pipelines |
-| Report | Yes, PBIR. Git and the PBIR setting are preview | Yes | `powerbi-report-author` validate and headless screenshot; `exportToFile` PNG (capacity-backed, not PPU, needs a tenant switch that is off by default) | Deployment pipelines say PBIR is unsupported. The skill installs the CLI with `npm install -g @microsoft/powerbi-report-authoring-cli@latest`; npm publication could not be verified and `@latest` must be pinned |
+| Report | Yes, PBIR. Git and the PBIR setting are preview | Yes | `powerbi-report-author` validate and headless screenshot; `exportToFile` PNG (capacity-backed, not PPU, needs a tenant switch that is off by default) | Deployment pipelines say PBIR is unsupported. The skill installs the CLI with `npm install -g @microsoft/powerbi-report-authoring-cli@latest`; the package is published on npm (0.5.0 on 2026-10-30, a pre-1.0 release, verified from a hosted runner) and `@latest` must be pinned |
 | Data agent | Yes, file parts. Git and evaluation are preview | Learn contradicts itself: the ALM page says ALM only, the SDK and MCP pages say a user or a service principal. Treat as endpoint-specific | Evaluation SDK (alpha, notebook, LLM-judged, needs a published agent); published agent callable as MCP (the SDK docs moved from the Assistants route to Responses and MCP on 2026-10-14) | No official skill. Trial capacity unsupported. Never edit `published/` |
 | Ontology | Yes. Preview | Yes per the item table; the ontology MCP is user-only | Unverified | Old format retires 2027-01-31; the shipped skill authors the old format |
 | Notebook | Yes. GA | Yes | Job Scheduler `RunNotebook` with `exitValue`; Livy | Lakehouse binding needs parameterization |
@@ -205,7 +205,7 @@ Avoid:
 | 6 | Hosted-agent resilience: "GA" in a blog, "preview" on its Learn page | Verified: GA per the 2026-10-28 blog, the Learn title still says preview. Checkpoint regardless |
 | 7 | PocketOS and "Comment and Control" incidents rest on secondary sources | Verified with primary sources. PocketOS was an agent guessing with an unscoped token, not injection. Comment and Control is arXiv 2605.11229 |
 | 8 | Gemini 4 Argon availability in the live Foundry catalog was not checked | Verified: no Gemini models in Foundry |
-| 9 | `powerbi-report-author` distribution channel | The skill installs `@microsoft/powerbi-report-authoring-cli` with npm (`@latest`). npm publication could not be verified. Verify installability and pin in Phase 0 |
+| 9 | `powerbi-report-author` distribution channel | Resolved in part (2026-10-30, from a hosted runner): the skill installs `@microsoft/powerbi-report-authoring-cli` with npm (`@latest`), and the package is published at 0.5.0, a pre-1.0 release. The local Power BI modeling MCP is published at 1.0.0. Still to do in Phase 0: verify installability and headless use in the sandbox, pin the version, and expect change before 1.0 |
 | 10 | Whether capacity pause and resume is Azure Resource Manager only | Phase 0 |
 
 ## 10. Raw reports
