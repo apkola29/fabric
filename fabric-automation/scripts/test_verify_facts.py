@@ -373,6 +373,32 @@ class UnusableAnswerTests(unittest.TestCase):
         self.assertEqual(verify_facts.UNREACHABLE, status_of(fact, {arxiv: (200, "<feed></feed>")}))
         self.assertEqual(verify_facts.UNREACHABLE, status_of(fact, {arxiv: (403, "")}))
 
+    def test_an_answer_with_fields_of_the_wrong_type_is_unreachable_not_a_verdict(self):
+        make = GithubKindsTests.fact
+        cases = {
+            "a folder listing of nulls": (make("github-path", path="p"), self.API + "contents/", "[null]"),
+            "a file without a path": (make("github-path", path="p"), self.API + "contents/", json.dumps({"path": None})),
+            "a folder entry without a path": (make("github-path", path="p"), self.API + "contents/", json.dumps([{"name": "x"}])),
+            "a tree entry whose path is null": (make("github-tree", present=[], absent=["x/"]), self.API + "git/trees/",
+                                                json.dumps({"tree": [{"path": None}]})),
+            "a repository name that is a number": (make("github-repo"), self.API[:-1], json.dumps({"full_name": 5})),
+            "a tag object whose sha is a list": (make("github-tag", tag="v1", sha="abc"), self.API + "git/ref/tags/",
+                                                 json.dumps({"object": {"sha": ["a"], "type": "commit"}})),
+            "an advisory id that is a number": (AdvisoryAndPaperTests.advisory(), "https://api.github.com/advisories/",
+                                                json.dumps({"ghsa_id": 7})),
+            "a PyPI version that is a number": (RegistryTests.pypi_fact(), "https://pypi.org/",
+                                                json.dumps({"info": {"version": 2}, "releases": {}})),
+            "an npm latest tag that is a list": ({"id": "n", "kind": "npm", "package": "p", "claim": "c", "cited_in": "d"},
+                                                 "https://registry.npmjs.org/", json.dumps({"dist-tags": {"latest": ["1"]}, "versions": {}})),
+        }
+        for name, (fact, prefix, body) in cases.items():
+            with self.subTest(name):
+                self.assertEqual(verify_facts.UNREACHABLE, status_of(fact, {prefix: (200, body)}))
+
+    def test_an_archived_flag_that_is_not_a_boolean_does_not_fail_a_live_repository(self):
+        body = json.dumps({"full_name": "o/r", "archived": "no", "pushed_at": "2026-10-01T00:00:00Z"})
+        self.assertEqual(verify_facts.PASS, status_of(GithubKindsTests.fact("github-repo"), {self.API[:-1]: (200, body)}))
+
     def test_the_other_error_statuses_of_the_api_checks_are_unreachable_and_not_found_is_a_failure(self):
         for name, (fact, prefix) in self.cases().items():
             if name == "latest release":
@@ -414,6 +440,39 @@ class DefinitionTests(unittest.TestCase):
             results = verify_facts.run([broken, page_fact()], pause=0)
         self.assertEqual([verify_facts.FAIL, verify_facts.PASS], [r[0] for r in results])
         self.assertIn("invalid fact definition", verify_facts.render_markdown(results))
+
+    def test_a_string_where_a_list_belongs_is_a_broken_entry_not_a_pass(self):
+        # Read one character at a time, "alpha" would pass against a page that only says "aplha".
+        fact = page_fact(all="alpha")
+        with mock.patch.object(verify_facts, "http_get", fake_web({PAGE: (200, "<p>aplha</p>")})):
+            status, _fact, evidence = verify_facts.run([fact], pause=0)[0]
+        self.assertEqual(verify_facts.FAIL, status)
+        self.assertIn("invalid fact definition", evidence)
+
+    def test_wrongly_typed_entries_are_broken_entries(self):
+        broken = {
+            "stable written as text": page_fact(stable="false"),
+            "raw written as text": page_fact(raw="yes"),
+            "an unknown expect value": file_fact(expect="absnet"),
+            "a regex that is a list": file_fact(regex=["x"]),
+            "an empty claim": page_fact(claim=""),
+            "a segment without an end": page_fact(segment={"start": "a"}),
+            "a segment list that is a string": page_fact(segment={"start": "a", "end": "b", "present": "x"}),
+            "a tree list that is a string": {"id": "t", "kind": "github-tree", "repo": "o/r", "ref": "main", "present": "a.md",
+                                             "claim": "c", "cited_in": "d"},
+            "an entry that is not an object": "just text",
+        }
+        for name, fact in broken.items():
+            with self.subTest(name):
+                with mock.patch.object(verify_facts, "http_get", fake_web({})):
+                    status, _fact, evidence = verify_facts.run([fact], pause=0)[0]
+                self.assertEqual(verify_facts.FAIL, status, evidence)
+                self.assertIn("invalid fact definition", evidence)
+
+    def test_a_well_formed_entry_with_every_optional_key_is_accepted(self):
+        fact = page_fact(stable=False, raw=True, segment={"start": "a", "end": "b", "present": ["x"], "absent": ["y"]})
+        verify_facts.validate_definition(fact)
+        verify_facts.validate_definition(file_fact(expect="present", show="(x)", stable=True))
 
 
 class FactsFileTests(unittest.TestCase):

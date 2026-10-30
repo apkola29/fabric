@@ -15,7 +15,9 @@ from __future__ import annotations
 
 import argparse
 import fnmatch
+import os
 import re
+import stat
 import sys
 import time
 from collections import Counter
@@ -196,6 +198,8 @@ LEAK_PATTERNS = [
     ("local-tool-path", re.compile(r"~[\\/]\." + r"(?:copilot|claude)[\\/]")),
 ]
 MOJIBAKE = re.compile("\u00e2\u20ac|\u00c3[\u0080-\u00bf]|\u00c2[\u0080-\u00bf]|\ufffd")
+# Control characters that Git counts as non-printable (backspace, tab, form feed and escape are printable to it).
+CONTROL_CHARS = re.compile("[\x01-\x07\x0b\x0e-\x1a\x1c-\x1f\x7f]")
 PLACEHOLDER = re.compile(r"\b(?:TODO|TBD|FIXME|XXX)\b|<<<<<<<|>>>>>>>")
 
 
@@ -428,9 +432,13 @@ def check_hygiene(ctx):
             ctx.report.error("hygiene", doc.rel, len(doc.lines), "file does not end with a newline")
         if len(doc.raw) > 500 * 1024 and doc.is_markdown:
             ctx.report.warn("hygiene", doc.rel, 0, "file is over 500 KB, GitHub may not render it")
+        control_reported = False
         for i, line in enumerate(doc.lines, 1):
             if MOJIBAKE.search(line):
                 ctx.report.error("mojibake", doc.rel, i, "garbled text (encoding damage)")
+            if not control_reported and CONTROL_CHARS.search(line):
+                ctx.report.error("hygiene", doc.rel, i, "control character (Git could treat the file as binary and store it unchanged)")
+                control_reported = True
     ctx.report.note("hygiene", "%d text files, %d with CRLF endings (git stores them as LF)" % (len(ctx.docs), crlf_only))
 
 
@@ -1071,6 +1079,33 @@ def check_unscanned(ctx):
     ctx.report.note("unscanned-file", "%d file(s) that would be published and are not read by the leak scan" % len(unscanned))
 
 
+def is_link(path):
+    """A symbolic link or, on Windows, a junction. Other reparse points, such as OneDrive placeholders, are ordinary files."""
+    if path.is_symlink():
+        return True
+    try:
+        info = os.lstat(path)
+    except OSError:
+        return False
+    return getattr(info, "st_reparse_tag", 0) == getattr(stat, "IO_REPARSE_TAG_MOUNT_POINT", -1)
+
+
+def check_links_in_tree(ctx):
+    """A link can point outside the folder, so the leak scan and the mirror could read something that is not here."""
+    found = 0
+    for path in sorted(ctx.root.rglob("*")):
+        relative = path.relative_to(ctx.root)
+        rel = relative.as_posix()
+        if any(part in SKIP_DIRS for part in relative.parts):
+            continue
+        if any(rel == p or rel.startswith(p + "/") for p in SKIP_PATHS):
+            continue
+        if is_link(path):
+            found += 1
+            ctx.report.error("link", rel, 0, "a symbolic link or junction cannot be published (replace it with the real file or remove it)")
+    ctx.report.note("link", "%d symbolic link(s) or junction(s)" % found)
+
+
 URL_RE = re.compile(r"https?://[^\s<>()\[\]`\"']+")
 
 
@@ -1138,6 +1173,7 @@ def run(root, denylist=None, check_urls_flag=False, include_raw=False, require_d
     check_mermaid(ctx)
     check_leaks(ctx, extra_files)
     check_unscanned(ctx)
+    check_links_in_tree(ctx)
     if check_urls_flag:
         check_urls(ctx, include_raw)
     return report

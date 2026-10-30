@@ -70,14 +70,23 @@ class CloneModeTests(unittest.TestCase):
         self.git(self.clone, "commit", "-q", "-m", message)
         return self.git(self.clone, "rev-parse", "HEAD")
 
-    def check(self, commit="HEAD", extra=True):
+    def check(self, commit="HEAD", extra=True, more=()):
         argv = ["--clone", str(self.clone), "--commit", commit, "--local", str(self.project)]
         if extra:
             argv += ["--extra", "%s=ci/w.yml" % WORKFLOW]
+        for pair in more:
+            argv += ["--extra", pair]
         out = io.StringIO()
         with contextlib.redirect_stdout(out):
             code = verify_remote.main(argv)
         return code, out.getvalue()
+
+    def stage_entry(self, mode, content, path):
+        """Put an entry with the given mode into the index without creating a file, then commit."""
+        blob = subprocess.run(GIT + ["hash-object", "-w", "--stdin"], cwd=self.clone, input=content, capture_output=True, text=True)
+        self.assertEqual(0, blob.returncode, blob.stderr)
+        self.git(self.clone, "update-index", "--add", "--cacheinfo", "%s,%s,%s" % (mode, blob.stdout.strip(), path))
+        self.git(self.clone, "commit", "-q", "-m", "special entry")
 
     def test_a_commit_that_holds_exactly_the_project_passes(self):
         code, out = self.check()
@@ -148,6 +157,58 @@ class CloneModeTests(unittest.TestCase):
         with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit) as raised:
             verify_remote.main(["--clone", str(self.clone), "--local", str(self.project)])
         self.assertEqual(2, raised.exception.code)
+
+    def test_a_gitlink_in_the_commit_is_reported(self):
+        self.stage_entry("160000", "", "fabric-automation/docs/sub")
+        code, out = self.check()
+        self.assertEqual(1, code, out)
+        self.assertIn("docs/sub", out)
+
+    def test_a_symbolic_link_is_reported_even_when_its_text_equals_a_local_file(self):
+        write(self.project / "docs" / "link.md", b"target")
+        self.stage_entry("120000", "target", "fabric-automation/docs/link.md")
+        code, out = self.check()
+        self.assertEqual(1, code, out)
+        self.assertIn("UNEXPECTED-MODE docs/link.md 120000", out)
+
+    def test_an_executable_regular_file_is_accepted(self):
+        self.git(self.clone, "update-index", "--chmod=+x", "fabric-automation/docs/a.md")
+        self.git(self.clone, "commit", "-q", "-m", "mode")
+        code, out = self.check()
+        self.assertEqual(0, code, out)
+
+    def test_a_workflow_copy_that_is_a_symbolic_link_is_reported(self):
+        self.stage_entry("120000", "name: w\n", WORKFLOW)
+        code, out = self.check()
+        self.assertEqual(1, code, out)
+        self.assertIn("UNEXPECTED-MODE %s 120000" % WORKFLOW, out)
+
+    def test_a_file_outside_the_project_can_be_compared_by_its_absolute_path(self):
+        write(self.clone / "README.md", "# the repository readme\n")
+        self.git(self.clone, "add", "README.md")
+        self.git(self.clone, "commit", "-q", "-m", "readme")
+        pair = "README.md=%s" % (self.clone / "README.md")
+        self.assertEqual(0, self.check(more=[pair])[0])
+        write(self.clone / "README.md", "# changed after the scan\n")
+        code, out = self.check(more=[pair])
+        self.assertEqual(1, code, out)
+        self.assertIn("DIFFERENT      README.md", out)
+
+    def test_a_readme_that_is_a_symbolic_link_in_the_commit_is_reported(self):
+        write(self.clone / "README.md", b"clean\n")
+        self.stage_entry("120000", "docs/a.md", "README.md")
+        pair = "README.md=%s" % (self.clone / "README.md")
+        code, out = self.check(more=[pair])
+        self.assertEqual(1, code, out)
+        self.assertIn("UNEXPECTED-MODE README.md 120000", out)
+
+    def test_the_github_listing_keeps_files_and_gitlinks_with_their_modes(self):
+        listing = [{"path": "a.md", "mode": "100644", "type": "blob", "sha": "1" * 40},
+                   {"path": "docs", "mode": "040000", "type": "tree", "sha": "2" * 40},
+                   {"path": "docs/sub", "mode": "160000", "type": "commit", "sha": "3" * 40},
+                   {"path": "docs/link", "mode": "120000", "type": "blob", "sha": "4" * 40}]
+        self.assertEqual({"a.md": ("100644", "1" * 40), "docs/sub": ("160000", "3" * 40), "docs/link": ("120000", "4" * 40)},
+                         verify_remote.normalize_tree(listing))
 
 
 if __name__ == "__main__":

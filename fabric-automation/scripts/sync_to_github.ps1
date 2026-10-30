@@ -3,13 +3,15 @@
 Publishes this folder to the fabric-automation folder of the GitHub repository and proves GitHub matches it.
 
 .DESCRIPTION
-1. Checks the tools, and that gh is signed in as the repository owner and that origin (fetch and push address) is exactly that GitHub repository.
+1. Checks the tools, and that gh is signed in as the repository owner and that every fetch and push address of origin is exactly that GitHub repository.
 2. Runs the validator in strict mode and the validator's mutation tests.
 3. Brings the local clone up to date with origin (fast-forward only).
-4. Mirrors this folder into <clone>\fabric-automation and copies the CI workflows.
+4. Mirrors this folder into <clone>\fabric-automation and copies the CI workflows, then scans the mirrored copy itself,
+   so that what is committed is what was scanned even if the source changed while the tests ran.
 5. Stages ONLY those paths, commits, checks that everything that would be pushed (earlier commits included)
    touches only those paths, and proves that the commit holds exactly the validated files (no extra, missing or
-   different file) before anything leaves the machine. Then it pushes that commit by its SHA. It never force-pushes.
+   different file, and nothing that is not a regular file) before anything leaves the machine. Then it pushes that
+   commit by its SHA. It never force-pushes.
 6. Compares the Git blob hash of every file with the one GitHub holds.
 7. Optionally waits for the CI run on the pushed commit.
 
@@ -115,17 +117,47 @@ function Assert-ManagedPaths([string]$Range) {
     if ($outside.Count -gt 0) { throw "refusing to push: $($outside.Count) path(s) outside the managed set are in $Range, for example '$($outside[0])'" }
 }
 
+function Test-IsLink($Item) {
+    # A junction or a symbolic link. Other reparse points, such as OneDrive placeholders, are ordinary files and folders.
+    return ($Item.LinkType -eq 'Junction' -or $Item.LinkType -eq 'SymbolicLink')
+}
+
+function Find-Links([string]$Folder) {
+    # Walks a folder without ever entering a link, and returns the links it meets.
+    foreach ($item in Get-ChildItem -LiteralPath $Folder -Force) {
+        if (Test-IsLink $item) { $item.FullName; continue }
+        if ($item.PSIsContainer) { Find-Links $item.FullName }
+    }
+}
+
+function Remove-Leftovers([string]$Folder) {
+    # Removes bytecode and test caches without ever walking through a link.
+    foreach ($item in Get-ChildItem -LiteralPath $Folder -Force) {
+        if (Test-IsLink $item) { continue }
+        if ($item.PSIsContainer) {
+            if ($item.Name -eq '__pycache__' -or $item.Name -eq '.pytest_cache') { Remove-Item -LiteralPath $item.FullName -Recurse -Force }
+            else { Remove-Leftovers $item.FullName }
+        } elseif ($item.Extension -eq '.pyc') {
+            Remove-Item -LiteralPath $item.FullName -Force
+        }
+    }
+}
+
 Step 'Checking tools and accounts'
 foreach ($tool in 'git', 'gh', 'python') {
     if (-not (Get-Command $tool -ErrorAction SilentlyContinue)) { throw "$tool is not installed or not on PATH" }
 }
 if (-not (Test-Path (Join-Path $CloneDir '.git'))) { throw "$CloneDir is not a git clone" }
 foreach ($direction in @('fetch', 'push')) {
-    # git expands insteadOf rewrites here, so this is the address a fetch or a push really uses.
-    $addressArgs = if ($direction -eq 'push') { @('remote', 'get-url', '--push', 'origin') } else { @('remote', 'get-url', 'origin') }
-    $address = (Invoke-Git $addressArgs).Output
-    if (-not (Test-GitHubRemote $address $Repo)) {
-        throw "the $direction address of origin is '$($address -replace '(?<=://)[^/@]*@', '')'; expected the GitHub repository $Repo as https://github.com/$Repo or git@github.com:$Repo, with no credentials in it"
+    # git expands insteadOf rewrites here, so these are the addresses a fetch or a push really uses. A remote can
+    # have several push addresses, and a push then goes to all of them, so every one has to be the repository.
+    $addressArgs = if ($direction -eq 'push') { @('remote', 'get-url', '--push', '--all', 'origin') } else { @('remote', 'get-url', '--all', 'origin') }
+    $addresses = @((Invoke-Git $addressArgs).Output -split "`n" | ForEach-Object { $_.Trim() } | Where-Object { $_ })
+    if ($addresses.Count -eq 0) { throw "origin has no $direction address" }
+    foreach ($address in $addresses) {
+        if (-not (Test-GitHubRemote $address $Repo)) {
+            throw "a $direction address of origin is '$($address -replace '(?<=://)[^/@]*@', '')'; expected only the GitHub repository $Repo as https://github.com/$Repo or git@github.com:$Repo, with no credentials in it"
+        }
     }
 }
 $owner = $Repo.Split('/')[0]
@@ -137,15 +169,16 @@ Write-Host "    clone: $CloneDir ($Branch), account: $login"
 
 Step 'Validating the documents (strict) and testing the validator'
 $validator = Join-Path $Project 'scripts\validate_docs.py'
-$arguments = @($validator, '--strict', '--quiet')
+$denyArgs = @()
 if ($DenyList -and (Test-Path $DenyList)) {
-    $arguments += @('--denylist', $DenyList, '--require-denylist')
+    $denyArgs = @('--denylist', $DenyList, '--require-denylist')
 } elseif ($NoDenylist) {
     Write-Warning 'publishing without the private term check (-NoDenylist); only the generic leak patterns are applied'
 } else {
     throw 'no private denylist found, and the generic leak patterns cannot see private terms. Set FABRIC_AUTOMATION_DENYLIST or pass -DenyList. Use -NoDenylist only if the list really does not exist.'
 }
-if ($IncludeReadme) { $arguments += @('--scan-file', (Join-Path $CloneDir 'README.md')) }
+$readmeArgs = if ($IncludeReadme) { @('--scan-file', (Join-Path $CloneDir 'README.md')) } else { @() }
+$arguments = @($validator, '--strict', '--quiet') + $denyArgs + $readmeArgs
 $result = Invoke-Native -Exe 'python' -Arguments $arguments -AllowFailure
 Write-Host $result.Output
 if ($result.ExitCode -ne 0) { throw 'validation failed; nothing was published' }
@@ -177,25 +210,36 @@ if ($ahead -gt 0 -and $behind -eq 0) {
 Step 'Mirroring the folder into the clone'
 $destination = Join-Path $CloneDir 'fabric-automation'
 $exclude = @((Join-Path $Project 'private'), (Join-Path $Project 'docs\research\local'), '__pycache__', '.pytest_cache')
-# robocopy /MIR never deletes what it was told to exclude, so anything excluded that an earlier run or a hand
-# edit left in the clone is removed first. The pre-push check below would refuse it anyway.
 if (Test-Path -LiteralPath $destination) {
+    # robocopy /MIR deletes what it finds in the destination and the source lacks. Through a junction or a symbolic
+    # link that reaches what the link points to, even with /XJ, so a link in the mirror stops the run.
+    $links = @(Find-Links $destination)
+    if ($links.Count -gt 0) { throw "the mirror holds a link ($($links[0])); robocopy /MIR could delete what it points to. Remove the link by hand and run again" }
+    # robocopy /MIR also never deletes what it was told to exclude by name, so bytecode and caches that an earlier
+    # run or a hand edit left in the clone are removed first. The pre-push check below would refuse them anyway.
     foreach ($leftover in @('private', 'docs\research\local')) {
-        Remove-Item -LiteralPath (Join-Path $destination $leftover) -Recurse -Force -ErrorAction SilentlyContinue
+        $leftoverPath = Join-Path $destination $leftover
+        if (Test-Path -LiteralPath $leftoverPath) { Remove-Item -LiteralPath $leftoverPath -Recurse -Force }
     }
-    Get-ChildItem -LiteralPath $destination -Recurse -Force -ErrorAction SilentlyContinue |
-        Where-Object { ($_.PSIsContainer -and ($_.Name -eq '__pycache__' -or $_.Name -eq '.pytest_cache')) -or (-not $_.PSIsContainer -and $_.Extension -eq '.pyc') } |
-        ForEach-Object { Remove-Item -LiteralPath $_.FullName -Recurse -Force -ErrorAction SilentlyContinue }
+    Remove-Leftovers $destination
 }
-$null = robocopy $Project $destination /MIR /XD @exclude /XF '*.pyc' /NFL /NDL /NJH /NJS /NP
+$null = robocopy $Project $destination /MIR /XD @exclude /XF '*.pyc' /XJ /NFL /NDL /NJH /NJS /NP
 if ($LASTEXITCODE -ge 8) { throw "robocopy failed with exit code $LASTEXITCODE" }
 $workflowDir = Join-Path $CloneDir '.github\workflows'
 New-Item -ItemType Directory -Force -Path $workflowDir | Out-Null
 foreach ($name in $Workflows) {
-    # Written with LF endings on purpose: these two files are outside the folder that .gitattributes covers.
-    $text = [System.IO.File]::ReadAllText((Join-Path $Project "ci\$name"), [System.Text.Encoding]::UTF8) -replace "`r`n", "`n"
+    # Taken from the mirrored copy, so that the bytes written here are the bytes the scan below reads. Written with
+    # LF endings on purpose: these two files are outside the folder that .gitattributes covers.
+    $text = [System.IO.File]::ReadAllText((Join-Path $destination "ci\$name"), [System.Text.Encoding]::UTF8) -replace "`r`n", "`n"
     [System.IO.File]::WriteAllText((Join-Path $workflowDir $name), $text, (New-Object System.Text.UTF8Encoding($false)))
 }
+
+Step 'Scanning the mirrored copy that will be committed'
+# The first validation read the source folder, and it can change before the mirror is made (the tests above take
+# minutes). This scan reads the copy itself, so what is committed is what was scanned.
+$scan = Invoke-Native -Exe 'python' -Arguments (@($validator, '--root', $destination, '--strict', '--quiet') + $denyArgs + $readmeArgs) -AllowFailure
+Write-Host $scan.Output
+if ($scan.ExitCode -ne 0) { throw 'the mirrored copy failed validation; nothing was committed' }
 
 Step 'Staging only this project'
 Invoke-Git (@('add', '-A', '--') + $Paths) | Out-Null
@@ -221,6 +265,7 @@ if ($pending -gt 0) { Assert-ManagedPaths "origin/$Branch..HEAD" }
 Step 'Checking that the commit holds exactly the validated files'
 $treeArgs = @($VerifyScript, '--clone', $CloneDir, '--commit', $head, '--remote-path', 'fabric-automation', '--local', $Project)
 foreach ($name in $Workflows) { $treeArgs += @('--extra', ".github/workflows/$name=ci/$name") }
+if ($IncludeReadme) { $treeArgs += @('--extra', ('README.md=' + (Join-Path $CloneDir 'README.md'))) }
 $tree = Invoke-Native -Exe 'python' -Arguments $treeArgs -AllowFailure
 Write-Host $tree.Output
 if ($tree.ExitCode -ne 0) { throw 'the commit is not exactly the validated folder (see above); nothing was pushed' }
@@ -241,6 +286,7 @@ if ($NoPush) { Write-Host 'Stopped before verification because of -NoPush.'; ret
 Step 'Verifying that GitHub holds exactly this content'
 $verifyArgs = @($VerifyScript, '--repo', $Repo, '--ref', $Branch, '--remote-path', 'fabric-automation', '--local', $Project, '--commit', $head)
 foreach ($name in $Workflows) { $verifyArgs += @('--extra', ".github/workflows/$name=ci/$name") }
+if ($IncludeReadme) { $verifyArgs += @('--extra', ('README.md=' + (Join-Path $CloneDir 'README.md'))) }
 $check = Invoke-Native -Exe 'python' -Arguments $verifyArgs -AllowFailure
 Write-Host $check.Output
 if ($check.ExitCode -ne 0) { throw 'GitHub does not match the local folder' }

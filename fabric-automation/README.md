@@ -4,7 +4,7 @@
 
 Design and research for the **Fabric Code Factory**: an autonomous, Git-backed way to turn a natural-language requirement into a verified pull request against Microsoft Fabric and Power BI items. A person approves at the end.
 
-> **Status.** Design v0.2 is complete, has been reviewed by three model families, and was corrected after a first verification round. **Nothing is built yet**, and nothing in it has been tested on a tenant. The next step is Phase 0: a set of spikes that test the platform assumptions on a real tenant. This folder holds the documents, and the tooling that checks them.
+> **Status.** Design v0.2 is complete. It has been reviewed by three model families and then corrected through four more verification rounds, each with the reviewers' roles rotated and every finding checked against the text, the code or the primary source (the record is in the [verification log](docs/reviews/verification-log.md)). **Nothing is built yet**, and nothing in it has been tested on a tenant. What remains open are the Phase 0 spikes that test the platform assumptions on a real tenant, not unfinished document fixes. This folder holds the documents, and the tooling that checks them.
 
 ## The idea
 
@@ -52,7 +52,7 @@ Design and research for the **Fabric Code Factory**: an autonomous, Git-backed w
 
 ## How it was produced
 
-Nine research threads on live sources, then a cross-verification of the decision-driving claims by three model families, a design, an attack on that design by three reviewers from different angles, a written disposition of every finding, and a closure check by the same reviewers. After publication came verification rounds on the published text: a clean-room CI run, a check of the platform facts against primary sources, and a second three-model pass. The trail is in `docs/reviews` and `docs/research`. Facts the reviewers disputed were re-fetched from their primary source before they were accepted.
+Nine research threads on live sources, then a cross-verification of the decision-driving claims by three model families, a design, an attack on that design by three reviewers from different angles, a written disposition of every finding, and a closure check by the same reviewers. After publication came four verification rounds on the published text, each by three reviewers from three model families with their roles rotated, and each recorded with the reviewers' replies and the disposition of every finding. The rounds covered logic and consistency, platform facts against primary sources, public exposure, the publish and fact-checking scripts, and a cold read. The trail is in `docs/reviews` and `docs/research`. Facts the reviewers disputed were re-fetched from their primary source before they were accepted.
 
 ## Checking this folder
 
@@ -64,8 +64,8 @@ python -m unittest discover -s scripts -p "test_*.py"
 python scripts/verify_facts.py
 ```
 
-- `validate_docs.py` checks the structure of the documents: tables and diagrams, section numbering, that every identifier (requirement, decision, hard rule, spike, finding) is defined and traced, that the counts stated in the text match the tables, that links and file references resolve, that no local path, address or secret is published, and that every file that would be published is of a type the leak scan reads.
-- The tests do three things. For the validator, most tests inject one known defect into a copy of this folder and require the validator to report it, one requires the unmodified folder to be clean, and a few exercise its options. For the fact checker, the tests replace the network with a fake and check each outcome of every kind of check. For the publish tooling, they build a throwaway Git repository to test the commit check and test the address check of the publish script. They show that the checks can fail. They do not show that the documents are right.
+- `validate_docs.py` checks the structure of the documents: tables and diagrams, section numbering, that every identifier (requirement, decision, hard rule, spike, finding) is defined and traced, that the counts stated in the text match the tables, that links and file references resolve, that no local path, address or secret is published, and that every file that would be published is a plain-text file of a type the leak scan reads, with no symbolic link or junction in the folder.
+- The tests do four things. For the validator, most tests inject one known defect into a copy of this folder and require the validator to report it, one requires the unmodified folder to be clean, and a few exercise its options. For the fact checker, the tests replace the network with a fake and check each outcome of every kind of check. For the commit check, they build a throwaway Git repository. For the publish script, they run the real script with stand-in `git`, `gh` and `python` programs and assert what it does when each step fails, for example that nothing is pushed unless every check before the push passed. They show that the checks can fail. They do not show that the documents are right.
 - `verify_facts.py` checks concrete claims (package versions, repository contents, wording of documentation pages) against their public sources. It needs the open internet. A GitHub Action runs the validator and the tests on every change to this folder and on pull requests, and a second one runs the fact checks by hand and every Monday. The weekly run fails when a claim is wrong or an entry of `facts.json` is itself broken, and shows a newer value or a changed page as drift for a person to review. A source that cannot be read, or that answers with an empty or malformed body, is shown as UNREACHABLE, because it says nothing about the claim.
 - `verify_remote.py` compares the Git hash of every file with what GitHub holds, or, before anything is pushed, with a commit in the local clone.
 - A green validator is not proof that a publication is clean. The list of private terms cannot live in a public repository, so only the maintainer's publish script applies it, and that script refuses to publish without it. CI applies only the generic patterns.
@@ -78,7 +78,7 @@ Two local surveys (referred to as L1 and L2 in the documents) are not published.
 
 ## Keeping it in sync (maintainers)
 
-`scripts/sync_to_github.ps1 -Message "what changed"` checks that the clone's fetch and push addresses are exactly this GitHub repository, validates the folder with the private term list (and stops if there is none), runs the tests, mirrors the folder into a local clone of the repository, commits only these paths, checks that everything it would push touches only these paths, proves that the commit holds exactly the validated files, pushes that commit by its SHA, and proves that GitHub holds the same bytes. It never force-pushes.
+`scripts/sync_to_github.ps1 -Message "what changed"` checks that every fetch and push address of the clone is exactly this GitHub repository, validates the folder with the private term list (and stops if there is none), runs the tests, mirrors the folder into a local clone of the repository (and refuses to mirror into a clone that holds a link, because `robocopy /MIR` deletes what a junction points to), scans the mirrored copy itself, commits only these paths, checks that everything it would push touches only these paths, proves that the commit holds exactly the validated files, pushes that commit by its SHA, and proves that GitHub holds the same bytes. It never force-pushes.
 
 ## Caveats
 

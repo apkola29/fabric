@@ -13,6 +13,7 @@ import io
 import os
 import re
 import shutil
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -266,6 +267,39 @@ class ValidatorTests(unittest.TestCase):
         listed = validate_docs.publishable_files(self.root)
         self.assertIn("README.md", listed)
         self.assertNotIn("tmp-scratch/a.md", listed)
+
+    def test_a_control_character_in_a_text_file_is_flagged(self):
+        self.append("README.md", "a line with a stray " + "\x01" + " control character\n")
+        self.assert_flagged(self.validate(), "hygiene")
+
+    def test_tab_form_feed_backspace_and_escape_are_not_control_characters_here(self):
+        self.append("README.md", "tab\there, a form feed\x0c, a backspace\x08 and an escape\x1b[0m\n")
+        self.assertFalse(self.validate().has("ERROR", "hygiene"))
+
+    def make_link(self, link, target, directory=False):
+        try:
+            os.symlink(target, link, target_is_directory=directory)
+        except (OSError, NotImplementedError):
+            self.skipTest("this account cannot create symbolic links")
+
+    def test_a_symbolic_link_to_a_file_is_flagged(self):
+        self.make_link(self.root / "docs" / "link.md", self.root / "README.md")
+        self.assert_flagged(self.validate(), "link")
+
+    def test_a_symbolic_link_to_a_folder_is_flagged(self):
+        self.make_link(self.root / "docs" / "linked-scripts", self.root / "scripts", directory=True)
+        self.assert_flagged(self.validate(), "link")
+
+    @unittest.skipUnless(sys.platform == "win32", "junctions exist only on Windows")
+    def test_a_junction_is_flagged(self):
+        link = self.root / "docs" / "junction"
+        made = subprocess.run(["cmd", "/c", "mklink", "/J", str(link), str(self.root / "scripts")], capture_output=True, text=True)
+        if made.returncode != 0:
+            self.skipTest("could not create a junction: " + made.stdout.strip()[:80])
+        self.assert_flagged(self.validate(), "link")
+
+    def test_a_folder_without_links_reports_none(self):
+        self.assertFalse(self.validate().has("ERROR", "link"))
 
     def run_main(self):
         with contextlib.redirect_stdout(io.StringIO()):

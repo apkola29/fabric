@@ -86,6 +86,13 @@ def nested(value, what, *keys):
     return value
 
 
+def text(value, what):
+    """Require a non-empty string field. A field of another type is an unusable answer, not a wrong claim."""
+    if not isinstance(value, str) or not value:
+        raise Unreachable("%s answered with a field of the wrong type" % what)
+    return value
+
+
 def plain_text(raw):
     raw = re.sub(r"(?is)<(script|style).*?</\1>", " ", raw)
     raw = re.sub(r"(?s)<[^>]+>", " ", raw)
@@ -100,9 +107,9 @@ def check_pypi(fact):
     data = json_object(body, "PyPI", "info", "releases")
     info = nested(data["info"], "PyPI", "version")
     releases = data["releases"]
-    if not info["version"] or not isinstance(releases, dict):
+    if not isinstance(releases, dict):
         raise Unreachable("PyPI answered with an unexpected structure")
-    version, latest = fact["version"], info["version"]
+    version, latest = fact["version"], text(info["version"], "PyPI")
     if not releases.get(version):
         return FAIL, "version %s was never published (latest is %s)" % (version, latest)
     if latest == version:
@@ -117,9 +124,9 @@ def check_npm(fact):
     require_ok(status, "the npm registry")
     data = json_object(body, "the npm registry", "dist-tags", "versions")
     tags, versions = data["dist-tags"], data["versions"]
-    latest = tags.get("latest") if isinstance(tags, dict) else None
-    if not latest or not isinstance(versions, dict):
+    if not isinstance(tags, dict) or not isinstance(versions, dict):
         raise Unreachable("the npm registry answered with an unexpected structure")
+    latest = text(tags.get("latest"), "the npm registry")
     if fact.get("version") and fact["version"] not in versions:
         return FAIL, "version %s was never published (latest is %s)" % (fact["version"], latest)
     return PASS, "published, latest %s" % latest
@@ -166,7 +173,7 @@ def check_github_tree(fact):
         raise Unreachable("the tree listing answered with an unexpected structure")
     if data.get("truncated"):
         return UNREACHABLE, "GitHub truncated the tree listing"
-    paths = [nested(entry, "the tree listing", "path")["path"] for entry in data["tree"]]
+    paths = [text(nested(entry, "the tree listing", "path")["path"], "the tree listing") for entry in data["tree"]]
     missing = [p for p in fact.get("present", []) if p not in paths]
     found = [p for p in fact.get("absent", []) if any(x == p or x.startswith(p if p.endswith("/") else p + "/") for x in paths)]
     if missing or found:
@@ -183,8 +190,9 @@ def check_github_path(fact):
         data = json.loads(body)
     except ValueError:
         raise Unreachable("the contents lookup answered with text that is not JSON")
-    is_file = isinstance(data, dict) and bool(data.get("path"))
-    is_folder = isinstance(data, list) and bool(data)
+    is_file = isinstance(data, dict) and isinstance(data.get("path"), str) and bool(data["path"])
+    is_folder = (isinstance(data, list) and bool(data)
+                 and all(isinstance(entry, dict) and isinstance(entry.get("path"), str) and entry["path"] for entry in data))
     if not (is_file or is_folder):
         raise Unreachable("the contents lookup answered with an unexpected structure")
     return PASS, "path exists"
@@ -196,9 +204,9 @@ def check_github_repo(fact):
         return FAIL, "repository not found"
     require_ok(status, "the repository lookup")
     data = json_object(body, "the repository lookup", "full_name")
-    if str(data["full_name"]).lower() != fact["repo"].lower():
+    if text(data["full_name"], "the repository lookup").lower() != fact["repo"].lower():
         return (FAIL if fact.get("stable", True) else DRIFT), "the repository is now called %s" % data["full_name"]
-    if data.get("archived"):
+    if data.get("archived") is True:
         return FAIL, "repository is archived"
     return PASS, "live, last pushed %s" % str(data.get("pushed_at", "?"))[:10]
 
@@ -210,11 +218,12 @@ def check_github_tag(fact):
         return FAIL, "tag not found"
     require_ok(status, "the tag lookup")
     obj = nested(json_object(body, "the tag lookup", "object")["object"], "the tag lookup", "sha", "type")
-    sha = obj["sha"]
-    if obj["type"] == "tag":
+    sha, kind = text(obj["sha"], "the tag lookup"), text(obj["type"], "the tag lookup")
+    if kind == "tag":
         status, body = http_get(base + "tags/" + sha)
         require_ok(status, "the annotated tag lookup")
-        sha = nested(json_object(body, "the annotated tag lookup", "object")["object"], "the annotated tag lookup", "sha")["sha"]
+        inner = nested(json_object(body, "the annotated tag lookup", "object")["object"], "the annotated tag lookup", "sha")
+        sha = text(inner["sha"], "the annotated tag lookup")
     if sha == fact["sha"]:
         return PASS, "%s resolves to %s" % (fact["tag"], sha[:12])
     return FAIL, "%s resolves to %s, not %s" % (fact["tag"], sha[:12], fact["sha"][:12])
@@ -226,9 +235,9 @@ def check_advisory(fact):
         return FAIL, "advisory not found"
     require_ok(status, "the advisory lookup")
     data = json_object(body, "the advisory lookup", "ghsa_id")
-    if str(data["ghsa_id"]).lower() != fact["ghsa"].lower():
+    if text(data["ghsa_id"], "the advisory lookup").lower() != fact["ghsa"].lower():
         raise Unreachable("the advisory lookup answered about another advisory")
-    summary = data.get("summary") or ""
+    summary = data.get("summary") if isinstance(data.get("summary"), str) else ""
     if data.get("cve_id") != fact["cve"] or fact["contains"].lower() not in summary.lower():
         return FAIL, "advisory says %s: %s" % (data.get("cve_id"), data.get("summary"))
     return PASS, "%s: %s" % (data["cve_id"], summary[:80])
@@ -283,17 +292,49 @@ REQUIRED_KEYS = {
     "github-tag": ("repo", "tag", "sha"), "advisory": ("ghsa", "cve", "contains"),
     "arxiv": ("id_list", "title_contains"), "page": ("url",),
 }
+STRING_KEYS = ("id", "claim", "cited_in", "url", "repo", "ref", "path", "package", "version", "tag", "sha", "ghsa", "cve",
+               "contains", "id_list", "title_contains", "regex", "show")
+BOOLEAN_KEYS = ("stable", "raw")
+LIST_KEYS = ("all", "present", "absent")
+
+
+def strings_only(value, what):
+    if not isinstance(value, list) or not all(isinstance(item, str) and item for item in value):
+        raise InvalidFact("%s must be a list of non-empty strings" % what)
 
 
 def validate_definition(fact):
-    """Raise InvalidFact when an entry of facts.json cannot be run, before any network call is made."""
+    """Raise InvalidFact when an entry of facts.json cannot be run, before any network call is made.
+
+    The types are checked as well as the keys: a string where a list belongs would otherwise be read one
+    character at a time, and a claim could then pass for the wrong reason."""
+    if not isinstance(fact, dict):
+        raise InvalidFact("an entry must be an object")
     kind = fact.get("kind")
     if kind not in CHECKS:
         raise InvalidFact("unknown kind %r" % (kind,))
     missing = [key for key in COMMON_KEYS + REQUIRED_KEYS[kind] if key not in fact]
     if missing:
         raise InvalidFact("%s lacks %s" % (kind, ", ".join(missing)))
-    if kind == "page" and not (fact.get("all") or fact.get("segment")):
+    for key in STRING_KEYS:
+        if key in fact and not (isinstance(fact[key], str) and fact[key]):
+            raise InvalidFact("%s must be a non-empty string" % key)
+    for key in BOOLEAN_KEYS:
+        if key in fact and not isinstance(fact[key], bool):
+            raise InvalidFact("%s must be true or false" % key)
+    if fact.get("expect", "present") not in ("present", "absent"):
+        raise InvalidFact("expect must be present or absent")
+    for key in LIST_KEYS:
+        if key in fact:
+            strings_only(fact[key], key)
+    segment = fact.get("segment")
+    if segment is not None:
+        if not isinstance(segment, dict) or not all(isinstance(segment.get(key), str) and segment[key] for key in ("start", "end")):
+            raise InvalidFact("segment needs a start text and an end text")
+        for key in ("present", "absent"):
+            if key in segment:
+                strings_only(segment[key], "segment " + key)
+    if kind == "page" and not (fact.get("all") or segment):
         raise InvalidFact("a page fact checks nothing without 'all' or 'segment'")
     patterns = list(fact.get("all", [])) + [p for p in (fact.get("regex"), fact.get("show")) if p]
     for pattern in patterns:
@@ -306,6 +347,7 @@ def validate_definition(fact):
 def run(facts, pause=0.3):
     results = []
     for fact in facts:
+        shown = fact if isinstance(fact, dict) else {"id": "?", "claim": repr(fact)[:60], "cited_in": "?"}
         try:
             validate_definition(fact)
             status, evidence = CHECKS[fact["kind"]](fact)
@@ -316,7 +358,7 @@ def run(facts, pause=0.3):
         except Exception as exc:
             # Answers from sources are validated where they are read, so reaching this means a defect in the checker.
             status, evidence = FAIL, "the checker crashed (%s: %s)" % (type(exc).__name__, str(exc)[:80])
-        results.append((status, fact, evidence))
+        results.append((status, shown, evidence))
         time.sleep(pause)
     return results
 
