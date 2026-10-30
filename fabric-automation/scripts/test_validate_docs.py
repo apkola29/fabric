@@ -42,7 +42,9 @@ class ValidatorTests(unittest.TestCase):
         path = self.root / rel
         raw = path.read_bytes().decode("utf-8")
         crlf = "\r\n" in raw
-        text = change(raw.replace("\r\n", "\n"))
+        original = raw.replace("\r\n", "\n")
+        text = change(original)
+        self.assertNotEqual(original, text, "the mutation changed nothing in %s, so this test would prove nothing" % rel)
         path.write_bytes((text.replace("\n", "\r\n") if crlf else text).encode("utf-8"))
 
     def before_end(self, rel, line):
@@ -127,11 +129,11 @@ class ValidatorTests(unittest.TestCase):
         self.assert_flagged(self.validate(), "fence")
 
     def test_mermaid_label_needs_quotes(self):
-        self.edit(DESIGN, lambda t: t.replace('ISS["Issue form (intake)"]', "ISS[Issue form (intake)]", 1))
+        self.edit(DESIGN, lambda t: t.replace('MP["Model proxy<br/>(holds the engine credential)"]', "MP[Model proxy<br/>(holds the engine credential)]", 1))
         self.assert_flagged(self.validate(), "mermaid")
 
     def test_mermaid_edge_to_undeclared_node(self):
-        self.edit(DESIGN, lambda t: t.replace("SM --> VERIF\n", "SM --> VERIF\n  SM --> GHOST\n", 1))
+        self.edit(DESIGN, lambda t: t.replace("  KP -.-> SBX\n", "  KP -.-> SBX\n  KP --> GHOST\n", 1))
         self.assert_flagged(self.validate(), "mermaid")
 
     def test_mermaid_state_diagram_garbage(self):
@@ -175,6 +177,35 @@ class ValidatorTests(unittest.TestCase):
         deny = Path(self.tmp.name) / "deny.txt"
         deny.write_text("# private\nHard rules\n", encoding="utf-8")
         self.assert_flagged(self.validate(denylist=deny), "leak-denylist")
+
+    def test_local_tool_path_leak(self):
+        self.append("README.md", "~" + "/." + "copilot" + "/installed-" + "plugins/x\n")
+        self.assert_flagged(self.validate(), "leak")
+
+    def test_publishing_requires_a_denylist(self):
+        report = validate_docs.run(self.root, require_denylist=True)
+        self.assert_flagged(report, "leak-denylist")
+
+    def test_publishing_with_a_denylist_is_clean(self):
+        deny = Path(self.tmp.name) / "deny.txt"
+        deny.write_text("# private\n" + "zzz-no-such" + "-term-zzz\n", encoding="utf-8")
+        report = validate_docs.run(self.root, denylist=deny, require_denylist=True)
+        self.assertEqual([], report.findings, report.render(quiet=True))
+
+    def test_scan_file_finds_a_leak_outside_the_project(self):
+        outside = Path(self.tmp.name) / "outside.md"
+        outside.write_text("contact " + "someone" + "@" + "example.org\n", encoding="utf-8")
+        self.assert_flagged(validate_docs.run(self.root, extra_files=[outside]), "leak")
+
+    def test_scan_file_accepts_a_clean_file(self):
+        outside = Path(self.tmp.name) / "outside.md"
+        outside.write_text("A clean line.\n", encoding="utf-8")
+        report = validate_docs.run(self.root, extra_files=[outside])
+        self.assertEqual([], report.findings, report.render(quiet=True))
+
+    def test_scan_file_that_cannot_be_read(self):
+        missing = Path(self.tmp.name) / "missing.md"
+        self.assert_flagged(validate_docs.run(self.root, extra_files=[missing]), "leak")
 
     def test_missing_final_newline(self):
         self.edit(BRIEF, lambda t: t.rstrip("\n"))

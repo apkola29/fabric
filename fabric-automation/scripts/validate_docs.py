@@ -117,6 +117,7 @@ LEAK_PATTERNS = [
     ("internal-host", re.compile(
         r"(?i)(?:pkgs\.visual" + r"studio\.com|\.share" + r"point\.com|onmicro" + r"soft\.com|corp\.micro" + r"soft\.com|\.msft\.net|\beng\.ms\b)")),
     ("ipv4", re.compile(r"\b(?!127\.0\.0\.1\b|0\.0\.0\.0\b)(?:(?:25[0-5]|2[0-4]\d|1?\d?\d)\.){3}(?:25[0-5]|2[0-4]\d|1?\d?\d)\b")),
+    ("local-tool-path", re.compile(r"~[\\/]\." + r"copilot[\\/]")),
 ]
 MOJIBAKE = re.compile("\u00e2\u20ac|\u00c3[\u0080-\u00bf]|\u00c2[\u0080-\u00bf]|\ufffd")
 PLACEHOLDER = re.compile(r"\b(?:TODO|TBD|FIXME|XXX)\b|<<<<<<<|>>>>>>>")
@@ -948,27 +949,41 @@ def check_mermaid(ctx):
     ctx.report.note("mermaid", "%d diagram(s)" % blocks)
 
 
-def check_leaks(ctx):
+def scan_lines(ctx, rel, lines, deny):
+    hits = 0
+    for i, line in enumerate(lines, 1):
+        for name, pattern in LEAK_PATTERNS:
+            for m in pattern.finditer(line):
+                value = m.group(0)
+                if name == "email" and any(value.endswith(a) for a in EMAIL_ALLOW):
+                    continue
+                hits += 1
+                ctx.report.error("leak", rel, i, "%s pattern found (%d characters)" % (name, len(value)))
+        low = line.lower()
+        for term in deny:
+            if term.lower() in low:
+                hits += 1
+                ctx.report.error("leak-denylist", rel, i, "a private denylist term appears here")
+    return hits
+
+
+def check_leaks(ctx, extra_files=()):
     hits = 0
     deny = [t for t in ctx.denylist if t]
     for doc in ctx.docs.values():
-        for i, line in enumerate(doc.lines, 1):
-            for name, pattern in LEAK_PATTERNS:
-                for m in pattern.finditer(line):
-                    value = m.group(0)
-                    if name == "email" and any(value.endswith(a) for a in EMAIL_ALLOW):
-                        continue
-                    hits += 1
-                    ctx.report.error("leak", doc.rel, i, "%s pattern found (%d characters)" % (name, len(value)))
-            low = line.lower()
-            for term in deny:
-                if term.lower() in low:
-                    hits += 1
-                    ctx.report.error("leak-denylist", doc.rel, i, "a private denylist term appears here")
+        hits += scan_lines(ctx, doc.rel, doc.lines, deny)
         for term in deny:
             if term.lower() in doc.rel.lower():
                 ctx.report.error("leak-denylist", doc.rel, 0, "a private denylist term appears in the file name")
-    ctx.report.note("leaks", "%d hit(s), %d private term(s) checked" % (hits, len(deny)))
+    for path in extra_files:
+        label = "%s (outside the project)" % Path(path).name
+        try:
+            text = Path(path).read_text(encoding="utf-8", errors="replace")
+        except OSError as exc:
+            ctx.report.error("leak", label, 0, "cannot read the file (%s)" % type(exc).__name__)
+            continue
+        hits += scan_lines(ctx, label, text.splitlines(), deny)
+    ctx.report.note("leaks", "%d hit(s), %d private term(s) checked, %d extra file(s)" % (hits, len(deny), len(list(extra_files))))
 
 
 URL_RE = re.compile(r"https?://[^\s<>()\[\]`\"']+")
@@ -1009,7 +1024,7 @@ def check_urls(ctx, include_raw=False):
     ctx.report.note("urls", "%d fetched, %d broken, %d blocked" % (len(urls), bad, blocked))
 
 
-def run(root, denylist=None, check_urls_flag=False, include_raw=False):
+def run(root, denylist=None, check_urls_flag=False, include_raw=False, require_denylist=False, extra_files=()):
     root = Path(root).resolve()
     report = Report()
     terms = []
@@ -1018,6 +1033,8 @@ def run(root, denylist=None, check_urls_flag=False, include_raw=False):
             line = line.strip()
             if line and not line.startswith("#"):
                 terms.append(line)
+    if require_denylist and not terms:
+        report.error("leak-denylist", "(denylist)", 0, "a private denylist is required here, but none was given or it holds no terms")
     ctx = Context(root, report, terms)
     check_required(ctx)
     check_hygiene(ctx)
@@ -1032,7 +1049,7 @@ def run(root, denylist=None, check_urls_flag=False, include_raw=False):
     check_counts(ctx)
     check_links(ctx)
     check_mermaid(ctx)
-    check_leaks(ctx)
+    check_leaks(ctx, extra_files)
     if check_urls_flag:
         check_urls(ctx, include_raw)
     return report
@@ -1044,12 +1061,14 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--root", type=Path, default=Path(__file__).resolve().parent.parent, help="project folder")
     parser.add_argument("--denylist", type=Path, help="file of private terms, one per line (never published)")
+    parser.add_argument("--require-denylist", action="store_true", help="fail when no denylist is given or it holds no terms (use when publishing)")
+    parser.add_argument("--scan-file", type=Path, action="append", default=[], help="also scan this file, which may be outside the project (repeatable)")
     parser.add_argument("--check-urls", action="store_true", help="also fetch every URL in the main documents (network)")
     parser.add_argument("--include-raw", action="store_true", help="with --check-urls, include the raw research reports")
     parser.add_argument("--strict", action="store_true", help="treat warnings as errors")
     parser.add_argument("--quiet", action="store_true", help="print findings only")
     args = parser.parse_args(argv)
-    report = run(args.root, args.denylist, args.check_urls, args.include_raw)
+    report = run(args.root, args.denylist, args.check_urls, args.include_raw, args.require_denylist, args.scan_file)
     print(report.render(args.quiet))
     failed = report.count("ERROR") > 0 or (args.strict and report.count("WARN") > 0)
     return 1 if failed else 0

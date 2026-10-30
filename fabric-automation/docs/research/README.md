@@ -20,4 +20,4 @@ Each report separates facts (with a source and a date) from inference, and marks
 ## Two things to know
 
 - The evidence identifiers L1 and L2 in the early decision register and the brief refer to two local environment surveys. They describe the author's own machine and lab, so they are not published.
-- Before publication, local machine paths and details of a non-public mirror of a skills repository were removed or reworded in the raw reports. The substance of each finding is unchanged. Where the public repository could be checked, the fact was checked against it (see [../reviews/verification-log.md](../reviews/verification-log.md)).
+- Before publication, local machine paths and other non-public details were removed or reworded in the raw reports. The substance of each finding is unchanged. Anything that could not be confirmed from a public source was dropped or marked UNVERIFIED (see [../reviews/verification-log.md](../reviews/verification-log.md)).

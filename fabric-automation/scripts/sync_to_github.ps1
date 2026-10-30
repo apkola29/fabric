@@ -7,7 +7,8 @@ Publishes this folder to the fabric-automation folder of the GitHub repository a
 2. Runs the validator in strict mode and the validator's mutation tests.
 3. Brings the local clone up to date with origin (fast-forward only).
 4. Mirrors this folder into <clone>\fabric-automation and copies the CI workflows.
-5. Stages ONLY those paths, commits and pushes.
+5. Stages ONLY those paths, commits, checks that everything that would be pushed (earlier commits included)
+   touches only those paths, then pushes that commit by its SHA. It never force-pushes.
 6. Compares the Git blob hash of every file with the one GitHub holds.
 7. Optionally waits for the CI run on the pushed commit.
 
@@ -21,10 +22,14 @@ The local clone of the repository. Defaults to ..\repo next to this project.
 
 .PARAMETER DenyList
 File of private terms that must never be published. Defaults to $env:FABRIC_AUTOMATION_DENYLIST, then to
-the private folder next to the project if it exists.
+the private folder next to the project if it exists. Publishing stops when no list is found, because the
+generic leak patterns cannot see private terms. -NoDenylist overrides that for one run.
+
+.PARAMETER NoDenylist
+Publish without the private term check. Use only when the list really does not exist; the run prints a warning.
 
 .PARAMETER IncludeReadme
-Also stage the repository README.md (used once, to add the project row).
+Also stage the repository README.md (used once, to add the project row). The README is scanned for leaks first.
 
 .PARAMETER WaitCi
 Wait for the validate workflow on the pushed commit and fail if it fails.
@@ -36,14 +41,18 @@ param(
     [string]$Repo = 'apkola29/fabric',
     [string]$Branch = 'master',
     [string]$DenyList,
+    [switch]$NoDenylist,
     [switch]$NoPush,
     [switch]$SkipTests,
     [switch]$IncludeReadme,
-    [switch]$WaitCi,
-    [switch]$AllowOtherCommits
+    [switch]$WaitCi
 )
 
 $ErrorActionPreference = 'Stop'
+# robocopy reports success with exit codes 1 to 7; it is checked by hand below.
+$PSNativeCommandUseErrorActionPreference = $false
+
+if ($Branch -notmatch '^[A-Za-z0-9][A-Za-z0-9._/-]*$') { throw "unsafe branch name '$Branch'" }
 
 $Project = Split-Path $PSScriptRoot -Parent
 $FabricDir = Split-Path $Project -Parent
@@ -55,7 +64,8 @@ if (-not $DenyList) {
 }
 
 $Workflows = @('fabric-automation-validate.yml', 'fabric-automation-facts.yml')
-$Paths = @('fabric-automation') + ($Workflows | ForEach-Object { ".github/workflows/$_" })
+$WorkflowPaths = $Workflows | ForEach-Object { ".github/workflows/$_" }
+$Paths = @('fabric-automation') + $WorkflowPaths
 if ($IncludeReadme) { $Paths += 'README.md' }
 
 function Step([string]$Text) { Write-Host "==> $Text" -ForegroundColor Cyan }
@@ -80,7 +90,7 @@ foreach ($tool in 'git', 'gh', 'python') {
 }
 if (-not (Test-Path (Join-Path $CloneDir '.git'))) { throw "$CloneDir is not a git clone" }
 $origin = (Invoke-Git @('remote', 'get-url', 'origin')).Output
-if ($origin -notmatch [regex]::Escape($Repo)) { throw "origin is $origin, expected $Repo" }
+if ($origin -notmatch [regex]::Escape($Repo)) { throw "origin is $($origin -replace '(?<=://)[^/@]*@', ''), expected $Repo" }
 $owner = $Repo.Split('/')[0]
 $login = (Invoke-Native -Exe 'gh' -Arguments @('api', 'user', '--jq', '.login')).Output
 if ($login -ne $owner) { throw "gh is signed in as '$login', not '$owner'. Run: gh auth switch -u $owner" }
@@ -91,7 +101,14 @@ Write-Host "    clone: $CloneDir ($Branch), account: $login"
 Step 'Validating the documents (strict) and testing the validator'
 $validator = Join-Path $Project 'scripts\validate_docs.py'
 $arguments = @($validator, '--strict', '--quiet')
-if ($DenyList -and (Test-Path $DenyList)) { $arguments += @('--denylist', $DenyList) } else { Write-Warning 'no private denylist found; only the generic leak patterns are checked' }
+if ($DenyList -and (Test-Path $DenyList)) {
+    $arguments += @('--denylist', $DenyList, '--require-denylist')
+} elseif ($NoDenylist) {
+    Write-Warning 'publishing without the private term check (-NoDenylist); only the generic leak patterns are applied'
+} else {
+    throw 'no private denylist found, and the generic leak patterns cannot see private terms. Set FABRIC_AUTOMATION_DENYLIST or pass -DenyList. Use -NoDenylist only if the list really does not exist.'
+}
+if ($IncludeReadme) { $arguments += @('--scan-file', (Join-Path $CloneDir 'README.md')) }
 $result = Invoke-Native -Exe 'python' -Arguments $arguments -AllowFailure
 Write-Host $result.Output
 if ($result.ExitCode -ne 0) { throw 'validation failed; nothing was published' }
@@ -107,11 +124,6 @@ Invoke-Git @('fetch', 'origin') | Out-Null
 $ahead = [int](Invoke-Git @('rev-list', '--count', "origin/$Branch..HEAD")).Output
 $behind = [int](Invoke-Git @('rev-list', '--count', "HEAD..origin/$Branch")).Output
 Write-Host "    ahead $ahead, behind $behind"
-if ($ahead -gt 0) {
-    $subjects = (Invoke-Git @('log', '--format=%s', "origin/$Branch..HEAD")).Output -split "`n"
-    $foreign = @($subjects | Where-Object { $_ -notlike 'fabric-automation:*' })
-    if ($foreign.Count -gt 0 -and -not $AllowOtherCommits) { throw "the clone has $($foreign.Count) unpushed commit(s) that are not mine ($($foreign[0])); push or review them first, or use -AllowOtherCommits" }
-}
 if ($behind -gt 0) {
     if ($ahead -gt 0) { throw 'the clone has diverged from origin; resolve that by hand first' }
     Invoke-Git @('merge', '--ff-only', "origin/$Branch") | Out-Null
@@ -125,7 +137,11 @@ $null = robocopy $Project $destination /MIR /XD @exclude /XF '*.pyc' /NFL /NDL /
 if ($LASTEXITCODE -ge 8) { throw "robocopy failed with exit code $LASTEXITCODE" }
 $workflowDir = Join-Path $CloneDir '.github\workflows'
 New-Item -ItemType Directory -Force -Path $workflowDir | Out-Null
-foreach ($name in $Workflows) { Copy-Item (Join-Path $Project "ci\$name") (Join-Path $workflowDir $name) -Force }
+foreach ($name in $Workflows) {
+    # Written with LF endings on purpose: these two files are outside the folder that .gitattributes covers.
+    $text = [System.IO.File]::ReadAllText((Join-Path $Project "ci\$name"), [System.Text.Encoding]::UTF8) -replace "`r`n", "`n"
+    [System.IO.File]::WriteAllText((Join-Path $workflowDir $name), $text, (New-Object System.Text.UTF8Encoding($false)))
+}
 
 Step 'Staging only this project'
 Invoke-Git (@('add', '-A', '--') + $Paths) | Out-Null
@@ -145,12 +161,21 @@ if (-not $changed) {
 }
 
 $pending = [int](Invoke-Git @('rev-list', '--count', "origin/$Branch..HEAD")).Output
+$head = (Invoke-Git @('rev-parse', 'HEAD')).Output
+if ($pending -gt 0) {
+    # Everything that would go with this push, including commits made earlier, must touch only the managed paths.
+    $merges = [int](Invoke-Git @('rev-list', '--merges', '--count', "origin/$Branch..HEAD")).Output
+    if ($merges -gt 0) { throw "refusing to push: the range holds $merges merge commit(s)" }
+    $touched = @((Invoke-Git @('log', '--format=', '--name-only', "origin/$Branch..HEAD")).Output -split "`n" | Where-Object { $_ } | Sort-Object -Unique)
+    $outside = @($touched | Where-Object { -not ($_ -like 'fabric-automation/*' -or $WorkflowPaths -contains $_ -or ($IncludeReadme -and $_ -eq 'README.md')) })
+    if ($outside.Count -gt 0) { throw "refusing to push: $($outside.Count) path(s) outside the managed set would go with it, for example '$($outside[0])'" }
+}
 $pushed = $false
 if ($NoPush) {
     Write-Host "    -NoPush given: $pending commit(s) stay local"
 } elseif ($pending -gt 0) {
     Step "Pushing $pending commit(s)"
-    Invoke-Git @('push', 'origin', "HEAD:$Branch") | Out-Null
+    Invoke-Git @('push', 'origin', "${head}:refs/heads/$Branch") | Out-Null
     $pushed = $true
 } else {
     Write-Host '    nothing to push: GitHub already has this commit'
@@ -159,7 +184,6 @@ if ($NoPush) {
 if ($NoPush) { Write-Host 'Stopped before verification because of -NoPush.'; return }
 
 Step 'Verifying that GitHub holds exactly this content'
-$head = (Invoke-Git @('rev-parse', 'HEAD')).Output
 $verify = Join-Path $Project 'scripts\verify_remote.py'
 $verifyArgs = @($verify, '--repo', $Repo, '--ref', $Branch, '--remote-path', 'fabric-automation', '--local', $Project, '--commit', $head)
 foreach ($name in $Workflows) { $verifyArgs += @('--extra', ".github/workflows/$name=ci/$name") }

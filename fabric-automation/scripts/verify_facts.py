@@ -2,8 +2,9 @@
 """Check the concrete claims in scripts/facts.json against public sources.
 
 Statuses: PASS (the claim holds now), DRIFT (it held when written and a newer
-value exists), FAIL (the claim is wrong), UNREACHABLE (the source could not be
-fetched, for example a network that blocks it). Standard library only.
+value exists, or a page that a claim quotes has since changed), FAIL (the claim
+is wrong), UNREACHABLE (the source could not be fetched, for example a network
+that blocks it). Standard library only.
 
 Exit status is 1 when any claim FAILS (or with --strict, when any is not PASS).
 """
@@ -72,16 +73,32 @@ def check_npm(fact):
     return PASS, "published, latest %s" % latest
 
 
+def resolve_ref(fact):
+    if fact["ref"] != "@latest-release":
+        return fact["ref"]
+    status, body = http_get("https://api.github.com/repos/%s/releases/latest" % fact["repo"])
+    if status != 200:
+        raise Unreachable("latest release not readable (HTTP %s)" % status)
+    return json.loads(body)["tag_name"]
+
+
 def check_github_file(fact):
-    url = "https://raw.githubusercontent.com/%s/%s/%s" % (fact["repo"], fact["ref"], fact["path"])
+    ref = resolve_ref(fact)
+    url = "https://raw.githubusercontent.com/%s/%s/%s" % (fact["repo"], ref, fact["path"])
     status, body = http_get(url)
     if status == 404:
-        return FAIL, "file not found"
-    if re.search(fact["regex"], body):
-        return PASS, "pattern found"
+        return FAIL, "file not found at %s" % ref
+    found = bool(re.search(fact["regex"], body))
+    changed = FAIL if fact.get("stable", True) else DRIFT
+    if fact.get("expect") == "absent":
+        if not found:
+            return PASS, "pattern absent at %s" % ref
+        return changed, "pattern is now present at %s" % ref
+    if found:
+        return PASS, "pattern found at %s" % ref
     shown = re.search(fact["show"], body) if fact.get("show") else None
     detail = "pattern not found" + (" (the file says %s)" % shown.group(1) if shown else "")
-    return (FAIL if fact.get("stable", True) else DRIFT), detail
+    return changed, detail
 
 
 def check_github_tree(fact):
@@ -166,7 +183,8 @@ def check_page(fact):
         if leaked:
             notes.append("section now mentions: %s" % ", ".join(leaked))
     if missing or notes:
-        return FAIL, "; ".join(filter(None, ["missing: %s" % ", ".join(missing) if missing else "", *notes]))
+        detail = "; ".join(filter(None, ["missing: %s" % ", ".join(missing) if missing else "", *notes]))
+        return (FAIL if fact.get("stable", True) else DRIFT), detail
     return PASS, "all expected text found"
 
 

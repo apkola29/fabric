@@ -1,6 +1,6 @@
 # Fabric Code Factory — Design
 
-Version 0.2 · 2026-10-30 · Status: revised after the three-model review (70 findings, all dispositioned in `reviews/disposition-log.md`), then closure-checked by the same three reviewers (`reviews/closure-gemini.md`, `reviews/closure-gpt.md`, `reviews/closure-grok.md`). The closure check raised 11 new problems and four partly-closed findings. All are folded in below, and all three reviewers said the design is good enough to start the Phase 0 spikes. "Closed" means closed on paper: the spikes still have to prove the platform assumptions. v0.1 is in `archive/04-design-v0.1.md`.
+Version 0.2 · 2026-10-30 · Status: revised after the three-model review (70 findings, all dispositioned in `reviews/disposition-log.md`), then closure-checked by the same three reviewers (`reviews/closure-gemini.md`, `reviews/closure-gpt.md`, `reviews/closure-grok.md`). The closure check raised 11 new problems and four partly-closed findings. All are folded in below, and all three reviewers said the design is good enough to start the Phase 0 spikes. "Closed" means closed on paper: the spikes still have to prove the platform assumptions. v0.1 is in `archive/04-design-v0.1.md`. After publication, verification round 1 (a clean-room CI run, a check of the platform facts against primary sources, and a second three-model pass) corrected further points, which are listed in `reviews/round-1-findings.md`. This is a design: nothing in it has been built or tested on a tenant.
 
 Inputs: requirements v0.3 (`01-requirements.md`), decision register v0.2 (`02-decision-register.md`), landscape digest (`03-landscape-research.md`), raw reports T1 to T7 and O1 (`research/raw/`), cross-verification (`reviews/xv-results.md`), the four review registers (`reviews/`).
 
@@ -49,53 +49,35 @@ Every component obeys these. A design change that breaks one needs a decision re
 ### 3.1 Zones, trust boundaries and process isolation
 
 ```mermaid
-flowchart LR
-  subgraph GH["GitHub: governance plane"]
-    ISS["Issue form (intake)"]
-    RS["Rulesets and approval-policy check"]
-    PR["Draft PR and evidence bundle"]
-    HUM["Human approver (code owners)"]
-  end
-  subgraph ORCH["Orchestrator: trusted, deterministic"]
-    GATE["Intake gateway: authZ, scan, schema"]
-    SM["State machine, locks, budgets, kill switch"]
-    STORE["Run store and reconciler"]
-    PUB["Output gate and publisher"]
-  end
-  subgraph SBX["Agent sandbox: no credentials, default-deny egress"]
-    PARSE["Intake parser (no tools)"]
-    PLAN["Planner"]
-    IMPL["Implementer"]
-    TEST["Test author (other model family)"]
-    VERIF["Verifiers (read-only, tool-less)"]
-  end
-  subgraph EXE["Executor: trusted, immutable image, holds Fabric identities"]
-    STAT["Static gates (no Fabric access)"]
-    ENV["Environment manager and dynamic gates"]
-  end
-  subgraph FAB["Fabric sandbox capacity"]
-    WS["Ephemeral workspace, synthetic data"]
-  end
+flowchart TB
+  REQ["Allow-listed requester"]
+  GH["GitHub: governance plane<br/>Issue form (intake)<br/>Rulesets and approval-policy check<br/>Draft PR and evidence bundle<br/>Human approver (code owners)"]
+  ORCH["Orchestrator: trusted, deterministic<br/>Intake gateway: authZ, scan, schema<br/>State machine, locks, budgets, kill switch<br/>Run store and reconciler<br/>Output gate and publisher"]
+  SBX["Agent sandbox: no credentials, default-deny egress<br/>Intake parser (no tools)<br/>Planner<br/>Implementer<br/>Test author (other model family)<br/>Verifiers (read-only, tool-less)"]
+  EXE["Executor: trusted, immutable image, holds Fabric identities<br/>Static gates (no Fabric access)<br/>Environment manager and dynamic gates"]
+  FAB["Fabric sandbox capacity<br/>Ephemeral workspace, synthetic data"]
   KP["Pinned knowledge pack"]
-  MP["Model proxy (holds the engine credential)"]
-  EVD["Evidence store: immutable, retention-controlled"]
-  ISS --> GATE --> SM
-  SM <--> STORE
-  SM --> PARSE --> PLAN --> IMPL
-  SM --> TEST
-  IMPL -->|patch artifact| PUB
-  TEST -->|oracle artifact| PUB
-  PUB -->|signed commits on factory branch| STAT
-  STAT --> ENV --> WS
-  ENV -->|sanitized evidence| SM
-  SM --> VERIF
-  PUB --> PR --> HUM
-  RS -.-> PR
+  MP["Model proxy<br/>(holds the engine credential)"]
+  EVD["Evidence store<br/>immutable, retention-controlled"]
+  REQ -->|"issue text (untrusted)"| GH
+  GH -->|"intake"| ORCH
+  ORCH -->|"spec and clone"| SBX
+  SBX -->|"artifacts of declared types"| ORCH
+  ORCH -->|"signed commits on the factory branch"| EXE
+  EXE -->|"deploy and run gates"| FAB
+  EXE -->|"sanitized evidence"| ORCH
+  ORCH -->|"draft PR with evidence"| GH
   KP -.-> SBX
   SBX -.-> MP
-  SM -.-> EVD
-  ENV -.-> EVD
+  ORCH -.-> EVD
+  EXE -.-> EVD
+  classDef trusted stroke-width:3px
+  classDef confined stroke-width:3px,stroke-dasharray:6 4
+  class ORCH,EXE trusted
+  class SBX confined
 ```
+
+Thick solid border: trusted code. Thick dashed border: the confined agent sandbox. Dotted arrows: supporting access (the pinned knowledge pack in, model calls out through the proxy, evidence writes). The sandbox has no direct path to the executor or to Fabric: its artifacts reach them only through the orchestrator's output gate.
 
 Trust boundaries that matter:
 
@@ -110,7 +92,7 @@ Trust boundaries that matter:
 |---|---|---|
 | I-1 | No credential readable | From inside the agent container: the environment, the filesystem, sibling process data and runner files hold no model, GitHub, Azure or Fabric token. The job token has read-only permissions, plus `copilot-requests: write` if the Copilot engine needs it, and no ID token |
 | I-2 | Egress deny for every confined process | Canary connections to a controlled endpoint from the agent, from a child process and from an MCP server all fail. Allowed destinations: the model proxy and, at build time only, a hash-pinned package mirror. Setup, pre-activation, post and detection steps are not confined by the firewall, so they are treated as trusted code: pinned by SHA, reviewed, and with no network calls of their own. GitHub's own domains are allowed by default, so with no GitHub credential in the job they leave unauthenticated reads only, and the canary shows that |
-| I-3 | Model mediation | Model requests pass through a proxy that holds the engine credential. The agent cannot read it, cannot call the model service directly, and can use only the allow-listed models. The proxy is not a caller-authentication boundary, so code running in the container can still use it for inference. That exposure is inference spend, bounded by the reserved budget (3.14), and the requests carry nothing the agent does not already hold |
+| I-3 | Model mediation | Model requests pass through a proxy that holds the engine credential. The agent cannot read it, cannot call the model service directly, and can use only the allow-listed models. The proxy is not a caller-authentication boundary, so code running in the container can still use it for inference. That exposure is inference spend. In D0 it is bounded only by the engine's limits and the organisation budget (3.14), and S9 measures it with parallel requests. The requests carry nothing the agent does not already hold |
 | I-4 | Filesystem scope | The agent sees the clone of the test-merge tree, the pinned knowledge pack (read-only) and a scratch directory. No runner tooling and no other run's data are mounted |
 | I-5 | Output typing | The job emits only artifacts of declared types. Anything else is dropped and logged |
 | I-6 | Tool restriction | The Power BI Authoring MCP runs only with `--readonly` and the EULA flag, and with no Fabric credentials. Other MCP servers are offline documentation tools. A per-role tool allow-list applies |
@@ -153,10 +135,12 @@ stateDiagram-v2
   VALIDATED --> SPECIFIED: parser output passes schema
   SPECIFIED --> NEEDS_INFO: blocking ambiguity, one round, fixed question types
   NEEDS_INFO --> SPECIFIED: answer received
+  NEEDS_INFO --> ABANDONED: no answer in 7 days
   SPECIFIED --> PLANNED: planner output passes schema, tier computed from the plan
-  PLANNED --> APPROVAL: tier T2 or low-trust requester
+  PLANNED --> ESCALATED: tier T3, over the size cap, or the plan fails policy
+  PLANNED --> APPROVAL: tier T2, or a requester outside the trusted sub-group
   APPROVAL --> TEST_AUTHORING: human approves digest of spec and plan
-  PLANNED --> TEST_AUTHORING: tier T0 or T1
+  PLANNED --> TEST_AUTHORING: tier T0 or T1, and a trusted requester
   TEST_AUTHORING --> IMPLEMENTING: oracle frozen
   IMPLEMENTING --> STATIC_GATES: patch accepted by output gate
   STATIC_GATES --> IMPLEMENTING: gate failed, budget left
@@ -174,7 +158,22 @@ stateDiagram-v2
   MERGED --> [*]
   CLOSED --> [*]
   ESCALATED --> [*]
+  ABANDONED --> [*]
 ```
+
+The three exits from PLANNED are tried in the order drawn and the first that matches wins, so a run takes exactly one of them. A T3 or oversize plan never reaches approval, and an untrusted requester never reaches TEST_AUTHORING without the approval.
+
+A run ends in exactly one terminal state:
+
+| Terminal state | Entered when | Left behind | Locks, workspace and reconciler |
+|---|---|---|---|
+| MERGED | A human merges the PR | The merged PR | Locks released at the merge. The workspace expires by lifetime 3 below |
+| CLOSED | A human closes the PR, or it is idle for 14 days | The closed PR | Locks released at the close. The workspace expires by lifetime 3 |
+| ESCALATED | Budget exhausted, tier raised, policy violation, T3 or oversize plan, failed preflight, or an infrastructure failure after the retries | A failure report as a comment. A draft PR only when part of the work passed its gates | Locks are released at once when there is no PR. A draft PR keeps them until it is closed or 72 hours pass. The workspace expires by lifetime 3 |
+| CANCELLED | The kill switch or a `factory:cancel` label, from any state | A comment that says who cancelled and when | Active provider operations are cancelled by type, the locks are released, and the workspace is torn down at once or left to the sweeper |
+| ABANDONED | No answer to the one clarification round within 7 days | A comment on the issue | Nothing to release: locks and a workspace are not taken before PLANNED |
+
+The reconciler treats a terminal run as finished and only sweeps what a finalizer left behind.
 
 Rules that the diagram does not show:
 
@@ -187,9 +186,9 @@ Rules that the diagram does not show:
 - **Reconciler and watchdog.** A scheduled workflow reads the run store, finds runs whose lease has expired or whose last event is older than the stage timeout, and re-dispatches from the last completed stage, at most 3 times, then ESCALATED. Each run also has a deadline. Reaching it cancels active provider operations by type (job instance, refresh, export), runs the finalizers, and quarantines anything that cannot be cancelled, with the residual exposure recorded.
 - **Four lifetimes, never conflated.** (1) *Compute lease*: the capacity is resumed while a reference count is above zero and paused after an idle window (default 15 minutes). (2) *Item reservation*: the locks on the run's item paths, held from PLANNED until the PR is merged or closed, or 72 hours, and releasable by the reconciler. (3) *Workspace expiry*: the sandbox workspace is torn down 24 hours after its last dynamic gate. (4) *PR*: open until a human decides, or closed after 14 idle days. The end of a workspace never closes a PR, and a human who wants to look at an expired result asks for a preview (3.7).
 - **Budgets per unit (defaults to calibrate).** At most 6 implement-and-static-gate iterations and 3 dynamic cycles, a wall-clock cap, and token and dollar caps held as atomic counters in the run store: reserve a worst-case cost before dispatch, reconcile after (3.14). The same failure signature twice forces one plan revision, then an escalation.
-- **Preflight and fail-closed.** Before each run, and again before PROVISIONING, a conformance check asserts: the four rulesets (RS-A, RS-B, RS-C1, RS-C2) and the App-pinned required checks (read back through the API), the `sandbox` Environment configuration, the identities' role assignments (the deployer has no role on dev, test or production, and each runner holds a grant only on its leased workspace), the target capacity ID, the kill-switch state, the digest of the policy pin, and the result of the latest egress canary. Any deviation ends the run in ESCALATED (preflight), and the run never falls back to another capacity.
+- **Preflight and fail-closed.** Before each run, and again before PROVISIONING, a conformance check asserts: the four rulesets (RS-A, RS-B, RS-C1, RS-C2) and the App-pinned required checks (read back through the API), the `sandbox` Environment configuration, the identities' role assignments (the deployer has no role on dev, test or production, and each runner holds a grant only on its leased workspace), the target capacity ID, the kill-switch state, the digest of the policy pin, the federated credentials' subjects against the repository's current subject format, and the result of the latest egress canary. Any deviation ends the run in ESCALATED (preflight), and the run never falls back to another capacity.
 - **Test-merge tree.** Static and dynamic gates run on the candidate merged into current `main`. The evidence names both the base and the candidate SHA. If `main` moves before a human decides, the evidence is void, the `factory/evidence` check fails, and the reconciler re-validates a bounded number of times.
-- **End states.** DONE (PR open), PARTIAL, BLOCKED and ABANDONED each leave a draft PR or an issue comment with a failure report. A report for a policy violation carries the rejection reason and never the rejected patch. Partial work is never merged.
+- **Outcome labels.** Reports and metrics use four labels that map onto the states above. DONE is a PR open for review (AWAITING_HUMAN, which is not terminal). PARTIAL is ESCALATED with a draft PR. BLOCKED is ESCALATED with a comment and no PR. ABANDONED is its own state. Each leaves a draft PR or a comment with a failure report. A report for a policy violation carries the rejection reason and never the rejected patch. Partial work is never merged.
 - **Escalate is always available to the implementer.** Offering an explicit "I cannot do this, ask a human" action reduced test cheating in the ImpossibleBench study.
 
 ### 3.4 Roles and models
@@ -222,7 +221,7 @@ Notes:
 | `fcf-state` | Entra identity, OIDC | Table data write on the run store. Blob write, no delete, on the evidence container | Any Fabric role |
 | `fcf-deployer` | Entra service principal or managed identity, OIDC federated to the `sandbox` Environment | Create and delete workspaces on the sandbox capacity. Admin on the workspaces it creates. Deploy, seed, bind connections, refresh, hard-delete items, teardown | Any role on dev, test or production. Tenant admin. Running agent-authored code |
 | `fcf-runner-01` to `-NN` | A pool of Entra service principals, NN = the concurrency cap | Contributor on the one workspace it is leased to: run notebook and pipeline jobs, DAX through `executeQueries` on non-RLS models, report render | Hold two workspaces, create a workspace, keep any grant after release |
-| `fcf-capacity` | A custom Azure role | Suspend, resume and read on the sandbox capacity resource only (action names confirmed in S8) | Anything else |
+| `fcf-capacity` | A custom Azure role | Suspend, resume and read on the sandbox capacity resource only. Learn's pause and resume guide also lists the `write` action for the custom role, which would let the identity resize the capacity, so S8 tests with and without it (action names confirmed in S8) | Anything else |
 | Reviewers group | Entra group | Read on a run's workspace while a preview exists | Write |
 | Git credential in Fabric | **None in v1** | If dev deployment is ever automated (Phase 3): read-only, one repository, short-lived, human-owned, alert on use | Allow Commit to Git from the factory |
 
@@ -232,7 +231,7 @@ Notes:
 
 **Run-as proof (S2).** A notebook run and a refresh each print the effective identity. The test shows that the runner cannot create a workspace or list another one, that the deployer is not the item owner of agent code, and that revoking a grant takes effect before the next lease. Executable items are not deployed until this has passed.
 
-Constraints: Entra allows at most 20 federated credentials per identity and does no wildcard matching, so trust is bound to the GitHub Environments `sandbox` and `publisher`, not to branches. Provision credentials serially, because concurrent creation on one managed identity fails with HTTP 409. Fabric service-principal access is bounded by workspace roles and tenant settings, not OAuth scopes, so the blast radius comes from the roles granted. S2 confirms the tenant settings, all owned by a tenant admin: service principals may call the Fabric APIs, may create workspaces, connections and pipelines (off by default), may use the Power BI APIs, report export to image files is on, and the item-recovery setting and the sensitivity-label Git switch are recorded.
+Constraints: Entra allows at most 20 federated credentials per identity and does no wildcard matching, so trust is bound to the GitHub Environments `sandbox` and `publisher`, not to branches. The subject GitHub puts in the token depends on the repository: repositories created after 2026-07-15, or renamed or transferred after that date, use an immutable form with the owner and repository IDs (`repo:OWNER@OWNER-ID/REPO@REPO-ID:environment:NAME`), and older ones keep the name-based form unless they opt in. The credentials are created from the subject the repository actually emits. Provision credentials serially, because concurrent creation on one managed identity fails with HTTP 409. Fabric service-principal access is bounded by workspace roles and tenant settings, not OAuth scopes, so the blast radius comes from the roles granted. S2 confirms the tenant settings, all owned by a tenant admin: service principals may call the Fabric APIs, may create workspaces, connections and pipelines (off by default), may use the Power BI APIs, report export to image files is on, and the item-recovery setting and the sensitivity-label Git switch are recorded.
 
 The publisher's App private key lives only in the `publisher` Environment and is used only by the publisher job. GitHub's documentation says a bot signature is marked verified only when the request is authenticated as the App and carries no custom author, committer or signature data, so the publisher sends none, and there is no separate signing key to protect. S11 confirms that such commits satisfy a signed-commit rule. Rotation of the App key is part of the incident drill (3.16).
 
@@ -244,14 +243,15 @@ The publisher's App private key lives only in the `publisher` Environment and is
 
 | Ruleset | Target | Rules | Bypass |
 |---|---|---|---|
-| RS-A main update restriction | `main` | Restrict updates. That this also stops an App's API merge is an assumption, tested by N2 | The human maintainers team only |
+| RS-A main update restriction | `main` | Restrict updates. GitHub words this as "only users with bypass permissions can push" and does not say how an API merge is treated, so that it also stops an App's merge is an assumption, tested by N2 | The human maintainers team only |
 | RS-B main review and checks | `main` | Require a PR. At least one code-owner approval. Dismiss stale approvals. Require approval of the most recent push. Resolve conversations. Required checks pinned to the publisher App's ID: `factory/static`, `factory/dynamic`, `factory/integrity`, `factory/evidence`, `factory/approval-policy`, plus normal CI. Branch up to date with base (no merge queue in v1). Block force pushes and deletion | None |
 | RS-C1 factory branches: writer | `factory/**`, `factory-ledger/**` | Restrict creation, update and deletion | `factory-publisher` only |
 | RS-C2 factory branches: integrity | `factory/**`, `factory-ledger/**` | Require signed commits. Block force pushes | None, so these rules bind the publisher too |
 
   In addition: CODEOWNERS covers `.github/**`, `CODEOWNERS`, the item folders and the policy paths, owned by administrators. The Copilot coding agent and any other agent are disabled for the repository, so an `@copilot` comment cannot push to a factory branch. Required checks are matched by App ID, so another workflow or App cannot post a check with the same name.
 - **Approval-policy check (`factory/approval-policy`).** Posted by the publisher App, recomputed on every review, push and dismissal. It passes only when the PR has the required number of eligible approvals (one for T0 and T1, two for T2, both counts held in policy, since a ruleset cannot express a tier-dependent count). An eligible approver is a human in the code-owners team who is not the issue requester, not a bot, and who approved the current head SHA. It also checks that the head SHA, the tier and the approved spec digest match the run store. This is the control for "requester is not approver": GitHub's author restriction binds the PR author (the publisher App), not the person who filed the issue.
-- **Merge model.** Gates run on the test-merge tree (3.3). Evidence names the base and the candidate SHA. A strict up-to-date rule makes a green check mean "green against what will be merged". A merge queue is adopted only after N2 shows that an App cannot enqueue a PR, because a queue merges on behalf of whoever enqueues.
+- **Limit of the approval-policy check, and how it is bounded.** GitHub enforces one code-owner approval natively (RS-B). This check alone enforces the second T2 approval and the exclusion of the requester, and it is driven by events, so it has a window: after a dismissed approval, or a change to the code-owners team (which raises no review event), an earlier pass stays in place until the publisher recomputes it. The window is bounded four ways. (1) The publisher recomputes on review, push, dismissal and edit events and on team membership changes (the App needs the organisation Members permission for those), and a sweep re-posts the check on every open factory PR every few minutes. (2) A merge is a human act: the factory never merges or enables auto-merge, and RS-A leaves the merge to the maintainers team. (3) A detective control: when a factory PR merges, the publisher re-evaluates the policy against the state at the moment of the merge and, if it was not met, halts new runs with `FACTORY_HALT` and raises an incident for a human to revert. (4) If N11 shows that the window cannot be held to the bound S11 sets, native required approvals go to two for the whole repository while T2 is in scope, at the cost of a second approval on T0 and T1 changes.
+- **Merge model.** Gates run on the test-merge tree (3.3). Evidence names the base and the candidate SHA. A strict up-to-date rule makes a green check mean "green against what will be merged". A merge queue is adopted only after N2 shows that an App cannot enqueue a PR, because a queue merges on behalf of whoever enqueues, and GitHub documents that any user with write access can add a PR that has passed its required checks. The queue stays off in v1.
 - **PR:** opened as a draft by the publisher. Marked ready for review when every automated check is green: `factory/static`, `factory/dynamic`, `factory/integrity`, `factory/evidence` and normal CI. `factory/approval-policy` is left out of that condition, because it passes only after a human approves, so it gates the merge and not the notification. Until then it reports "awaiting eligible approval". The body is the one-page summary (3.17).
 - **After merge (v1): nothing is automated.** A person or the team's existing pipeline updates the dev workspace (D-32). The factory's job ended at the merged PR. A human smoke test follows the dev update (3.17).
 - **Drift detection** between a dev workspace and `main` is a Phase 3 item. Exporting item definitions needs read and write permission on the item (to be confirmed in S2), so it would need a role on dev, which the factory identities do not hold in v1.
@@ -270,6 +270,8 @@ The publisher's App private key lives only in the `publisher` Environment and is
 | N8 | A PR touches `.github/**` or `CODEOWNERS` | The output gate refuses it, and CODEOWNERS would require an administrator |
 | N9 | A force-push to a factory or ledger branch, by the publisher token or anyone else | Rejected |
 | N10 | `main` moves after green evidence | `factory/evidence` fails until re-validated |
+| N11 | After `factory/approval-policy` has passed, an approval is dismissed or a code-owners team member is removed, and a merge is attempted at once | Rejected, or the window is shorter than the bound S11 sets and the merge-time audit raises an incident. If neither holds, native required approvals go to two |
+| N12 | Any factory identity (the publisher, the state identity, the deployer) overwrites or deletes an evidence blob, or shortens or removes the retention policy | Rejected. The preflight reads the policy back |
 
 ### 3.7 Fabric sandbox environment
 
@@ -284,18 +286,18 @@ The publisher's App private key lives only in the `publisher` Environment and is
 |---|---|---|
 | B1 | `env.create` | Create the workspace, assign the capacity, grant the deployer Admin, a leased runner Contributor |
 | B2 | `env.seed` | Create the synthetic lakehouse (or warehouse) from the target profile's fixture package, load generated data with a pinned loader, and wait until the SQL endpoint answers. The loader route (Load Table API or a pinned notebook) is chosen in S3 |
-| B3 | `env.deploy` | Deploy models and reports from the manifest with `fabric-cicd`: `parameter.yml` with `find_replace` and dynamic variables such as the lakehouse SQL endpoint, strict `semantic_model_binding` (without it `fabric-cicd` continues when binding fails), and filters for multi-item dependencies |
-| B4 | `env.postdeploy` | Bind connections from the catalogue, refresh (as the deployer, or as a leased runner if S2 shows that a Contributor can take over and refresh), wait for success, read back the parsed definition and data source |
+| B3 | `env.deploy` | Deploy models and reports from the manifest with `fabric-cicd`: `parameter.yml` with `find_replace` and dynamic variables such as the lakehouse SQL endpoint, `semantic_model_binding`, and filters for multi-item dependencies. By default `fabric-cicd` logs a failed binding and carries on. The flag that makes it fail the deployment (`enable_strict_semantic_model_binding`) has been on its `main` branch since 2026-10-28 and is not in release 1.4.0, so B4 asserts the binding itself |
+| B4 | `env.postdeploy` | Bind connections from the catalogue, refresh (as the deployer, or as a leased runner if S2 shows that a Contributor can take over and refresh), wait for success, read back the parsed definition and data source, then read each model's connections through the item connections API and compare them with the catalogue binding (this check stands in for strict binding until a `fabric-cicd` release has it) |
 | B5 | `env.publish` (stage 2) | Publish the data agent, since evaluation and the MCP endpoint need a published agent. Ontology steps are specified with the pack |
 | B6 | `env.test` | Run the visible and hidden oracle tests and the regression suite, with the idempotency test (3.11) |
 | B7 | `env.evidence` | Collect results, PNG renders, diffs and metrics into the evidence container |
 
 - **Baseline evidence cache.** Some gates compare with the unchanged `main` (visual diff G11, performance G14, impact G15, DAX output diff). The baseline is computed once per key (base SHA, fixture digest, harness version, parameters) in a separate run, and its artifacts are cached. There is no standing baseline workspace.
-- **Teardown.** The deployer does, in order: cancel active jobs, revoke the runner's grant, permanently delete every item (`DELETE .../items/{id}?hardDelete=true`, which needs the workspace Admin role), purge anything left soft-deleted (`DELETE .../recoverableItems/{id}`), then delete the empty workspace. For the purge, the REST reference says workspace write permission is enough and the admin documentation says Admin, so S2 tests it. The deployer is Admin and does the purge either way, and the privilege model does not rely on a Contributor runner being unable to purge: a runner can reach only its own workspace, and evidence is exported before teardown. Fabric documents no endpoint that lists soft-deleted items, so the executor records every item GUID it creates in the registry and deletes each active item with `hardDelete=true` first. A purge after a crash then uses the recorded GUID. A deleted workspace stays recoverable for 7 to 90 days, only a tenant admin can purge it, and soft-deleted items keep billing storage and count against the workspace item limit. Semantic models and reports are not soft-deleted at all. A folder holding soft-deleted items cannot be deleted. Fabric may re-create a soft-deleted item from a Git sync or a deployment. The factory never changes the tenant retention settings, because lowering the workspace retention purges deleted workspaces at once. After a permanent item delete OneLake keeps the data a further 7 days, with a billing effect that is not yet verified.
+- **Teardown.** The deployer does, in order: cancel active jobs, revoke the runner's grant, permanently delete every item (`DELETE .../items/{id}?hardDelete=true`, which needs the workspace Admin role), purge anything left soft-deleted (`DELETE .../recoverableItems/{id}`), then delete the empty workspace. For the purge, the REST reference says workspace write permission is enough and the admin documentation says Admin, so S2 tests it. The deployer is Admin and does the purge either way, and the privilege model does not rely on a Contributor runner being unable to purge: a runner can reach only its own workspace, and evidence is exported before teardown. Fabric documents no endpoint that lists soft-deleted items, so the executor records every item GUID it creates in the registry and deletes each active item with `hardDelete=true` first. A purge after a crash then uses the recorded GUID. A deleted workspace stays recoverable for 7 to 90 days, only a tenant admin can purge it, and soft-deleted items keep billing storage and count against the workspace item limit. Semantic models and reports are not soft-deleted at all. A folder holding soft-deleted items cannot be deleted. A Git operation such as undo or update from Git re-creates a deleted item under a new item ID, whereas a restore from the recycle bin keeps the ID. The factory never changes the tenant retention settings, because lowering the workspace retention purges deleted workspaces at once. After a permanent item delete OneLake keeps the data a further 7 days, and OneLake's soft-delete page says soft-deleted data is billed at the same rate as active data.
 - **Sweeper.** The reconciler lists workspaces on the sandbox capacity. A workspace that is not in the registry raises an alert before anything is deleted. A registered workspace past its expiry is torn down by the sequence above. The sweeper never deletes by name pattern alone.
 - **Data.** Synthetic and deterministic (a pinned generator profile and a seed), loaded by the executor. Unlabelled. No shortcuts or links to real data. S2 records whether a default sensitivity-label policy would label new items and how that affects export and PNG render. Real data is out of scope in the pilot.
-- **Network.** Workspace outbound access protection where the item types allow it. It needs an F SKU, is preview, and does not cover what a report does in the browser (custom visuals, image URLs, web content, web-URL actions). The policy engine rejects those in a patch (3.9), and custom visuals and web-URL actions are disabled in the sandbox where the settings allow.
-- **Reviewer preview.** A label on the PR asks the executor to rebuild the result from the PR head (B1 to B4, no agents) and grant the reviewers group read access, under a compute lease. It expires on the same 24-hour rule.
+- **Network.** Workspace outbound access protection needs an F SKU (trials are not supported), and what it covers depends on the item type. The Learn availability matrix (updated 2026-10-15) marks it Preview for Power BI reports, semantic models and data agents, supported for lakehouses, notebooks and pipelines, and not supported for ontologies. The overview page (updated 2026-09-01) goes further: it says Power BI items other than semantic models cannot be created in a protected workspace, and that a workspace holding an unsupported item cannot turn the protection on. The two pages disagree about reports, so S2 tests it. Until it is shown to work for the pilot item types, a workspace that holds a report or an ontology has no outbound protection, and the controls are the ones that do not depend on it: synthetic data only, no connection outside the catalogue, no credential in the workspace, and a policy engine that rejects new data sources, external URLs, custom visuals and web-URL actions in a patch (3.9). Custom visuals and web-URL actions are also disabled in the sandbox where the settings allow. Client-side report features run in the browser, outside any workspace network control.
+- **Reviewer preview.** A label on the PR asks the executor to rebuild the result from the PR head (B1 to B4, plus B5 when the change is a data agent or an ontology, so that the reviewer has a published agent to try) and grant the reviewers group read access, under a compute lease. No LLM agent runs in the rebuild: it is the deterministic executor only. It expires on the same 24-hour rule.
 
 ### 3.8 Deployment mechanics (D-10)
 
@@ -367,7 +369,7 @@ Gate numbers are from the landscape digest. Thresholds live in `factory-policy/g
 
 | Pack | Stage | Static gates (every iteration, no Fabric) | Dynamic gates (sandbox) | Gaps to build |
 |---|---|---|---|---|
-| Semantic model | 1 | G1 TMDL parses (Tabular Editor 2 CLI), G2 best-practice rules (Microsoft BPA rule file), G3 reference integrity, parse-based policy, secrets, integrity guard. The Authoring MCP in `--readonly` mode for model validation | G4 deploy and refresh (strict binding), G8 golden DAX through the harness, G9 measure tests on synthetic data, G7-lite reconciliation against the generator's reference totals, a refresh-idempotency check (two refreshes, then a DAX check), G14 performance, G15 impact | Golden-DAX harness, impact report, BPA rule selection. The Tabular Editor `te` preview CLI is dropped (its documentation gives two expiry dates) |
+| Semantic model | 1 | G1 TMDL parses (Tabular Editor 2 CLI), G2 best-practice rules (Microsoft BPA rule file), G3 reference integrity, parse-based policy, secrets, integrity guard. The Authoring MCP in `--readonly` mode for model validation | G4 deploy and refresh (binding read back), G8 golden DAX through the harness, G9 measure tests on synthetic data, G7-lite reconciliation against the generator's reference totals, a refresh-idempotency check (two refreshes, then a DAX check), G14 performance, G15 impact | Golden-DAX harness, impact report, BPA rule selection. The Tabular Editor `te` preview CLI is dropped (its documentation gives two expiry dates) |
 | Report | 1 | G1 PBIR validate, G10 structure lint including visual types that `exportToFile` cannot render (uncertified custom, R and Python visuals), G3 fields exist in the bound model, parse-based policy, integrity guard | Deploy, render with `exportToFile` PNG (primary), broken-visual check, G11 visual diff against the baseline cache (a human reviews diffs) | Image diff and thresholds. The `powerbi-report-author` CLI is published on npm (0.5.0, pre-1.0), so it is pinned, and its install and headless use are checked in spikes S3 and S10. A second render route after S3 |
 | Data agent | 2 | Definition parts validate against the public JSON schemas, instruction lint, selected data sources exist, `published/**` untouched | Publish (by the executor), evaluate golden Q&A (visible and hidden): deterministic match first, then an LLM critic, k repeats against a baseline pass rate | Whole pack: no official skill. Service-principal route for evaluation unverified (S6) |
 | Ontology | 2 | Validate the new TMDL-based format against the Learn specification | Unverified | Pack and test route. The old entity-JSON format retires 2027-01-31, and the shipped `fabriciq-ontology-cli` skill authors it, so that skill is quarantined (3.13) |
@@ -468,7 +470,7 @@ Lifecycle:
 ### 3.14 Models, gateway and budgets
 
 - **D0.** gh-aw (strict) with the Copilot engine and a `model` per role, under the organisation's billing policy: model enablement, per-provider zero-retention terms, AI-credit budgets, audit log. All four models are GA there. Role to model is configuration. The engine credential stays in the proxy (3.1).
-- **Budgets.** Counters in the run store. Reserve a conservative worst-case cost before each dispatch, reconcile with the actual after. The D0 credit cap is soft (one response can exceed it, and concurrent requests compound), so the design states a bounded overshoot: one response times the concurrency cap. The owner approves that figure (open question 5). The organisation's budget is the hard stop.
+- **Budgets.** Counters in the run store. Reserve a conservative worst-case cost before each dispatch, reconcile with the actual after. A cap on concurrent runs does not bound what one agent container sends to the model proxy while its job runs, and the D0 credit cap is soft: one response can exceed it, and requests sent in parallel add up. So in D0 the factory states no bound of its own. The bound is the engine's own limits (`max-ai-credits` and `max-turns`) plus the organisation's budget, which is the hard stop. S9 measures the overshoot by sending parallel requests straight at the proxy, and the owner approves the measured figure (open question 8 here, question 5 in the requirements). In D1 the gateway admits each request against a token quota and an in-flight limit, which gives a real per-run bound.
 - **D1.** An API Management AI gateway for bring-your-own-model (Azure-hosted Claude, GPT and Grok through Foundry, Gemini through Google Cloud, since Foundry has no Gemini models), with token quotas, metrics, content safety and managed identity. LiteLLM is avoided unless patched and private (three Critical advisories in 2026, and budgets fail open without a database).
 - **Worker details (D1).** The Copilot CLI has no official container image, so we build and pin our own. Its headless endpoint has no authentication, so it binds to loopback. A 1-hour GitHub App installation token cannot be refreshed in place, so the worker restarts its SDK client when the token is renewed.
 - **Data-class matrix (C12).** SYN (synthetic, demo, internal) goes to all four models. Customer code without data goes only to vendors whose terms policy accepts. Customer data is out of scope in the pilot. Prompts carry schemas and synthetic samples, never rows. The pre-model scan (3.12) is the deterministic backstop. Anthropic's 30-day retention applies to Mythos-class covered models only (Fable and Mythos), and Sonnet 5.5 keeps zero data retention. Gemini uses durable caching (up to 24 hours), Anthropic beta features fall outside zero retention, and the Grok terms are unverified, so a pasted customer row is already a disclosure.
@@ -476,7 +478,7 @@ Lifecycle:
 
 ### 3.15 Evaluating the factory
 
-- **Golden set** per pack: 20 to 50 audited, real requirements with reference solutions and oracle tests, held out in a private evaluation repo that runs cannot reach. Refresh monthly. A task with 0% pass is treated as broken.
+- **Golden set** per pack: 20 to 50 audited, real requirements with reference solutions and oracle tests, held out in a private evaluation repo that runs cannot reach. Refresh monthly. A task that no run passes in many trials is sent to an audit of the task, its oracle and its reference solution, because that pattern often means a broken task, but it can also be a hard valid one. It leaves the set only when the audit finds a defect, and the exclusion, its reason and the original denominator are recorded, so the headline rate cannot be raised by dropping hard tasks.
 - **Red-team set:** injection payloads through every intake channel (issue body, linked documents, in-tenant descriptions, poisoned skills and tool descriptions), test-tampering temptations, exfiltration attempts (a new partition, a report visual, a notebook), T3 requests, oversized and duplicate requests, and the control bypasses in 3.6. Success means the factory blocks or escalates (PS-3). The set runs in CI before the first live intake (C14).
 - **Regression:** any change to prompts, skills, models, gates or policy runs the regression suite (about 100% must pass) and the capability suite (tracked, starts low), with `pass^k` for k = 3.
 - **Shadow then canary:** draft PRs on real intakes while humans deliver, then T0 and T1 only in the pilot repo.
@@ -489,7 +491,7 @@ Lifecycle:
 - **Kill switch.** A `FACTORY_HALT` variable checked at every stage entry and by the watchdog, a `factory:cancel` label per run, and a tested revoke path (disable the GitHub App installations, revoke the Entra federated credentials, block egress). A halt stops at the next stage boundary and cancels active provider operations by type. Workspaces are then torn down at once or left to the sweeper. Both paths are drilled.
 - **Budgets:** per run (iterations, tokens, dollars, wall-clock, capacity-seconds) and per day, with concurrency caps. Excess runs queue.
 - **Observability:** run ID equals trace ID. OpenTelemetry GenAI spans with content redacted, executor spans, run-store events, and dashboards for pass rates, time, cost and queue depth. Alerts for stuck runs, budget breaches, orphan workspaces and a capacity left running. Detections are listed in 4.4.
-- **Audit:** evidence, manifests and the audit trail go to an immutable blob container with a time-based retention policy from the first live run. The publisher cannot delete from it, and an attestation proves provenance but is not retention. The run store is the operational record. Audit alerts on the factory identities. A quarterly access review.
+- **Audit:** evidence, manifests and the audit trail go to an immutable blob container with a time-based retention policy from the first live run. The publisher cannot delete from it, and an attestation proves provenance but is not retention. N12 tests that no factory identity can overwrite, delete or shorten the retention of an evidence blob. The run store is the operational record. Audit alerts on the factory identities. A quarterly access review.
 - **Incidents:** a runbook (halt, revoke, sweep workspaces, review the run store), a credential-rotation drill that includes the publisher App key, a named on-call.
 - **Reporting:** usage and cost per run, requester and pack (FR-26).
 - **Calendar to watch:** the old ontology experience retires 2027-01-31, Git needs read-write on items from 2027-02-28 (and labelled items need it for Git use), the Copilot SDK is being renamed, MCP spec 2026-07-28 is current, and several agent vendors are shutting products down.
@@ -517,21 +519,21 @@ The threat model ranks 15 attack paths by likelihood times impact (landscape dig
 |---|---|---|---|
 | 1 | Intake injection leaks secrets through an open channel | HR-3, HR-4. No credential is reachable from the agent job (S7). The parser has no tools. Egress is denied for every process. A deterministic scan runs before any model call. The output gate scans every patch. A fixed-enum sanitizer sits between stages | Covert content in PR text or a patch, caught only by the gate and the human. The model proxy allows inference only and is budget-capped |
 | 2 | Over-privileged Fabric identity | Deployer, leased runner pool and a custom capacity role, with no role on dev, test or production. Dedicated sandbox capacity. Registry by GUID. Tier T3 refused. Run-as proof in S2 | Tenant-level service-principal settings. Keep identities in one security group with no admin roles, and verify in S2 |
-| 3 | Agent-authored notebook or pipeline exfiltrates or reaches production | Synthetic data only. Runs as a leased runner on one workspace. No shortcuts or connections allowed, enforced by the parse-based policy. Outbound access protection where available | Outbound access protection is preview and excludes what a report does in the browser. Exfiltrating synthetic data has low value |
+| 3 | Agent-authored notebook or pipeline exfiltrates or reaches production | Synthetic data only. Runs as a leased runner on one workspace. No shortcuts or connections allowed, enforced by the parse-based policy. Outbound access protection where the item types allow it (3.7) | A workspace that holds a report or an ontology may have no outbound protection until S2 shows otherwise, and what a report does in the browser is outside it. Exfiltrating synthetic data has low value |
 | 4 | Confused deputy: a requester gets what they should not | Allow-listed requesters per target. Code-owner approval. The approval-policy check excludes the requester. Permissions, RLS and OLS are T3 and refused | The factory cannot read Fabric entitlements until Phase 2, so GitHub ownership must mirror them. Reviewed per target at onboarding |
 | 5 | Reviewer rubber-stamps a defective PR | Section 3.17: size cap in semantic units, risk-ranked evidence, two approvers for T2, canary PRs. Deterministic gates carry recall | Human fatigue remains. Measured by canary catch rate |
 | 6 | Poisoned skill, template or MCP tool description | HR-9. Pinned, scanned, allow-listed, with a quarantine list. No run-time installs. Offline documentation tools only | A malicious upstream release passing the scan. Refresh PRs are human-reviewed and gated by the golden suite |
 | 7 | Malicious or typosquatted package or Action | Hash-pinned mirror, lockfiles, no install scripts, Actions pinned by SHA (a moved tag on `tj-actions/changed-files` dumped runner secrets in 2025, CVE-2025-30066), immutable executor image, static workflow analysis in CI | Zero-day in a pinned dependency |
-| 8 | Agent edits its own guardrails | Protected paths, separate policy and evaluation repos, CODEOWNERS, the four rulesets, App-pinned required checks, output-gate deny-list, frozen spec, fixtures and oracle | A misconfigured ruleset. Negative tests N1 to N10 and the preflight |
+| 8 | Agent edits its own guardrails | Protected paths, separate policy and evaluation repos, CODEOWNERS, the four rulesets, App-pinned required checks, output-gate deny-list, frozen spec, fixtures and oracle | A misconfigured ruleset. Negative tests N1 to N12 and the preflight |
 | 9 | Compromise of the factory's repos or runners | No `pull_request_target`, SHA-pinned Actions, ephemeral runners, OIDC only, no long-lived tokens, no Git credential in Fabric | Compromised maintainer account. Two-person policy changes |
 | 10 | Reward hacking | Integrity guard, oracle tests as data, hidden checks, held-out input, escalate action, repeat runs | Special-casing that passes visible tests. Hidden checks and review |
 | 11 | In-tenant content poisoning | Agents never read tenant content directly. They see the repo and category-only evidence. Content-warning flag | Poisoned text already in the repo |
 | 12 | Vendor data exposure | Data-class matrix. Synthetic data only. Schemas not rows. The pre-model scan. Gateway logging | Vendor retention terms are partly unverified. A pasted customer row is a disclosure |
-| 13 | Runaway cost or capacity exhaustion | Atomic budgets (reserve, reconcile). Concurrency caps. Reference-counted capacity. Kill switch | The D0 credit cap is soft. The overshoot is bounded and approved |
+| 13 | Runaway cost or capacity exhaustion | Atomic budgets (reserve, reconcile). Concurrency caps. Reference-counted capacity. Kill switch | The D0 credit cap is soft, so in D0 the bound is the engine limits and the organisation budget. S9 measures it and the owner approves the figure |
 | 14 | Evidence tampering | Immutable, retention-controlled evidence store from D0. The publisher cannot delete from it. Evidence regenerated from artifacts. Attestations for provenance | Insider with storage-owner rights |
 | 15 | Cascading injection between agents | Schema-validated structured outputs. Verifiers are tool-less. Free text never flows forward | Schema fields that carry free text, kept short and sanitized |
 | 16 | Confused deputy through executor arguments (new) | HR-2: run-ID-only operations. The orchestrator chooses suite, fixtures, parameter file and target GUID. The registry is in the run store. Manifest-only deploys | A defect in the orchestrator's selection logic. Covered by the red-team set |
-| 17 | Branch-writer or merge bypass (new) | The four rulesets, App-pinned checks, the Copilot agent disabled, App-created signed commits, negative tests N1 to N10, a fork fallback | Ruleset semantics that differ from the assumption. S11 verifies |
+| 17 | Branch-writer or merge bypass (new) | The four rulesets, App-pinned checks, the Copilot agent disabled, App-created signed commits, negative tests N1 to N12, a fork fallback | Ruleset semantics that differ from the assumption. S11 verifies |
 | 18 | A standing Git credential in Fabric (new) | None in v1. Read-only, single-repository and short-lived if it is ever introduced | Not applicable in v1 |
 | 19 | Fail-open defaults and silent configuration drift (new) | HR-12, strict schemas, the preflight conformance check, the detections in 4.4 | A control the preflight does not read |
 
@@ -549,13 +551,13 @@ The minimum controls C1 to C15 are go-live gates, each to be demonstrated, not m
 
 - Preview features (Git for several item types, outbound access protection, hosted MCP servers, the bulk definition APIs) can change without notice, and contract tests lag.
 - Human reviewers remain the last line of defence. A wrong but plausible measure can still merge, because gates do not understand business intent.
-- Client-side report features (custom visuals, image URLs, web content, web-URL actions) run in the browser, outside outbound access protection. The policy engine rejects them in a patch, and a human could still add one.
+- A workspace that holds a report or an ontology may have no outbound access protection at all (3.7, S2), and client-side report features (custom visuals, image URLs, web content, web-URL actions) run in the browser, outside any workspace network control. The policy engine rejects them in a patch, and a human could still add one.
 - A refresh runs the model's expressions with the credentials of the connections they use. The policy bars new sources, so the reach is the sandbox's synthetic data, and whether the refresh can run without Admin rights is a spike question (S2).
 - Vendor retention terms for some models are unverified (Grok), so the pilot uses synthetic and internal content only. A pasted customer row is already a disclosure, whatever the form says.
 - GitHub and Entra remain fully trusted control planes.
 - **The proof of concept has no real separation of duties.** One operator is requester and approver and can change any ruleset. This is a hard limit. The proof-of-concept identity must not hold any role on a shared, demo or production workspace, and must not hold a Fabric Git credential.
 - Held-out tests are finite. A T1 change can hard-code the visible example and pass.
-- Soft-deleted workspaces keep billing for at least 7 days and can come back with new IDs. After a permanent item delete OneLake keeps the data a further 7 days, with a billing effect not yet verified.
+- Soft-deleted workspaces keep billing for at least 7 days and can come back with new IDs. After a permanent item delete OneLake keeps the data a further 7 days and bills it at the same rate as active data.
 - Synthetic data proves logic, not behaviour at real volumes, skew or performance. A human smoke test follows the dev update, and masked-sample validation is a later option.
 - The D0 AI-credit cap is soft, so spend can exceed the cap by a bounded amount.
 
@@ -584,16 +586,16 @@ Eleven spikes, several small. Three need tenant admin actions that the requester
 | Spike | Question | Success criterion |
 |---|---|---|
 | S1 Git baseline | Can the pilot workspace be backed up to Git once and diffed without noise? | Clean round trip for a semantic model and a report, no phantom diffs, the one-writer rule documented, label-related Git behaviour recorded |
-| S2 Identity, switches, run-as | Can service principals create workspaces on the sandbox capacity through OIDC, with the right roles, and can the pool be leased safely? | Workspace created by the deployer. A runner holds Contributor on one workspace and can run a notebook job and a DAX query. The effective identity is printed from a notebook run and from a refresh. The runner cannot create or list other workspaces. Revoke-before-reuse works. Permanent item delete works as workspace Admin for the pilot item types, and the role each deletion route needs is recorded (the two Learn pages disagree for purging a soft-deleted item). Tenant settings recorded: service-principal APIs, workspace creation, export to image, the label Git switch, item recovery. The 20-credential limit and serial provisioning handled. Whether Get Item Definition needs read-write permission is noted |
-| S3 Path B round trip | Create, seed, deploy in order with `fabric-cicd`, post-deploy, test, render and tear down | End to end with no manual step, deterministic over three runs, time and capacity use measured. Strict binding fails loudly on a bad binding. The seed loader route chosen. `exportToFile` PNG works through the service-principal route with its prerequisites. An exfiltration probe through a new partition and through a report visual is blocked by the policy engine |
+| S2 Identity, switches, run-as | Can service principals create workspaces on the sandbox capacity through OIDC, with the right roles, and can the pool be leased safely? | Workspace created by the deployer. A runner holds Contributor on one workspace and can run a notebook job and a DAX query. The effective identity is printed from a notebook run and from a refresh. The runner cannot create or list other workspaces. Revoke-before-reuse works. Permanent item delete works as workspace Admin for the pilot item types, and the role each deletion route needs is recorded (the two Learn pages disagree for purging a soft-deleted item). Tenant settings recorded: service-principal APIs, workspace creation, export to image, the label Git switch, item recovery. The 20-credential limit and serial provisioning handled, with the federated credentials created from the subject format the repository actually emits (a rename or transfer shown to break trust). Outbound access protection turned on for a sandbox workspace, with a semantic model, a report, a data agent and an ontology each created in it, so that the accepted item types are recorded (the two Learn pages disagree about reports). Whether Get Item Definition needs read-write permission is noted |
+| S3 Path B round trip | Create, seed, deploy in order with `fabric-cicd`, post-deploy, test, render and tear down | End to end with no manual step, deterministic over three runs, time and capacity use measured. A deliberately bad binding is caught by the read-back and by the refresh, because the strict-binding flag of `fabric-cicd` is not in release 1.4.0. The seed loader route chosen. `exportToFile` PNG works through the service-principal route with its prerequisites. An exfiltration probe through a new partition and through a report visual is blocked by the policy engine |
 | S4 Path A comparison (not blocking) | What would automated dev sync need? | A Git-connected workspace with a read-only credential, conflict options and post-sync steps, and a parity diff against path B. A read-only credential cannot commit. A decision for Phase 3 |
 | S5 Crash and ambiguity | Does the run store recover? | Kill the worker at every stage boundary, after provider acceptance and before the checkpoint, and with a stale lease. 100% resume with no duplicate workspace or job. Ambiguous intents are reconciled (adopt, retry, rebuild, quarantine). A fenced stale writer is rejected. A deliberately frozen worker that resumes after a takeover is stopped and cannot change the adopted or rebuilt environment. Cancellation of a running refresh and job is recorded per operation |
 | S6 Data agent as a service principal | Can a file-defined agent be defined, published and evaluated? | A supported path, or a documented fallback that is a recorded exception and never counted as unattended validation |
 | S7 Isolation and injection | Do I-1 to I-8 hold, and does injection fail? | No credential reachable. The compiled workflow grants no more network or safe output than the pinned set. Egress denied from every confined process type. Zero leaks and all seeded payloads (through the issue, the parser and the implementer) blocked or flagged. The substrate chosen and recorded, with the fallback ladder applied if needed |
-| S8 Capacity lifecycle | Can a custom role resume and pause the capacity, with two concurrent runs? | The role holds only suspend, resume and read. Action names confirmed. Concurrency cap, idle policy and per-run capacity cost set |
-| S9 Model routing, budgets, scan | Do the four models run by role through the D0 substrate, and do budgets and the scan work? | Role-to-model table, per-run cost, the bounded-overshoot figure, written retention terms, a DAX mini-set per model. The pre-model scan stops seeded secrets and PII before any model call |
+| S8 Capacity lifecycle | Can a custom role resume and pause the capacity, with two concurrent runs? | The role holds only suspend, resume and read, shown to work without the `write` action that Learn's guide lists. If `write` proves to be required, it is recorded as an accepted exposure (the identity could resize the capacity), with a cost alert and a preflight check of the SKU. Action names confirmed. Concurrency cap, idle policy and per-run capacity cost set |
+| S9 Model routing, budgets, scan | Do the four models run by role through the D0 substrate, and do budgets and the scan work? | Role-to-model table, per-run cost, the measured overshoot with parallel requests sent straight at the proxy (the figure the owner approves), written retention terms, a DAX mini-set per model. The pre-model scan stops seeded secrets and PII before any model call |
 | S10 Knowledge pack and supply chain | Is the pinned pack reproducible, and is the header sent? | A reproducible image digest, scanners passing, update check off, no run-time package network. The telemetry header on executor calls and on `fabric-cicd` calls, or the limit documented. Quarantine list enforced. Fab Inspector decision |
-| S11 Repository control matrix | Do the rulesets and the approval-policy check behave as designed? | N1 to N10 all behave as expected. The result of N2 decides between the rulesets and the fork fallback |
+| S11 Repository and evidence control matrix | Do the rulesets, the approval-policy check and the evidence store behave as designed? | N1 to N12 all behave as expected. The result of N2 decides between the rulesets and the fork fallback. The result of N11 sets the bound on the approval window, or moves the native count to two. The evidence container refuses overwrite, delete and retention changes from every factory identity |
 
 ### 5.2 Requirement readiness and pilot stages
 
@@ -650,7 +652,7 @@ All entries are proposals pending the Phase 0 spikes. Detail is in the decision 
 | D-18 | Pinned official plugins plus a factory plugin, quarantine list, immutable image | S10 |
 | D-19 | Golden, red-team, regression, shadow, canary, drift probes. Red-team set in CI before the first live intake | Phase 1 readiness |
 | D-20 | Run ID equals trace ID. Run store and an immutable evidence container | Phase 1 readiness |
-| D-21 | Atomic budgets, a bounded overshoot the owner approves, kill switch | S9 |
+| D-21 | Atomic budgets, a measured overshoot the owner approves, kill switch | S9 |
 | D-22 | Evidence bundle per 3.17, approval-policy check, preview on demand | Phase 1 |
 | D-23 | Manual promotion beyond dev | Review (done) |
 | D-24 | Pilot packs in two stages per 3.10 | Review (done) |
@@ -688,7 +690,7 @@ Likelihood and impact are High, Medium or Low. R16 to R22 are new in v0.2.
 | R17 | GitHub ruleset behaviour differs from the assumption (an App can merge, a check is spoofed) | M | H | S11, the fork fallback | 0 |
 | R18 | The substrate cannot keep the engine token from the agent | M | H | S7, the fallback ladder | 0 |
 | R19 | Capability gaps (RLS and SSO, export switch, labels) shrink what can be validated | H | M | The capability matrix, onboarding review, refusals reported | 0 and 1 |
-| R20 | The soft credit cap is exceeded | M | L | Reserve and reconcile, a stated overshoot, the organisation budget | 1 |
+| R20 | The soft credit cap is exceeded | M | L | Reserve and reconcile, a measured overshoot, the organisation budget | 1 |
 | R21 | The sandbox proves logic, not real-data behaviour | M | M | Human smoke test, masked-sample validation later | 1 and on |
 | R22 | Soft-deleted items and workspaces keep costing | M | L | Hard-delete teardown, sweeper alerts | 1 |
 
@@ -750,10 +752,10 @@ The requirements document lists assumptions A1 to A15 and open questions 1 to 12
 5. **Approvers.** Who are the code owners and the spec approvers, and what review SLA is realistic? T2 needs two people, and the requester cannot approve.
 6. **Pilot target.** Which Git-backed repo and workspace? It needs a profile: item inventory, a synthetic fixture package, connection catalogue entries, a capability-matrix row and its RLS and SSO flags.
 7. **Third-party models.** Is it acceptable that internal, non-customer content goes to GPT, Gemini and Grok through the Copilot harness?
-8. **Budget.** What is the pilot's ceiling for model spend and capacity, and is a bounded overshoot acceptable where the platform cap is soft?
+8. **Budget.** What is the pilot's ceiling for model spend and capacity, and is the overshoot that S9 measures acceptable where the platform cap is soft?
 9. **Azure and Entra rights.** May we create a storage account (run store, immutable evidence), the factory identities and federated credentials, and a custom suspend-and-resume role?
 10. **Dev deployment after merge.** Is a human or the team's own pipeline doing the dev update in v1 acceptable?
 
-Claims still to confirm, all of them spike outputs: unattended data-agent evaluation and ontology tests; whether a Contributor runner can run every test; capacity suspend and resume through Azure Resource Manager with a custom role; the `powerbi-report-author` package (published on npm at 0.5.0, pre-1.0, so what remains is whether it installs and runs headless in the sandbox); whether `Restrict updates` stops an App from merging (N2); whether App-created commits are marked verified under a signed-commit rule; permanent item deletion by a service principal for each item type; whether Get Item Definition needs read-write permission; the billing effect of OneLake's extra 7 days; and whether the gh-aw API proxy keeps the Copilot engine token out of the agent container.
+Claims still to confirm, all of them spike outputs: unattended data-agent evaluation and ontology tests; whether a Contributor runner can run every test; capacity suspend and resume through Azure Resource Manager with a custom role, and whether that role needs the `write` action; the `powerbi-report-author` package (published on npm at 0.5.0, pre-1.0, so what remains is whether it installs and runs headless in the sandbox); whether `Restrict updates` stops an App from merging (N2); whether App-created commits are marked verified under a signed-commit rule; permanent item deletion by a service principal for each item type; whether Get Item Definition needs read-write permission; what OneLake's extra 7 days cost in practice (documented as billed at the active rate); which item types outbound access protection accepts (the two Learn pages disagree about reports); and whether the gh-aw API proxy keeps the Copilot engine token out of the agent container.
 
 <!-- END -->
