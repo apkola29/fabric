@@ -64,21 +64,21 @@ python -m unittest discover -s scripts -p "test_*.py"
 python scripts/verify_facts.py
 ```
 
-- `validate_docs.py` checks the structure of the documents: tables and diagrams, section numbering, that every identifier (requirement, decision, hard rule, spike, finding) is defined and traced, that the counts stated in the text match the tables, that links and file references resolve, and that no local path, address or secret is published.
-- The tests do two things. For the validator, most tests inject one known defect into a copy of this folder and require the validator to report it, one requires the unmodified folder to be clean, and a few exercise its options. For the fact checker, the tests replace the network with a fake and check each outcome of every kind of check. They show that the checks can fail. They do not show that the documents are right.
-- `verify_facts.py` checks concrete claims (package versions, repository contents, wording of documentation pages) against their public sources. It needs the open internet. A GitHub Action runs the validator and the tests on every change to this folder and on pull requests, and a second one runs the fact checks by hand and every Monday. The weekly run fails only when a claim is wrong, and shows a newer value or a changed page as drift for a person to review.
-- `verify_remote.py` compares the Git hash of every file with what GitHub holds.
+- `validate_docs.py` checks the structure of the documents: tables and diagrams, section numbering, that every identifier (requirement, decision, hard rule, spike, finding) is defined and traced, that the counts stated in the text match the tables, that links and file references resolve, that no local path, address or secret is published, and that every file that would be published is of a type the leak scan reads.
+- The tests do three things. For the validator, most tests inject one known defect into a copy of this folder and require the validator to report it, one requires the unmodified folder to be clean, and a few exercise its options. For the fact checker, the tests replace the network with a fake and check each outcome of every kind of check. For the publish tooling, they build a throwaway Git repository to test the commit check and test the address check of the publish script. They show that the checks can fail. They do not show that the documents are right.
+- `verify_facts.py` checks concrete claims (package versions, repository contents, wording of documentation pages) against their public sources. It needs the open internet. A GitHub Action runs the validator and the tests on every change to this folder and on pull requests, and a second one runs the fact checks by hand and every Monday. The weekly run fails when a claim is wrong or an entry of `facts.json` is itself broken, and shows a newer value or a changed page as drift for a person to review. A source that cannot be read, or that answers with an empty or malformed body, is shown as UNREACHABLE, because it says nothing about the claim.
+- `verify_remote.py` compares the Git hash of every file with what GitHub holds, or, before anything is pushed, with a commit in the local clone.
 - A green validator is not proof that a publication is clean. The list of private terms cannot live in a public repository, so only the maintainer's publish script applies it, and that script refuses to publish without it. CI applies only the generic patterns.
 
 Every verification round, what it found and what changed is recorded in the [verification log](docs/reviews/verification-log.md).
 
 ## What is not published
 
-Two local environment surveys (referred to as L1 and L2 in the documents) describe the author's machine and lab, so they stay local. Local machine paths and other non-public details were removed from the raw reports before publication. The validator can refuse any file that contains a term from a private list. That list lives in a local-only `private/` folder, which Git ignores and the publish script does not copy.
+Two local surveys (referred to as L1 and L2 in the documents) are not published. Local machine paths and other non-public details were removed from the raw reports before publication. The validator can refuse any file that contains a term from a private list. That list lives in a local-only `private/` folder, which Git ignores and the publish script does not copy.
 
 ## Keeping it in sync (maintainers)
 
-`scripts/sync_to_github.ps1 -Message "what changed"` validates the folder with the private term list (and stops if there is none), runs the tests, mirrors the folder into a local clone of the repository, commits only these paths, checks that everything it would push touches only these paths, pushes that commit by its SHA, and proves that GitHub holds the same bytes. It never force-pushes.
+`scripts/sync_to_github.ps1 -Message "what changed"` checks that the clone's fetch and push addresses are exactly this GitHub repository, validates the folder with the private term list (and stops if there is none), runs the tests, mirrors the folder into a local clone of the repository, commits only these paths, checks that everything it would push touches only these paths, proves that the commit holds exactly the validated files, pushes that commit by its SHA, and proves that GitHub holds the same bytes. It never force-pushes.
 
 ## Caveats
 

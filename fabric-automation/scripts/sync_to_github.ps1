@@ -3,12 +3,13 @@
 Publishes this folder to the fabric-automation folder of the GitHub repository and proves GitHub matches it.
 
 .DESCRIPTION
-1. Checks the tools, and that gh is signed in as the repository owner.
+1. Checks the tools, and that gh is signed in as the repository owner and that origin (fetch and push address) is exactly that GitHub repository.
 2. Runs the validator in strict mode and the validator's mutation tests.
 3. Brings the local clone up to date with origin (fast-forward only).
 4. Mirrors this folder into <clone>\fabric-automation and copies the CI workflows.
 5. Stages ONLY those paths, commits, checks that everything that would be pushed (earlier commits included)
-   touches only those paths, then pushes that commit by its SHA. It never force-pushes.
+   touches only those paths, and proves that the commit holds exactly the validated files (no extra, missing or
+   different file) before anything leaves the machine. Then it pushes that commit by its SHA. It never force-pushes.
 6. Compares the Git blob hash of every file with the one GitHub holds.
 7. Optionally waits for the CI run on the pushed commit.
 
@@ -28,6 +29,14 @@ leak patterns cannot see private terms. -NoDenylist overrides that for one run.
 
 .PARAMETER NoDenylist
 Publish without the private term check. Use only when the list really does not exist; the run prints a warning.
+
+.PARAMETER NoPush
+Do everything up to and including the local commit and the pre-push check of its tree, then stop. The clone is
+changed (earlier unpushed commits are folded and a commit is made) but nothing is sent to GitHub and nothing is
+verified there. A later run folds that commit away again, so this is a rehearsal, not a staging area.
+
+.PARAMETER SkipTests
+Skip the validator and fact checker unit tests (the validation itself still runs).
 
 .PARAMETER IncludeReadme
 Also stage the repository README.md (used once, to add the project row). The README is scanned for leaks first.
@@ -57,6 +66,7 @@ if ($Branch -notmatch '^[A-Za-z0-9][A-Za-z0-9._/-]*$') { throw "unsafe branch na
 
 $Project = Split-Path $PSScriptRoot -Parent
 $FabricDir = Split-Path $Project -Parent
+$VerifyScript = Join-Path $Project 'scripts\verify_remote.py'
 if (-not $CloneDir) { $CloneDir = Join-Path $FabricDir 'repo' }
 if (-not $DenyList) { $DenyList = $env:FABRIC_AUTOMATION_DENYLIST }
 if (-not $DenyList) {
@@ -71,6 +81,16 @@ $Paths = @('fabric-automation') + $WorkflowPaths
 if ($IncludeReadme) { $Paths += 'README.md' }
 
 function Step([string]$Text) { Write-Host "==> $Text" -ForegroundColor Cyan }
+
+function Test-GitHubRemote([string]$Address, [string]$Repository) {
+    # Only the two canonical forms of the one repository on github.com. A look-alike host, another repository
+    # and an address with credentials in it are all refused.
+    $name = [regex]::Escape($Repository)
+    foreach ($pattern in @("^https://github\.com/$name(\.git)?/?$", "^git@github\.com:$name(\.git)?$", "^ssh://git@github\.com/$name(\.git)?/?$")) {
+        if ($Address -match $pattern) { return $true }
+    }
+    return $false
+}
 
 function Invoke-Native {
     param([string]$Exe, [string[]]$Arguments, [switch]$AllowFailure)
@@ -100,8 +120,14 @@ foreach ($tool in 'git', 'gh', 'python') {
     if (-not (Get-Command $tool -ErrorAction SilentlyContinue)) { throw "$tool is not installed or not on PATH" }
 }
 if (-not (Test-Path (Join-Path $CloneDir '.git'))) { throw "$CloneDir is not a git clone" }
-$origin = (Invoke-Git @('remote', 'get-url', 'origin')).Output
-if ($origin -notmatch ('(^|[/:@])' + [regex]::Escape($Repo) + '(\.git)?/?$')) { throw "origin is $($origin -replace '(?<=://)[^/@]*@', ''), expected $Repo" }
+foreach ($direction in @('fetch', 'push')) {
+    # git expands insteadOf rewrites here, so this is the address a fetch or a push really uses.
+    $addressArgs = if ($direction -eq 'push') { @('remote', 'get-url', '--push', 'origin') } else { @('remote', 'get-url', 'origin') }
+    $address = (Invoke-Git $addressArgs).Output
+    if (-not (Test-GitHubRemote $address $Repo)) {
+        throw "the $direction address of origin is '$($address -replace '(?<=://)[^/@]*@', '')'; expected the GitHub repository $Repo as https://github.com/$Repo or git@github.com:$Repo, with no credentials in it"
+    }
+}
 $owner = $Repo.Split('/')[0]
 $login = (Invoke-Native -Exe 'gh' -Arguments @('api', 'user', '--jq', '.login')).Output
 if ($login -ne $owner) { throw "gh is signed in as '$login', not '$owner'. Run: gh auth switch -u $owner" }
@@ -151,6 +177,16 @@ if ($ahead -gt 0 -and $behind -eq 0) {
 Step 'Mirroring the folder into the clone'
 $destination = Join-Path $CloneDir 'fabric-automation'
 $exclude = @((Join-Path $Project 'private'), (Join-Path $Project 'docs\research\local'), '__pycache__', '.pytest_cache')
+# robocopy /MIR never deletes what it was told to exclude, so anything excluded that an earlier run or a hand
+# edit left in the clone is removed first. The pre-push check below would refuse it anyway.
+if (Test-Path -LiteralPath $destination) {
+    foreach ($leftover in @('private', 'docs\research\local')) {
+        Remove-Item -LiteralPath (Join-Path $destination $leftover) -Recurse -Force -ErrorAction SilentlyContinue
+    }
+    Get-ChildItem -LiteralPath $destination -Recurse -Force -ErrorAction SilentlyContinue |
+        Where-Object { ($_.PSIsContainer -and ($_.Name -eq '__pycache__' -or $_.Name -eq '.pytest_cache')) -or (-not $_.PSIsContainer -and $_.Extension -eq '.pyc') } |
+        ForEach-Object { Remove-Item -LiteralPath $_.FullName -Recurse -Force -ErrorAction SilentlyContinue }
+}
 $null = robocopy $Project $destination /MIR /XD @exclude /XF '*.pyc' /NFL /NDL /NJH /NJS /NP
 if ($LASTEXITCODE -ge 8) { throw "robocopy failed with exit code $LASTEXITCODE" }
 $workflowDir = Join-Path $CloneDir '.github\workflows'
@@ -181,6 +217,14 @@ if (-not $changed) {
 $pending = [int](Invoke-Git @('rev-list', '--count', "origin/$Branch..HEAD")).Output
 $head = (Invoke-Git @('rev-parse', 'HEAD')).Output
 if ($pending -gt 0) { Assert-ManagedPaths "origin/$Branch..HEAD" }
+
+Step 'Checking that the commit holds exactly the validated files'
+$treeArgs = @($VerifyScript, '--clone', $CloneDir, '--commit', $head, '--remote-path', 'fabric-automation', '--local', $Project)
+foreach ($name in $Workflows) { $treeArgs += @('--extra', ".github/workflows/$name=ci/$name") }
+$tree = Invoke-Native -Exe 'python' -Arguments $treeArgs -AllowFailure
+Write-Host $tree.Output
+if ($tree.ExitCode -ne 0) { throw 'the commit is not exactly the validated folder (see above); nothing was pushed' }
+
 $pushed = $false
 if ($NoPush) {
     Write-Host "    -NoPush given: $pending commit(s) stay local"
@@ -195,8 +239,7 @@ if ($NoPush) {
 if ($NoPush) { Write-Host 'Stopped before verification because of -NoPush.'; return }
 
 Step 'Verifying that GitHub holds exactly this content'
-$verify = Join-Path $Project 'scripts\verify_remote.py'
-$verifyArgs = @($verify, '--repo', $Repo, '--ref', $Branch, '--remote-path', 'fabric-automation', '--local', $Project, '--commit', $head)
+$verifyArgs = @($VerifyScript, '--repo', $Repo, '--ref', $Branch, '--remote-path', 'fabric-automation', '--local', $Project, '--commit', $head)
 foreach ($name in $Workflows) { $verifyArgs += @('--extra', ".github/workflows/$name=ci/$name") }
 $check = Invoke-Native -Exe 'python' -Arguments $verifyArgs -AllowFailure
 Write-Host $check.Output

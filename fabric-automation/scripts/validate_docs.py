@@ -4,8 +4,9 @@
 Checks file hygiene, Markdown tables and fences, section numbering, the
 definition and use of every identifier (FR-nn, D-nn, HR-n, S-n and so on),
 requirement and decision coverage, the review disposition log and its counts,
-links and paths, Mermaid diagrams, repeated numbers, and leaks of local paths,
-addresses and secrets.
+links and paths, Mermaid diagrams, repeated numbers, leaks of local paths,
+addresses and secrets, and that every file that would be published is of a type
+the leak scan reads.
 
 Exit status is 1 when an ERROR is found (or a WARN with --strict).
 """
@@ -13,6 +14,7 @@ Exit status is 1 when an ERROR is found (or a WARN with --strict).
 from __future__ import annotations
 
 import argparse
+import fnmatch
 import re
 import sys
 import time
@@ -25,6 +27,73 @@ SKIP_DIRS = {"private", "__pycache__", ".pytest_cache", ".git"}
 SKIP_PATHS = ("docs/research/local",)
 TEXT_SUFFIXES = {".md", ".py", ".ps1", ".yml", ".yaml", ".json", ".txt"}
 TEXT_NAMES = {".gitignore", ".gitattributes"}
+
+
+def ignore_rules(folder):
+    """The rules of the folder's .gitignore. Negated rules are skipped, which can only make this list ignore more than Git does."""
+    rules = []
+    path = Path(folder) / ".gitignore"
+    if path.exists():
+        for line in path.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if line and not line.startswith("#") and not line.startswith("!"):
+                rules.append(line)
+    return rules
+
+
+def is_ignored(rel, rules):
+    """Names, wildcards and folder rules of a .gitignore, enough for this project."""
+    parts = rel.split("/")
+    for rule in rules:
+        if rule.endswith("/"):
+            name = rule.rstrip("/")
+            if "/" in name:
+                if rel == name or rel.startswith(name + "/"):
+                    return True
+            elif any(fnmatch.fnmatch(part, name) for part in parts[:-1]):
+                return True
+        elif fnmatch.fnmatch(parts[-1], rule) or fnmatch.fnmatch(rel, rule):
+            return True
+    return False
+
+
+def publishable_files(root):
+    """Relative paths of the files that the publish script would copy and Git would track.
+
+    One definition for the validator (every such file must be one it reads) and for verify_remote.py (the
+    commit must hold exactly these files). If Git ever tracks a file that this function treats as ignored,
+    verify_remote.py reports it as an extra file before the push.
+    """
+    root = Path(root)
+    rules = ignore_rules(root)
+    out = []
+    for path in sorted(root.rglob("*")):
+        if not path.is_file():
+            continue
+        rel = path.relative_to(root).as_posix()
+        if any(part in SKIP_DIRS for part in rel.split("/")[:-1]):
+            continue
+        if any(rel == p or rel.startswith(p + "/") for p in SKIP_PATHS):
+            continue
+        if path.suffix == ".pyc" or is_ignored(rel, rules):
+            continue
+        out.append(rel)
+    return out
+
+
+def read_denylist(path):
+    """The terms of a private list. A byte-order mark (UTF-8 or UTF-16) is dropped, because it would otherwise
+    stay glued to the first line and silently turn the first term, or a comment, into a term that never matches."""
+    raw = Path(path).read_bytes()
+    text = raw.decode("utf-16") if raw.startswith((b"\xff\xfe", b"\xfe\xff")) else raw.decode("utf-8-sig")
+    if "\x00" in text:
+        raise ValueError("the file holds NUL characters (UTF-16 without a byte-order mark?)")
+    terms = []
+    for line in text.splitlines():
+        line = line.replace("\ufeff", "").strip()
+        if line and not line.startswith("#"):
+            terms.append(line)
+    return terms
 
 BRIEF = "docs/00-brief.md"
 REQ = "docs/01-requirements.md"
@@ -100,7 +169,14 @@ WORDS = {"one": 1, "two": 2, "three": 3, "four": 4, "five": 5, "six": 6, "seven"
          "nine": 9, "ten": 10, "eleven": 11, "twelve": 12, "thirteen": 13, "fourteen": 14,
          "fifteen": 15, "sixteen": 16, "seventeen": 17, "eighteen": 18, "nineteen": 19, "twenty": 20}
 
-EMAIL_ALLOW = ("@users.noreply.github.com", "cursoragent@cursor.com")
+# An entry starting with "@" allows a whole domain; any other entry is an exact address (the SSH user of a Git remote).
+EMAIL_ALLOW = ("@users.noreply.github.com", "cursoragent@cursor.com", "git@github.com")
+
+
+def email_allowed(value):
+    return any(value.endswith(a) if a.startswith("@") else value == a for a in EMAIL_ALLOW)
+
+
 # Patterns are assembled from pieces so that this file does not match its own scan.
 LEAK_PATTERNS = [
     ("user-path", re.compile(
@@ -955,7 +1031,7 @@ def scan_lines(ctx, rel, lines, deny):
         for name, pattern in LEAK_PATTERNS:
             for m in pattern.finditer(line):
                 value = m.group(0)
-                if name == "email" and any(value.endswith(a) for a in EMAIL_ALLOW):
+                if name == "email" and email_allowed(value):
                     continue
                 hits += 1
                 ctx.report.error("leak", rel, i, "%s pattern found (%d characters)" % (name, len(value)))
@@ -984,6 +1060,15 @@ def check_leaks(ctx, extra_files=()):
             continue
         hits += scan_lines(ctx, label, text.splitlines(), deny)
     ctx.report.note("leaks", "%d hit(s), %d private term(s) checked, %d extra file(s)" % (hits, len(deny), len(list(extra_files))))
+
+
+def check_unscanned(ctx):
+    """A file the leak scan does not read could carry a private term unseen, so it must not be published."""
+    unscanned = [rel for rel in publishable_files(ctx.root) if rel not in ctx.docs]
+    for rel in unscanned:
+        ctx.report.error("unscanned-file", rel, 0,
+                         "the leak scan does not read this type of file, so it must not be published (remove it, or ignore it in .gitignore)")
+    ctx.report.note("unscanned-file", "%d file(s) that would be published and are not read by the leak scan" % len(unscanned))
 
 
 URL_RE = re.compile(r"https?://[^\s<>()\[\]`\"']+")
@@ -1031,15 +1116,10 @@ def run(root, denylist=None, check_urls_flag=False, include_raw=False, require_d
     unreadable = False
     if denylist:
         try:
-            lines = Path(denylist).read_text(encoding="utf-8").splitlines()
-        except (OSError, UnicodeDecodeError) as exc:
+            terms = read_denylist(denylist)
+        except (OSError, ValueError) as exc:
             report.error("leak-denylist", "(denylist)", 0, "cannot read the denylist file (%s)" % type(exc).__name__)
             unreadable = True
-            lines = []
-        for line in lines:
-            line = line.strip()
-            if line and not line.startswith("#"):
-                terms.append(line)
     if require_denylist and not terms and not unreadable:
         report.error("leak-denylist", "(denylist)", 0, "a private denylist is required here, but none was given or it holds no terms")
     ctx = Context(root, report, terms)
@@ -1057,6 +1137,7 @@ def run(root, denylist=None, check_urls_flag=False, include_raw=False, require_d
     check_links(ctx)
     check_mermaid(ctx)
     check_leaks(ctx, extra_files)
+    check_unscanned(ctx)
     if check_urls_flag:
         check_urls(ctx, include_raw)
     return report

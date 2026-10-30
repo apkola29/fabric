@@ -188,6 +188,21 @@ class ValidatorTests(unittest.TestCase):
         self.append("README.md", "~" + "/." + "claude" + "/skills/x\n")
         self.assert_flagged(self.validate(), "leak")
 
+    def test_the_ssh_user_of_a_git_remote_is_not_an_address_leak(self):
+        self.append("README.md", "git" + "@github.com:owner/repo.git\n")
+        self.assertEqual([], self.validate().findings)
+
+    def test_only_that_exact_address_is_allowed_not_a_look_alike(self):
+        for value in ("digit" + "@github.com", "git" + "@gitlab.com", "git" + "@github.com.evil.example"):
+            with self.subTest(value=value):
+                self.assertEqual(1, sum(1 for f in self._leaks_of(value) if f[1] == "leak"))
+
+    def _leaks_of(self, text):
+        self.append("README.md", "see %s here\n" % text)
+        findings = self.validate().findings
+        self.edit("README.md", lambda t: t.replace("see %s here\n" % text, ""))
+        return findings
+
     def test_a_capitalised_user_name_in_a_unix_path(self):
         self.append("README.md", "/" + "Users" + "/Alice/notes.md\n")
         self.assert_flagged(self.validate(), "leak")
@@ -195,6 +210,62 @@ class ValidatorTests(unittest.TestCase):
     def test_an_unreadable_denylist_is_an_error_not_a_crash(self):
         missing = Path(self.tmp.name) / "no-such-denylist.txt"
         self.assert_flagged(validate_docs.run(self.root, denylist=missing), "leak-denylist")
+
+    TERM = "zzz-private" + "-term-zzz"
+
+    def write_list(self, name, data):
+        path = Path(self.tmp.name) / name
+        path.write_bytes(data)
+        return path
+
+    def test_a_byte_order_mark_does_not_hide_the_first_private_term(self):
+        self.append("README.md", "This line holds %s.\n" % self.TERM)
+        deny = self.write_list("bom.txt", b"\xef\xbb\xbf" + self.TERM.encode("utf-8") + b"\r\n")
+        report = self.validate(denylist=deny)
+        self.assertTrue(any(f[1] == "leak-denylist" and "term appears" in f[4] for f in report.findings), report.render(quiet=True))
+
+    def test_a_list_of_only_comments_behind_a_byte_order_mark_holds_no_terms(self):
+        deny = self.write_list("bom-comment.txt", b"\xef\xbb\xbf# only a comment\n")
+        report = validate_docs.run(self.root, denylist=deny, require_denylist=True)
+        self.assert_flagged(report, "leak-denylist")
+
+    def test_a_utf16_list_is_read(self):
+        self.append("README.md", "This line holds %s.\n" % self.TERM)
+        deny = self.write_list("utf16.txt", ("# private\n" + self.TERM + "\n").encode("utf-16"))
+        report = self.validate(denylist=deny)
+        self.assertTrue(any(f[1] == "leak-denylist" and "term appears" in f[4] for f in report.findings), report.render(quiet=True))
+
+    def test_a_utf16_list_without_a_mark_is_refused_not_ignored(self):
+        deny = self.write_list("utf16-nomark.txt", (self.TERM + "\n").encode("utf-16-le"))
+        report = validate_docs.run(self.root, denylist=deny, require_denylist=True)
+        self.assertTrue(any(f[1] == "leak-denylist" and "cannot read" in f[4] for f in report.findings), report.render(quiet=True))
+
+    def test_read_denylist_drops_comments_blank_lines_and_marks(self):
+        deny = self.write_list("mixed.txt", b"\xef\xbb\xbf# c\r\n\r\n  first  \r\n#x\r\nsecond\r\n")
+        self.assertEqual(["first", "second"], validate_docs.read_denylist(deny))
+
+    def test_a_file_type_the_leak_scan_does_not_read_blocks_publishing(self):
+        (self.root / "docs" / "data.csv").write_text("a,b\n1,2\n", encoding="utf-8")
+        self.assert_flagged(self.validate(), "unscanned-file")
+
+    def test_a_file_without_an_extension_is_not_read_either(self):
+        (self.root / "NOTICE").write_text("text\n", encoding="utf-8")
+        self.assert_flagged(self.validate(), "unscanned-file")
+
+    def test_files_that_are_never_published_are_not_flagged(self):
+        for rel in ("private/notes.bin", "docs/research/local/survey.bin", "scripts/__pycache__/x.pyc", "docs/secret.env",
+                    "tmp-scratch/data.bin", "docs/scratch.tmp"):
+            path = self.root / rel
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(b"\x00\x01")
+        self.assertEqual([], self.validate().findings)
+
+    def test_publishable_files_follow_the_ignore_rules(self):
+        (self.root / "tmp-scratch").mkdir()
+        (self.root / "tmp-scratch" / "a.md").write_text("x\n", encoding="utf-8")
+        listed = validate_docs.publishable_files(self.root)
+        self.assertIn("README.md", listed)
+        self.assertNotIn("tmp-scratch/a.md", listed)
 
     def run_main(self):
         with contextlib.redirect_stdout(io.StringIO()):

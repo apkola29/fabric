@@ -107,8 +107,15 @@ class PageTests(unittest.TestCase):
     def test_missing_text_is_drift_when_unstable(self):
         self.assertEqual(verify_facts.DRIFT, status_of(page_fact(stable=False), {PAGE: (200, "<p>gamma</p>")}))
 
-    def test_an_http_error_fails(self):
-        self.assertEqual(verify_facts.FAIL, status_of(page_fact(stable=False), {PAGE: (500, "")}))
+    def test_a_missing_page_fails(self):
+        for code in (404, 410):
+            with self.subTest(code=code):
+                self.assertEqual(verify_facts.FAIL, status_of(page_fact(stable=False), {PAGE: (code, "")}))
+
+    def test_any_other_error_status_says_nothing_about_the_claim(self):
+        for code in (401, 403, 500):
+            with self.subTest(code=code):
+                self.assertEqual(verify_facts.UNREACHABLE, status_of(page_fact(stable=False), {PAGE: (code, "")}))
 
     def test_a_network_error_is_unreachable(self):
         def broken(url, timeout=40):
@@ -131,12 +138,38 @@ class ErrorStatusTests(unittest.TestCase):
         self.assertEqual(verify_facts.UNREACHABLE, status_of(npm, {"https://registry.npmjs.org/": (500, "")}))
 
 
+class FakeResponse:
+    def __init__(self, status, body):
+        self.status = status
+        self._body = body
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def read(self):
+        return self._body.encode("utf-8")
+
+
 class HttpGetTests(unittest.TestCase):
     @staticmethod
     def raising(code, headers=None):
         def urlopen(req, timeout=40):
             raise verify_facts.urlerror.HTTPError(req.full_url, code, "x", headers or {}, None)
         return urlopen
+
+    def test_an_empty_answer_is_unreachable(self):
+        for body in ("", "  \n"):
+            with self.subTest(body=body):
+                with mock.patch.object(verify_facts.urlrequest, "urlopen", lambda req, timeout=40: FakeResponse(200, body)):
+                    with self.assertRaises(verify_facts.Unreachable):
+                        verify_facts.http_get("https://example.test/x")
+
+    def test_a_real_answer_is_returned(self):
+        with mock.patch.object(verify_facts.urlrequest, "urlopen", lambda req, timeout=40: FakeResponse(200, "text")):
+            self.assertEqual((200, "text"), verify_facts.http_get("https://example.test/x"))
 
     def test_server_errors_and_throttling_are_unreachable(self):
         for code in (429, 500, 502, 503):
@@ -226,15 +259,21 @@ class GithubKindsTests(unittest.TestCase):
 
     def test_a_path_that_exists_passes_and_one_that_does_not_fails(self):
         fact = self.fact("github-path", path="p")
-        self.assertEqual(verify_facts.PASS, status_of(fact, {self.API + "contents/p": (200, "{}")}))
+        self.assertEqual(verify_facts.PASS, status_of(fact, {self.API + "contents/p": (200, json.dumps({"path": "p", "type": "file"}))}))
+        self.assertEqual(verify_facts.PASS, status_of(fact, {self.API + "contents/p": (200, json.dumps([{"path": "p/a"}]))}))
         self.assertEqual(verify_facts.FAIL, status_of(fact, {self.API + "contents/p": (404, "")}))
 
     def test_a_live_repository_passes_and_an_archived_one_fails(self):
         fact = self.fact("github-repo")
-        live = json.dumps({"archived": False, "pushed_at": "2026-10-01T00:00:00Z"})
-        archived = json.dumps({"archived": True, "pushed_at": "2026-10-01T00:00:00Z"})
+        live = json.dumps({"full_name": "o/r", "archived": False, "pushed_at": "2026-10-01T00:00:00Z"})
+        archived = json.dumps({"full_name": "o/r", "archived": True, "pushed_at": "2026-10-01T00:00:00Z"})
         self.assertEqual(verify_facts.PASS, status_of(fact, {self.API[:-1]: (200, live)}))
         self.assertEqual(verify_facts.FAIL, status_of(fact, {self.API[:-1]: (200, archived)}))
+
+    def test_a_renamed_repository_fails_or_drifts(self):
+        moved = json.dumps({"full_name": "new/name", "archived": False, "pushed_at": "2026-10-01T00:00:00Z"})
+        self.assertEqual(verify_facts.FAIL, status_of(self.fact("github-repo"), {self.API[:-1]: (200, moved)}))
+        self.assertEqual(verify_facts.DRIFT, status_of(self.fact("github-repo", stable=False), {self.API[:-1]: (200, moved)}))
 
     def test_a_tag_that_resolves_to_the_pinned_commit_passes(self):
         fact = self.fact("github-tag", tag="v1", sha="abc")
@@ -262,7 +301,7 @@ class AdvisoryAndPaperTests(unittest.TestCase):
         return {"id": "a", "kind": "advisory", "ghsa": "GHSA-x", "cve": cve, "contains": "tj-actions", "claim": "c", "cited_in": "d"}
 
     def test_a_matching_advisory_passes_and_another_cve_fails(self):
-        body = json.dumps({"cve_id": "CVE-1", "summary": "a bad tj-actions release"})
+        body = json.dumps({"ghsa_id": "GHSA-x", "cve_id": "CVE-1", "summary": "a bad tj-actions release"})
         self.assertEqual(verify_facts.PASS, status_of(self.advisory(), {self.ADVISORY: (200, body)}))
         self.assertEqual(verify_facts.FAIL, status_of(self.advisory("CVE-2"), {self.ADVISORY: (200, body)}))
 
@@ -272,6 +311,109 @@ class AdvisoryAndPaperTests(unittest.TestCase):
         other = "<feed><entry><title>Something else</title></entry></feed>"
         self.assertEqual(verify_facts.PASS, status_of(fact, {self.ARXIV: (200, good)}))
         self.assertEqual(verify_facts.FAIL, status_of(fact, {self.ARXIV: (200, other)}))
+
+
+class UnusableAnswerTests(unittest.TestCase):
+    """A source that answers with nothing, or with something that is not what the check reads, says nothing about the claim."""
+    API = "https://api.github.com/repos/o/r/"
+
+    def cases(self):
+        make = GithubKindsTests.fact
+        return {
+            "pypi": (RegistryTests.pypi_fact(), "https://pypi.org/"),
+            "npm": ({"id": "n", "kind": "npm", "package": "p", "claim": "c", "cited_in": "d"}, "https://registry.npmjs.org/"),
+            "github-tree": (make("github-tree", present=[], absent=[]), self.API + "git/trees/"),
+            "github-path": (make("github-path", path="p"), self.API + "contents/"),
+            "github-repo": (make("github-repo"), self.API[:-1]),
+            "github-tag": (make("github-tag", tag="v1", sha="abc"), self.API + "git/ref/tags/"),
+            "advisory": (AdvisoryAndPaperTests.advisory(), "https://api.github.com/advisories/"),
+            "latest release": (file_fact(), LATEST),
+        }
+
+    def test_malformed_json_is_unreachable_not_a_failed_claim(self):
+        for name, (fact, prefix) in self.cases().items():
+            for body in ('{"truncated": ', "<html>captcha</html>", "[]"):
+                with self.subTest(kind=name, body=body):
+                    self.assertEqual(verify_facts.UNREACHABLE, status_of(fact, {prefix: (200, body)}))
+
+    def test_an_empty_object_is_unreachable(self):
+        for name, (fact, prefix) in self.cases().items():
+            with self.subTest(kind=name):
+                self.assertEqual(verify_facts.UNREACHABLE, status_of(fact, {prefix: (200, "{}")}))
+
+    def test_an_empty_file_does_not_prove_a_pattern_absent(self):
+        with mock.patch.object(verify_facts.urlrequest, "urlopen", lambda req, timeout=40: FakeResponse(200, "")):
+            results = verify_facts.run([file_fact(ref="main"), page_fact()], pause=0)
+        self.assertEqual([verify_facts.UNREACHABLE, verify_facts.UNREACHABLE], [r[0] for r in results])
+
+    def test_registry_answers_without_a_latest_version_are_unreachable(self):
+        npm = {"id": "n", "kind": "npm", "package": "p", "claim": "c", "cited_in": "d"}
+        empty_tags = json.dumps({"dist-tags": {}, "versions": {}})
+        self.assertEqual(verify_facts.UNREACHABLE, status_of(npm, {"https://registry.npmjs.org/": (200, empty_tags)}))
+        no_version = json.dumps({"info": {}, "releases": {}})
+        self.assertEqual(verify_facts.UNREACHABLE, status_of(RegistryTests.pypi_fact(), {"https://pypi.org/": (200, no_version)}))
+
+    def test_a_tree_entry_without_a_path_is_unreachable(self):
+        fact = GithubKindsTests.fact("github-tree", present=[], absent=[])
+        self.assertEqual(verify_facts.UNREACHABLE, status_of(fact, {self.API + "git/trees/": (200, json.dumps({"tree": [{}]}))}))
+
+    def test_an_annotated_tag_that_cannot_be_followed_is_unreachable(self):
+        fact = GithubKindsTests.fact("github-tag", tag="v1", sha="abc")
+        routes = {self.API + "git/ref/tags/v1": (200, json.dumps({"object": {"sha": "t1", "type": "tag"}})),
+                  self.API + "git/tags/t1": (403, "")}
+        self.assertEqual(verify_facts.UNREACHABLE, status_of(fact, routes))
+
+    def test_an_answer_about_another_advisory_is_unreachable(self):
+        body = json.dumps({"ghsa_id": "GHSA-other", "cve_id": "CVE-1", "summary": "a bad tj-actions release"})
+        self.assertEqual(verify_facts.UNREACHABLE, status_of(AdvisoryAndPaperTests.advisory(), {AdvisoryAndPaperTests.ADVISORY: (200, body)}))
+
+    def test_a_paper_feed_without_an_entry_is_unreachable(self):
+        fact = {"id": "x", "kind": "arxiv", "id_list": "1234", "title_contains": "T", "claim": "c", "cited_in": "d"}
+        arxiv = AdvisoryAndPaperTests.ARXIV
+        self.assertEqual(verify_facts.UNREACHABLE, status_of(fact, {arxiv: (200, "<feed></feed>")}))
+        self.assertEqual(verify_facts.UNREACHABLE, status_of(fact, {arxiv: (403, "")}))
+
+    def test_the_other_error_statuses_of_the_api_checks_are_unreachable_and_not_found_is_a_failure(self):
+        for name, (fact, prefix) in self.cases().items():
+            if name == "latest release":
+                continue
+            with self.subTest(kind=name):
+                self.assertEqual(verify_facts.UNREACHABLE, status_of(fact, {prefix: (403, "")}))
+                self.assertEqual(verify_facts.FAIL, status_of(fact, {prefix: (404, "")}))
+
+
+class DefinitionTests(unittest.TestCase):
+    def test_a_fact_that_lacks_a_key_fails_before_any_network_call(self):
+        seen = []
+        fact = file_fact()
+        del fact["regex"]
+        self.assertEqual(verify_facts.FAIL, status_of(fact, {}, seen))
+        self.assertEqual([], seen)
+
+    def test_an_unknown_kind_and_a_pattern_that_does_not_compile_fail(self):
+        self.assertEqual(verify_facts.FAIL, status_of(dict(page_fact(), kind="no-such-kind"), {}))
+        self.assertEqual(verify_facts.FAIL, status_of(page_fact(all=["("]), {PAGE: (200, "text")}))
+
+    def test_the_evidence_names_the_broken_entry_as_a_definition_problem(self):
+        fact = page_fact()
+        del fact["url"]
+        with mock.patch.object(verify_facts, "http_get", fake_web({})):
+            _status, _fact, evidence = verify_facts.run([fact], pause=0)[0]
+        self.assertIn("invalid fact definition", evidence)
+
+    def test_a_checker_defect_is_a_failure_that_says_so(self):
+        with mock.patch.dict(verify_facts.CHECKS, {"page": lambda fact: 1 / 0}):
+            status, _fact, evidence = verify_facts.run([page_fact()], pause=0)[0]
+        self.assertEqual(verify_facts.FAIL, status)
+        self.assertIn("checker crashed", evidence)
+
+    def test_a_broken_entry_does_not_stop_the_rest_of_the_run_or_the_report(self):
+        broken = {"kind": "page"}
+        results = None
+        with mock.patch.object(verify_facts, "http_get", fake_web({PAGE: (200, "alpha beta")})):
+            results = verify_facts.run([broken, page_fact()], pause=0)
+        self.assertEqual([verify_facts.FAIL, verify_facts.PASS], [r[0] for r in results])
+        self.assertIn("invalid fact definition", verify_facts.render_markdown(results))
 
 
 class FactsFileTests(unittest.TestCase):
@@ -284,14 +426,14 @@ class FactsFileTests(unittest.TestCase):
         self.assertEqual(len(ids), len(set(ids)))
 
     def test_every_fact_has_a_known_kind_and_its_keys(self):
-        needs = {"pypi": ["package", "version"], "npm": ["package"], "github-file": ["repo", "ref", "path", "regex"],
-                 "github-tree": ["repo", "ref"], "github-path": ["repo", "ref", "path"], "github-repo": ["repo"],
-                 "github-tag": ["repo", "tag", "sha"], "advisory": ["ghsa", "cve", "contains"],
-                 "arxiv": ["id_list", "title_contains"], "page": ["url"]}
         for fact in self.facts:
-            self.assertIn(fact["kind"], verify_facts.CHECKS, fact["id"])
-            for key in needs[fact["kind"]] + ["claim", "cited_in"]:
-                self.assertIn(key, fact, "%s lacks %s" % (fact["id"], key))
+            try:
+                verify_facts.validate_definition(fact)
+            except verify_facts.InvalidFact as exc:
+                self.fail("%s: %s" % (fact.get("id", "?"), exc))
+
+    def test_every_kind_has_its_required_keys_listed(self):
+        self.assertEqual(set(verify_facts.CHECKS), set(verify_facts.REQUIRED_KEYS))
 
     def test_a_page_fact_checks_something(self):
         for fact in self.facts:
