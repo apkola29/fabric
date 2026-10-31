@@ -5,8 +5,8 @@ Statuses: PASS (the claim holds now), DRIFT (it held when written and a newer
 value exists, or a page that a claim quotes has since changed), FAIL (the claim
 is wrong, or its entry in facts.json is itself broken), UNREACHABLE (the source
 could not be fetched, answered with an error other than "not found", or answered
-with something unusable such as an empty body or malformed JSON, so it says
-nothing about the claim). Standard library only.
+with something unusable such as an empty body, malformed JSON or a listing that
+is not marked complete, so it says nothing about the claim). Standard library only.
 
 Exit status is 1 when any claim FAILS (or with --strict, when any is not PASS).
 """
@@ -134,6 +134,9 @@ def check_npm(fact):
     latest = text(tags.get("latest"), "the npm registry")
     if fact.get("version") and fact["version"] not in versions:
         return FAIL, "version %s was never published (latest is %s)" % (fact["version"], latest)
+    if not fact.get("version") and latest not in versions:
+        # With no named version the claim rests on the latest one, so it must be listed; that also refuses an empty versions object.
+        raise Unreachable("the npm registry's latest version is not among the versions it lists")
     return PASS, "published, latest %s" % latest
 
 
@@ -179,8 +182,11 @@ def check_github_tree(fact):
     data = json_object(body, "the tree listing", "tree")
     if not isinstance(data["tree"], list):
         raise Unreachable("the tree listing answered with an unexpected structure")
-    if data.get("truncated"):
-        return UNREACHABLE, "GitHub truncated the tree listing"
+    # Only an explicit false says that the listing is complete, and a partial one cannot show that a path is absent.
+    if data.get("truncated") is not False:
+        raise Unreachable("GitHub did not say that the tree listing is complete")
+    if not data["tree"]:
+        raise Unreachable("the tree listing is empty")
     paths = [text(nested(entry, "the tree listing", "path")["path"], "the tree listing") for entry in data["tree"]]
     missing = [p for p in fact.get("present", []) if p not in paths]
     found = [p for p in fact.get("absent", []) if any(x == p or x.startswith(p if p.endswith("/") else p + "/") for x in paths)]
@@ -307,8 +313,8 @@ LIST_KEYS = ("all", "present", "absent")
 
 
 def strings_only(value, what):
-    if not isinstance(value, list) or not all(isinstance(item, str) and item for item in value):
-        raise InvalidFact("%s must be a list of non-empty strings" % what)
+    if not isinstance(value, list) or not value or not all(isinstance(item, str) and item for item in value):
+        raise InvalidFact("%s must be a non-empty list of non-empty strings" % what)
 
 
 def validate_definition(fact):
@@ -344,6 +350,10 @@ def validate_definition(fact):
         for key in ("present", "absent"):
             if key in segment:
                 strings_only(segment[key], "segment " + key)
+        if not (segment.get("present") or segment.get("absent")):
+            raise InvalidFact("a segment checks nothing without 'present' or 'absent'")
+    if kind == "github-tree" and not (fact.get("present") or fact.get("absent")):
+        raise InvalidFact("a github-tree fact checks nothing without 'present' or 'absent'")
     if kind == "page" and not (fact.get("all") or segment):
         raise InvalidFact("a page fact checks nothing without 'all' or 'segment'")
     patterns = list(fact.get("all", [])) + [p for p in (fact.get("regex"), fact.get("show"), fact.get("control")) if p]

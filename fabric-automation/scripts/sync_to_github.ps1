@@ -6,10 +6,13 @@ Publishes this folder to the fabric-automation folder of the GitHub repository a
 1. Checks the tools, and that gh is signed in as the repository owner and that every fetch and push address of origin is exactly that GitHub repository.
 2. Runs the validator in strict mode and the validator's mutation tests.
 3. Brings the local clone up to date with origin (fast-forward only) and checks that its earlier unpushed commits touch only the managed paths.
-4. Stops if the mirror folder, the workflow folder, the folder above it, a workflow file or the README is a link, because a write or a
-   delete through a link lands outside the clone. Mirrors this folder into <clone>\fabric-automation and copies the CI workflows,
-   then scans the mirrored copy itself, so that what is committed is what was scanned even if the source changed while the tests ran.
-   Only then are earlier unpushed local commits folded away (a mixed reset), so that a run that stops earlier leaves them alone.
+4. Stops if the mirror folder, the workflow folder, the folder above it, a workflow file, a file in the mirror or the README is a link
+   (a junction, a symbolic link or a hard link), because a write or a delete through a link lands outside the clone. Mirrors this
+   folder into <clone>\fabric-automation and copies the CI workflows, then scans the mirrored copy itself, so that what is
+   committed is what was scanned even if the source changed while the tests ran. The README, when it is published, is scanned
+   as a private copy, and the commit and GitHub are compared with that copy. Only then are earlier unpushed local commits
+   folded away (a soft reset, then a reset of the managed paths), so that a run that stops earlier leaves them alone and work
+   staged in the clone for another purpose stays staged.
 5. Stages ONLY those paths, commits, checks that everything that would be pushed (earlier commits included)
    touches only those paths, and proves that the commit holds exactly the validated files (no extra, missing or
    different file, and nothing that is not a regular file) before anything leaves the machine. Then it pushes that
@@ -23,7 +26,7 @@ Nothing outside fabric-automation/ and the managed workflow files is staged, so 
 Commit subject (the prefix "fabric-automation: " is added).
 
 .PARAMETER CloneDir
-The local clone of the repository. Defaults to ..\repo next to this project.
+The local clone of the repository. Defaults to ..\repo next to this project. A relative path is made absolute first.
 
 .PARAMETER DenyList
 File of private terms that must never be published. Defaults to $env:FABRIC_AUTOMATION_DENYLIST, then to
@@ -43,10 +46,14 @@ verified there. A later run folds that commit away again, so this is a rehearsal
 Skip the validator and fact checker unit tests (the validation itself still runs).
 
 .PARAMETER IncludeReadme
-Also stage the repository README.md (used once, to add the project row). The README is scanned for leaks first.
+Also stage the repository README.md (used once, to add the project row). A private copy of the README is scanned for leaks,
+and what is committed and what GitHub holds must equal that copy.
 
 .PARAMETER WaitCi
 Wait for the validate workflow on the pushed commit and fail if it fails.
+
+.PARAMETER CiWaitMinutes
+With -WaitCi, how long to wait for the run of the pushed commit to appear before the run counts as missing (default 5).
 
 .PARAMETER ProjectDir
 The project folder to publish. Defaults to the folder above this script. The tests use it to publish a copy of the
@@ -64,6 +71,7 @@ param(
     [switch]$SkipTests,
     [switch]$IncludeReadme,
     [switch]$WaitCi,
+    [int]$CiWaitMinutes = 5,
     [string]$ProjectDir
 )
 
@@ -77,6 +85,11 @@ $Project = if ($ProjectDir) { (Resolve-Path -LiteralPath $ProjectDir).Path } els
 $FabricDir = Split-Path $Project -Parent
 $VerifyScript = Join-Path $Project 'scripts\verify_remote.py'
 if (-not $CloneDir) { $CloneDir = Join-Path $FabricDir 'repo' }
+# Absolute from here on: a relative path would be taken from another folder by a tool that is started elsewhere or that
+# resolves a path against the project folder (the verifier does that for the files given with --extra).
+if (-not (Test-Path -LiteralPath $CloneDir -PathType Container)) { throw "$CloneDir is not a folder (the clone of the repository)" }
+$CloneDir = (Resolve-Path -LiteralPath $CloneDir).Path
+$ReadmeLive = Join-Path $CloneDir 'README.md'
 if (-not $DenyList) { $DenyList = $env:FABRIC_AUTOMATION_DENYLIST }
 if (-not $DenyList) {
     foreach ($candidate in @((Join-Path $Project 'private\denylist.txt'), (Join-Path $FabricDir 'private\denylist.txt'))) {
@@ -116,12 +129,18 @@ function Invoke-Native {
     } finally { $ErrorActionPreference = $previous }
     $code = $LASTEXITCODE
     if ($code -ne 0 -and -not $AllowFailure) { throw "$Exe $($Arguments -join ' ') failed ($code): $((@($err) + @($out)) -join ' ')" }
-    [pscustomobject]@{ ExitCode = $code; Output = (($out -join "`n").Trim()); Errors = (($err -join "`n").Trim()) }
+    [pscustomobject]@{ ExitCode = $code; Output = (($out -join "`n").Trim("`r", "`n")); Errors = (($err -join "`n").Trim()) }
 }
 
 function Show-Result($Result) {
     if ($Result.Output) { Write-Host $Result.Output }
     if ($Result.Errors) { Write-Host $Result.Errors }
+}
+
+function Get-Sha256([string]$Path) {
+    # Not Get-FileHash, which some Windows PowerShell installations lack.
+    $algorithm = [System.Security.Cryptography.SHA256]::Create()
+    try { return [System.BitConverter]::ToString($algorithm.ComputeHash([System.IO.File]::ReadAllBytes($Path))) } finally { $algorithm.Dispose() }
 }
 
 function Invoke-Git([string[]]$GitArgs, [switch]$AllowFailure) {
@@ -130,12 +149,13 @@ function Invoke-Git([string[]]$GitArgs, [switch]$AllowFailure) {
 
 function Assert-ManagedPaths([string]$Range) {
     # Every commit in the range, not just the net diff, may touch only the managed paths and none may be a merge.
-    # The comparison is case-sensitive, like the pathspecs that Git is given below, and the log is read without
-    # quoting or signature lines, so that a user's git settings cannot change what is parsed.
+    # The comparison is case-sensitive, like the pathspecs that Git is given below (and so is the removal of duplicates,
+    # which would otherwise keep one of two paths that differ only in case), and the log is read without quoting or
+    # signature lines, so that a user's git settings cannot change what is parsed.
     $merges = [int](Invoke-Git @('rev-list', '--merges', '--count', $Range)).Output
     if ($merges -gt 0) { throw "refusing to push: $Range holds $merges merge commit(s)" }
     $log = (Invoke-Git @('-c', 'core.quotePath=false', 'log', '--no-show-signature', '--format=', '--name-only', $Range)).Output
-    $touched = @($log -split "`n" | Where-Object { $_ } | Sort-Object -Unique)
+    $touched = @($log -split "`n" | Where-Object { $_ } | Sort-Object -Unique -CaseSensitive)
     $outside = @($touched | Where-Object {
         -not ($_.StartsWith('fabric-automation/', [System.StringComparison]::Ordinal) -or ($WorkflowPaths -ccontains $_) -or ($IncludeReadme -and $_ -ceq 'README.md'))
     })
@@ -143,15 +163,17 @@ function Assert-ManagedPaths([string]$Range) {
 }
 
 function Test-IsLink($Item) {
-    # A junction or a symbolic link. Other reparse points, such as OneDrive placeholders, are ordinary files and folders.
-    return ($Item.LinkType -eq 'Junction' -or $Item.LinkType -eq 'SymbolicLink')
+    # A junction, a symbolic link or a hard link (a second name for the same file, which Windows reports as LinkType
+    # HardLink): a write under one name changes the file that the other name belongs to. Other reparse points, such as
+    # OneDrive placeholders, are ordinary files and folders.
+    return ($Item.LinkType -eq 'Junction' -or $Item.LinkType -eq 'SymbolicLink' -or $Item.LinkType -eq 'HardLink')
 }
 
 function Assert-NotALink([string]$Path, [string]$What) {
     # A write or a delete through a link lands where the link points, which can be outside the clone.
     $item = Get-Item -LiteralPath $Path -Force -ErrorAction SilentlyContinue
     if ($item -and (Test-IsLink $item)) {
-        throw "$What ($Path) is a link, so the script could write or delete through it. Replace it with a real folder or file by hand and run again"
+        throw "$What ($Path) is a link (a junction, a symbolic link or a hard link), so the script could write or delete through it. Replace it with a real folder or file by hand and run again"
     }
 }
 
@@ -210,7 +232,7 @@ if ($DenyList -and (Test-Path $DenyList)) {
 } else {
     throw 'no private denylist found, and the generic leak patterns cannot see private terms. Set FABRIC_AUTOMATION_DENYLIST or pass -DenyList. Use -NoDenylist only if the list really does not exist.'
 }
-$readmeArgs = if ($IncludeReadme) { @('--scan-file', (Join-Path $CloneDir 'README.md')) } else { @() }
+$readmeArgs = if ($IncludeReadme) { @('--scan-file', $ReadmeLive) } else { @() }
 $arguments = @($validator, '--strict', '--quiet') + $denyArgs + $readmeArgs
 $result = Invoke-Native -Exe 'python' -Arguments $arguments -AllowFailure
 Show-Result $result
@@ -247,7 +269,7 @@ Assert-NotALink $destination 'the mirror folder'
 Assert-NotALink (Join-Path $CloneDir '.github') 'the .github folder of the clone'
 Assert-NotALink $workflowDir 'the workflow folder of the clone'
 foreach ($name in $Workflows) { Assert-NotALink (Join-Path $workflowDir $name) "the workflow file $name" }
-if ($IncludeReadme) { Assert-NotALink (Join-Path $CloneDir 'README.md') 'the README of the clone' }
+if ($IncludeReadme) { Assert-NotALink $ReadmeLive 'the README of the clone' }
 # A bare name excludes folders of that name at any depth, like the validator, which skips private folders anywhere.
 $exclude = @('private', (Join-Path $Project 'docs\research\local'), '__pycache__', '.pytest_cache')
 if (Test-Path -LiteralPath $destination) {
@@ -270,88 +292,111 @@ foreach ($name in $Workflows) {
 }
 
 Step 'Scanning the mirrored copy that will be committed'
-# The first validation read the source folder, and it can change before the mirror is made (the tests above take
-# minutes). This scan reads the copy itself, so what is committed is what was scanned.
-$scan = Invoke-Native -Exe 'python' -Arguments (@($validator, '--root', $destination, '--strict', '--quiet') + $denyArgs + $readmeArgs) -AllowFailure
-Show-Result $scan
-if ($scan.ExitCode -ne 0) { throw 'the mirrored copy failed validation; nothing was committed' }
-
-if ($fold) {
-    # Commits left by an earlier run were not scanned by this run's validator. The mirror rebuilt their net effect from
-    # the validated folder, so they are folded away instead of being pushed as they are. A mixed reset keeps the files
-    # and drops the index of those commits, so a file that was force-added although .gitignore keeps it out does not
-    # come back. It happens only now, so that a run that stops earlier leaves those commits where they were.
-    Invoke-Git @('reset', '--mixed', "origin/$Branch") | Out-Null
-    Write-Host "    folded $ahead earlier local commit(s) into this run"
-}
-
-Step 'Staging only this project'
-Invoke-Git (@('add', '-A', '--') + $Paths) | Out-Null
-$changed = (Invoke-Git (@('diff', '--cached', '--name-status', '--') + $Paths)).Output
-if (-not $changed) {
-    Write-Host '    nothing new to commit'
-} else {
-    Write-Host (($changed -split "`n" | Select-Object -First 15) -join "`n")
-    $stat = (Invoke-Git (@('diff', '--cached', '--shortstat', '--') + $Paths)).Output
-    $body = "$stat`n`nPublished by fabric-automation/scripts/sync_to_github.ps1 after the strict validation and the validator tests passed.`n`nCo-authored-by: Copilot <223556219+Copilot@users.noreply.github.com>"
-    $messageFile = [System.IO.Path]::GetTempFileName()
-    try {
-        [System.IO.File]::WriteAllText($messageFile, "fabric-automation: $Message`n`n$body`n", (New-Object System.Text.UTF8Encoding($false)))
-        Step 'Committing'
-        Invoke-Git (@('commit', '-F', $messageFile, '--') + $Paths) | Out-Null
-    } finally { Remove-Item $messageFile -Force -ErrorAction SilentlyContinue }
-}
-
-$pending = [int](Invoke-Git @('rev-list', '--count', "origin/$Branch..HEAD")).Output
-$head = (Invoke-Git @('rev-parse', 'HEAD')).Output
-if ($pending -gt 0) { Assert-ManagedPaths "origin/$Branch..HEAD" }
-
-Step 'Checking that the commit holds exactly the validated files'
-$treeArgs = @($VerifyScript, '--clone', $CloneDir, '--commit', $head, '--remote-path', 'fabric-automation', '--local', $Project)
-foreach ($name in $Workflows) { $treeArgs += @('--extra', ".github/workflows/$name=ci/$name") }
-if ($IncludeReadme) { $treeArgs += @('--extra', ('README.md=' + (Join-Path $CloneDir 'README.md'))) }
-$tree = Invoke-Native -Exe 'python' -Arguments $treeArgs -AllowFailure
-Show-Result $tree
-if ($tree.ExitCode -ne 0) { throw 'the commit is not exactly the validated folder (see above); nothing was pushed' }
-
-$pushed = $false
-if ($NoPush) {
-    Write-Host "    -NoPush given: $pending commit(s) stay local"
-} elseif ($pending -gt 0) {
-    Step "Pushing $pending commit(s)"
-    Invoke-Git @('push', 'origin', "${head}:refs/heads/$Branch") | Out-Null
-    $pushed = $true
-} else {
-    Write-Host '    nothing to push: GitHub already has this commit'
-}
-
-if ($NoPush) { Write-Host 'Stopped before verification because of -NoPush.'; return }
-
-Step 'Verifying that GitHub holds exactly this content'
-$verifyArgs = @($VerifyScript, '--repo', $Repo, '--ref', $Branch, '--remote-path', 'fabric-automation', '--local', $Project, '--commit', $head)
-foreach ($name in $Workflows) { $verifyArgs += @('--extra', ".github/workflows/$name=ci/$name") }
-if ($IncludeReadme) { $verifyArgs += @('--extra', ('README.md=' + (Join-Path $CloneDir 'README.md'))) }
-$check = Invoke-Native -Exe 'python' -Arguments $verifyArgs -AllowFailure
-Show-Result $check
-if ($check.ExitCode -ne 0) { throw 'GitHub does not match the local folder' }
-$readme = (Invoke-Native -Exe 'gh' -Arguments @('api', "repos/$Repo/contents/README.md?ref=$head", '-H', 'Accept: application/vnd.github.raw')).Output
-if ($readme -notmatch '\]\(fabric-automation/\)') { Write-Warning 'the repository README has no row for fabric-automation/ (run once with -IncludeReadme after adding it)' }
-
-if ($WaitCi -and $pushed) {
-    Step 'Waiting for the CI run'
-    $runId = $null
-    $deadline = (Get-Date).AddMinutes(5)
-    while (-not $runId -and (Get-Date) -lt $deadline) {
-        $runs = (Invoke-Native -Exe 'gh' -Arguments @('run', 'list', '--repo', $Repo, '--workflow', 'fabric-automation-validate.yml', '--branch', $Branch, '--limit', '10', '--json', 'databaseId,headSha')).Output | ConvertFrom-Json
-        $match = $runs | Where-Object { $_.headSha -eq $head } | Select-Object -First 1
-        if ($match) { $runId = $match.databaseId } else { Start-Sleep -Seconds 5 }
+$snapshotDir = $null
+$snapshot = $null
+$mirrorReadmeArgs = @()
+try {
+    if ($IncludeReadme) {
+        # The README is outside the mirrored folder, so the clone's own file is the only copy, and an editor or a hook
+        # can change it after it was scanned. A private copy is taken now: the scan reads it, the commit and GitHub are
+        # compared with it, and the run stops if the live file differs from it when it is about to be staged.
+        $snapshotDir = Join-Path ([System.IO.Path]::GetTempPath()) ('fabric-automation-' + [guid]::NewGuid().ToString('N'))
+        New-Item -ItemType Directory -Path $snapshotDir | Out-Null
+        $snapshot = Join-Path $snapshotDir 'README.md'
+        Copy-Item -LiteralPath $ReadmeLive -Destination $snapshot
+        $mirrorReadmeArgs = @('--scan-file', $snapshot)
     }
-    if (-not $runId) { throw "no CI run appeared for commit $head" }
-    $ci = Invoke-Native -Exe 'gh' -Arguments @('run', 'watch', "$runId", '--repo', $Repo, '--exit-status') -AllowFailure
-    Write-Host ((@($ci.Output, $ci.Errors) -join "`n") -split "`n" | Where-Object { $_.Trim() } | Select-Object -Last 8 | Out-String).TrimEnd()
-    if ($ci.ExitCode -ne 0) { throw "the CI run $runId failed" }
-    Write-Host "    CI run $runId passed"
-}
+    # The first validation read the source folder, and it can change before the mirror is made (the tests above take
+    # minutes). This scan reads the copy itself, so what is committed is what was scanned.
+    $scan = Invoke-Native -Exe 'python' -Arguments (@($validator, '--root', $destination, '--strict', '--quiet') + $denyArgs + $mirrorReadmeArgs) -AllowFailure
+    Show-Result $scan
+    if ($scan.ExitCode -ne 0) { throw 'the mirrored copy failed validation; nothing was committed' }
 
-Write-Host ''
-Write-Host "Done. https://github.com/$Repo/tree/$Branch/fabric-automation at $($head.Substring(0, 10))" -ForegroundColor Green
+    if ($fold) {
+        # Commits left by an earlier run were not scanned by this run's validator. The mirror rebuilt their net effect
+        # from the validated folder, so they are folded away instead of being pushed as they are. A soft reset moves the
+        # branch back and leaves the index alone, so work that someone staged in the clone for another purpose stays
+        # staged. Those commits touched only the managed paths (checked above), so resetting just those paths drops what
+        # they put in the index, and a file that was force-added although .gitignore keeps it out does not come back.
+        # It happens only now, so that a run that stops earlier leaves those commits where they were.
+        Invoke-Git @('reset', '--soft', "origin/$Branch") | Out-Null
+        Invoke-Git (@('reset', '-q', '--') + $Paths) | Out-Null
+        Write-Host "    folded $ahead earlier local commit(s) into this run"
+    }
+
+    Step 'Staging only this project'
+    if ($IncludeReadme -and (Get-Sha256 $ReadmeLive) -ne (Get-Sha256 $snapshot)) {
+        throw 'the README of the clone changed after it was scanned; nothing was committed. Run again'
+    }
+    Invoke-Git (@('add', '-A', '--') + $Paths) | Out-Null
+    $changed = (Invoke-Git (@('diff', '--cached', '--name-status', '--') + $Paths)).Output
+    if (-not $changed) {
+        Write-Host '    nothing new to commit'
+    } else {
+        Write-Host (($changed -split "`n" | Select-Object -First 15) -join "`n")
+        $stat = (Invoke-Git (@('diff', '--cached', '--shortstat', '--') + $Paths)).Output.Trim()
+        $body = "$stat`n`nPublished by fabric-automation/scripts/sync_to_github.ps1 after the strict validation and the validator tests passed.`n`nCo-authored-by: Copilot <223556219+Copilot@users.noreply.github.com>"
+        $messageFile = [System.IO.Path]::GetTempFileName()
+        try {
+            [System.IO.File]::WriteAllText($messageFile, "fabric-automation: $Message`n`n$body`n", (New-Object System.Text.UTF8Encoding($false)))
+            Step 'Committing'
+            Invoke-Git (@('commit', '-F', $messageFile, '--') + $Paths) | Out-Null
+        } finally { Remove-Item $messageFile -Force -ErrorAction SilentlyContinue }
+    }
+
+    $pending = [int](Invoke-Git @('rev-list', '--count', "origin/$Branch..HEAD")).Output
+    $head = (Invoke-Git @('rev-parse', 'HEAD')).Output
+    if ($pending -gt 0) { Assert-ManagedPaths "origin/$Branch..HEAD" }
+
+    Step 'Checking that the commit holds exactly the validated files'
+    $treeArgs = @($VerifyScript, '--clone', $CloneDir, '--commit', $head, '--remote-path', 'fabric-automation', '--local', $Project)
+    foreach ($name in $Workflows) { $treeArgs += @('--extra', ".github/workflows/$name=ci/$name") }
+    if ($IncludeReadme) { $treeArgs += @('--extra', ('README.md=' + $snapshot)) }
+    $tree = Invoke-Native -Exe 'python' -Arguments $treeArgs -AllowFailure
+    Show-Result $tree
+    if ($tree.ExitCode -ne 0) { throw 'the commit is not exactly the validated folder (see above); nothing was pushed' }
+
+    $pushed = $false
+    if ($NoPush) {
+        Write-Host "    -NoPush given: $pending commit(s) stay local"
+    } elseif ($pending -gt 0) {
+        Step "Pushing $pending commit(s)"
+        Invoke-Git @('push', 'origin', "${head}:refs/heads/$Branch") | Out-Null
+        $pushed = $true
+    } else {
+        Write-Host '    nothing to push: GitHub already has this commit'
+    }
+
+    if ($NoPush) { Write-Host 'Stopped before verification because of -NoPush.'; return }
+
+    Step 'Verifying that GitHub holds exactly this content'
+    $verifyArgs = @($VerifyScript, '--repo', $Repo, '--ref', $Branch, '--remote-path', 'fabric-automation', '--local', $Project, '--commit', $head)
+    foreach ($name in $Workflows) { $verifyArgs += @('--extra', ".github/workflows/$name=ci/$name") }
+    if ($IncludeReadme) { $verifyArgs += @('--extra', ('README.md=' + $snapshot)) }
+    $check = Invoke-Native -Exe 'python' -Arguments $verifyArgs -AllowFailure
+    Show-Result $check
+    if ($check.ExitCode -ne 0) { throw 'GitHub does not match the local folder' }
+    $readme = (Invoke-Native -Exe 'gh' -Arguments @('api', "repos/$Repo/contents/README.md?ref=$head", '-H', 'Accept: application/vnd.github.raw')).Output
+    if ($readme -notmatch '\]\(fabric-automation/\)') { Write-Warning 'the repository README has no row for fabric-automation/ (run once with -IncludeReadme after adding it)' }
+
+    if ($WaitCi -and $pushed) {
+        Step 'Waiting for the CI run'
+        $runId = $null
+        $deadline = (Get-Date).AddMinutes($CiWaitMinutes)
+        while (-not $runId -and (Get-Date) -lt $deadline) {
+            $runs = (Invoke-Native -Exe 'gh' -Arguments @('run', 'list', '--repo', $Repo, '--workflow', 'fabric-automation-validate.yml', '--branch', $Branch, '--limit', '10', '--json', 'databaseId,headSha')).Output | ConvertFrom-Json
+            $match = $runs | Where-Object { $_.headSha -eq $head } | Select-Object -First 1
+            if ($match) { $runId = $match.databaseId } else { Start-Sleep -Seconds 5 }
+        }
+        if (-not $runId) { throw "no CI run appeared for commit $head" }
+        $ci = Invoke-Native -Exe 'gh' -Arguments @('run', 'watch', "$runId", '--repo', $Repo, '--exit-status') -AllowFailure
+        Write-Host ((@($ci.Output, $ci.Errors) -join "`n") -split "`n" | Where-Object { $_.Trim() } | Select-Object -Last 8 | Out-String).TrimEnd()
+        if ($ci.ExitCode -ne 0) { throw "the CI run $runId failed" }
+        Write-Host "    CI run $runId passed"
+    }
+
+    Write-Host ''
+    Write-Host "Done. https://github.com/$Repo/tree/$Branch/fabric-automation at $($head.Substring(0, 10))" -ForegroundColor Green
+} finally {
+    if ($snapshotDir) { Remove-Item -LiteralPath $snapshotDir -Recurse -Force -ErrorAction SilentlyContinue }
+}

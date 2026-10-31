@@ -19,7 +19,6 @@ import re
 import stat
 import sys
 import time
-import unicodedata
 from collections import Counter
 from pathlib import Path
 from urllib import error as urlerror
@@ -38,50 +37,77 @@ class UnsupportedIgnore(ValueError):
     """
 
 
+# Syntax that is not modelled (checked on a rule after its leading "!"): character classes, escapes, "**", and a doubled slash,
+# which Git keeps in the pattern (so it matches nothing) where a reader would expect it to be dropped.
+UNMODELLED_SYNTAX = re.compile(r"[\[\]\\]|\*\*|//")
+# Control characters (a tab is fine), C1 controls and the separators U+2028 and U+2029. Python splits lines at some of them and Git
+# does not, so a line that holds one is refused instead of being read in a way that could differ from Git.
+UNREADABLE_CHARS = re.compile("[\x00-\x08\x0a-\x1f\x7f-\x9f\u2028\u2029]")
+# Git folds case when core.ignorecase is true (the default on Windows and macOS), and then only ASCII letters.
+FOLD = re.ASCII | re.IGNORECASE
+
+
+def read_ignore_lines(path):
+    """The lines of an ignore file as Git reads them: one leading UTF-8 byte-order mark is skipped, only LF ends a line, and one CR before the LF is dropped."""
+    raw = Path(path).read_bytes()
+    if raw.startswith(b"\xef\xbb\xbf"):
+        raw = raw[3:]
+    try:
+        text = raw.decode("utf-8")
+    except UnicodeDecodeError:
+        raise UnsupportedIgnore(".gitignore is not valid UTF-8, so it is not modelled") from None
+    return [line[:-1] if line.endswith("\r") else line for line in text.split("\n")]
+
+
 def ignore_rules(folder):
     """The rules of the project's .gitignore, read like Git reads them for the syntax this project may use.
 
     That is: names, * and ? (which never cross a slash), a leading or inner slash (the rule is anchored to the project
     folder), a trailing slash (folders only), and a leading ! (re-include). Trailing spaces are dropped and leading ones
-    count, as in Git. Anything else raises UnsupportedIgnore, as does an ignore file in a subfolder. The tests compare
-    this reading with Git itself.
+    count, as in Git. Anything else raises UnsupportedIgnore, as does an ignore file in a subfolder (outside the folders
+    that are never published), a line with a control character, and a file that is not UTF-8. The tests compare this
+    reading with Git itself.
     """
     folder = Path(folder)
     for nested in sorted(folder.rglob(".gitignore")):
         rel = nested.relative_to(folder).as_posix()
-        if rel != ".gitignore" and not any(part in SKIP_DIRS for part in rel.split("/")[:-1]):
-            raise UnsupportedIgnore("%s: only the .gitignore at the top of the project is modelled" % rel)
+        if (rel != ".gitignore" and not any(part in SKIP_DIRS for part in rel.split("/")[:-1])
+                and not any(rel.startswith(p + "/") for p in SKIP_PATHS)):
+            raise UnsupportedIgnore("%s: only the .gitignore at the top of the project is modelled" % ascii(rel))
     rules = []
     path = folder / ".gitignore"
     if path.exists():
-        for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+        for number, line in enumerate(read_ignore_lines(path), 1):
+            if UNREADABLE_CHARS.search(line):
+                raise UnsupportedIgnore(".gitignore line %d (%s) holds a control or separator character, which is not modelled" % (number, ascii(line.strip()[:40])))
             text = line.rstrip(" ")
             if not text or text.startswith("#"):
                 continue
             negated = text.startswith("!")
             if negated:
                 text = text[1:]
-            if re.search(r"[\[\]\\]|\*\*", text) or not text.strip("/"):
-                raise UnsupportedIgnore(".gitignore line %d (%s) uses syntax that is not modelled" % (number, line.strip()[:40]))
+            if UNMODELLED_SYNTAX.search(text) or not text.strip("/"):
+                raise UnsupportedIgnore(".gitignore line %d (%s) uses syntax that is not modelled" % (number, ascii(line.strip()[:40])))
             directory_only = text.endswith("/")
             body = text.rstrip("/")
             anchored = "/" in body
             regex = "".join("[^/]*" if c == "*" else "[^/]" if c == "?" else re.escape(c) for c in body.lstrip("/"))
-            rules.append((negated, re.compile("^" + ("" if anchored else "(?:.*/)?") + regex + "$"), directory_only))
+            pattern = "^" + ("" if anchored else "(?:.*/)?") + regex + "$"
+            rules.append((negated, re.compile(pattern), re.compile(pattern, FOLD), directory_only))
     return rules
 
 
-def is_ignored(rel, rules):
-    """Whether Git would ignore this file. Each folder on the way down is tried first, because a file cannot be re-included once a folder above it is excluded."""
+def is_ignored(rel, rules, fold=False):
+    """Whether Git would ignore this file, with or without folding case (core.ignorecase). Each folder on the way down is tried first, because a file cannot be re-included once a folder above it is excluded."""
     parts = rel.split("/")
     for depth in range(1, len(parts) + 1):
         path = "/".join(parts[:depth])
         is_dir = depth < len(parts)
         decision = False
-        for negated, regex, directory_only in rules:
+        for negated, exact, folded, directory_only in rules:
             if directory_only and not is_dir:
                 continue
-            if regex.match(path):
+            if (folded if fold else exact).match(path):
                 decision = not negated
         if decision:
             return True
@@ -93,7 +119,8 @@ def publishable_files(root):
 
     One definition for the validator (every such file must be one it reads) and for verify_remote.py (the
     commit must hold exactly these files). If Git ever tracks a file that this function treats as ignored,
-    verify_remote.py reports it as an extra file before the push.
+    verify_remote.py reports it as an extra file before the push. A file that is ignored with one setting of
+    core.ignorecase and kept with the other is refused (UnsupportedIgnore), because the answer would depend on the machine.
     """
     root = Path(root)
     rules = ignore_rules(root)
@@ -106,9 +133,13 @@ def publishable_files(root):
             continue
         if any(rel == p or rel.startswith(p + "/") for p in SKIP_PATHS):
             continue
-        if path.suffix == ".pyc" or is_ignored(rel, rules):
+        if path.suffix == ".pyc":
             continue
-        out.append(rel)
+        ignored = is_ignored(rel, rules)
+        if ignored != is_ignored(rel, rules, fold=True):
+            raise UnsupportedIgnore("%s is ignored or kept depending on whether Git folds case (core.ignorecase); rename it or change the rule" % ascii(rel))
+        if not ignored:
+            out.append(rel)
     return out
 
 
@@ -209,10 +240,17 @@ def email_allowed(value):
 
 
 # Patterns are assembled from pieces so that this file does not match its own scan.
+_SLASHES = r"[\\/]+"
+_NAME = r"[^\\/\s]+"
 LEAK_PATTERNS = [
     ("user-path", re.compile(
-        r"(?i:[a-z]:[\\/]" + "users" + r"[\\/][^\\/\s]+|[\\/]" + "appdata" + r"[\\/]|" + "onedrive" + r" - )"
-        r"|/Users/[A-Za-z][^/\s]*/|/home/[A-Za-z][^/\s]*/")),
+        r"(?i:[a-z]:" + _SLASHES + "users" + _SLASHES + _NAME  # a Windows profile, whatever the run of slashes (JSON and Python source double them)
+        + r"|[\\/]{2}" + _NAME + _SLASHES + r"[a-z]\$" + _SLASHES + "users" + _SLASHES + _NAME  # the same through an administrative share
+        + r"|[\\/]" + "appdata" + r"[\\/]"
+        # WSL mounts the drive under /mnt, Git Bash does not; the bare form must not follow a word character, dot or hyphen (a web address)
+        + r"|(?:/mnt|(?<![\w.-]))/[a-z]/+" + "users" + "/+" + _NAME
+        + "|" + "onedrive" + r" - )"
+        + r"|/Users" + _SLASHES + r"[A-Za-z_][^/\s]*|/home" + _SLASHES + r"[A-Za-z_][^/\s]*")),
     ("email", re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+")),
     ("guid", re.compile(r"\b[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\b")),
     ("jwt", re.compile(r"\bey" + r"J[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}")),
@@ -224,37 +262,52 @@ LEAK_PATTERNS = [
     ("internal-host", re.compile(
         r"(?i)(?:pkgs\.visual" + r"studio\.com|\.share" + r"point\.com|onmicro" + r"soft\.com|corp\.micro" + r"soft\.com|\.msft\.net|\beng\.ms\b)")),
     ("ipv4", re.compile(r"\b(?!127\.0\.0\.1\b|0\.0\.0\.0\b)(?:(?:25[0-5]|2[0-4]\d|1?\d?\d)\.){3}(?:25[0-5]|2[0-4]\d|1?\d?\d)\b")),
-    ("local-tool-path", re.compile(r"~[\\/]\." + r"(?:copilot|claude)[\\/]")),
+    ("local-tool-path", re.compile(r"~" + _SLASHES + r"\." + r"(?:copilot|claude)" + _SLASHES)),
 ]
 MOJIBAKE = re.compile("\u00e2\u20ac|\u00c3[\u0080-\u00bf]|\u00c2[\u0080-\u00bf]|\ufffd")
-# Control characters that Git counts as non-printable (backspace, tab, form feed and escape are printable to it).
-CONTROL_CHARS = re.compile("[\x01-\x07\x0b\x0e-\x1a\x1c-\x1f\x7f]")
+# C0 control characters other than tab, line feed and carriage return. They can split a word without showing, and some of them
+# (the ones Git counts as non-printable) make Git treat the file as binary.
+CONTROL_CHARS = re.compile("[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
 NON_ASCII = re.compile(r"[^\x00-\x7f]")
+
+# The non-ASCII characters that a document may hold, as ranges of code points. Any other one is refused, never folded to ASCII:
+# the leak scan matches ASCII text, so an invisible character, a combining mark or a look-alike letter could hide a term from it.
+ALLOWED_RANGES = (
+    (0x00A7, 0x00A7), (0x00A9, 0x00A9), (0x00AB, 0x00AB), (0x00AE, 0x00AE),  # section sign, copyright sign, guillemets, registered sign
+    (0x00B0, 0x00B1), (0x00B5, 0x00B7), (0x00BB, 0x00BB),  # degree, plus-minus, micro sign, pilcrow, middle dot, closing guillemet
+    (0x00C0, 0x00FF),  # accented Latin-1 letters, with the multiplication and division signs
+    (0x2013, 0x2014), (0x2018, 0x2019), (0x201C, 0x201D),  # dashes and curly quotes
+    (0x2020, 0x2020), (0x2022, 0x2022), (0x2026, 0x2026), (0x2032, 0x2033), (0x2122, 0x2122),  # dagger, bullet, ellipsis, primes, trade mark
+    (0x2190, 0x2195), (0x21D2, 0x21D2), (0x21D4, 0x21D4),  # arrows
+    (0x2212, 0x2212), (0x2248, 0x2248), (0x2260, 0x2260), (0x2264, 0x2265),  # minus, approximately, not equal, less or equal, greater or equal
+    (0x2713, 0x2714),  # check marks
+    (0x2500, 0x257F),  # box drawing
+)
+ALLOWED_NON_ASCII = frozenset(code for first, last in ALLOWED_RANGES for code in range(first, last + 1))
 
 
 def hidden_character(ch):
-    """Why this character could hide text from the leak scan, or None.
+    """Why this character may not appear in a document, or None if it may.
 
-    The scan matches ASCII text, so invisible characters and letters of other scripts that look like Latin ones are
-    refused instead of being folded.
+    Allowed are printable ASCII, tab, line feed, carriage return and the characters of ALLOWED_RANGES.
     """
-    category = unicodedata.category(ch)
-    if category == "Cf" or "\x80" <= ch <= "\x9f":
-        return "an invisible character"
-    if category.startswith("L") and not unicodedata.name(ch, "").startswith("LATIN"):
-        return "a letter that is not Latin"
-    return None
+    code = ord(ch)
+    if code in ALLOWED_NON_ASCII or code in (0x09, 0x0A, 0x0D) or 0x20 <= code < 0x7F:
+        return None
+    if code < 0x20 or code == 0x7F:
+        return "control character U+%04X" % code
+    return "character U+%04X is not on the allowlist of non-ASCII characters, so it can hide text from the leak scan" % code
 
 
 def hidden_in(lines):
-    """The first hidden character in these lines as (line number, message), or None. A leading byte-order mark is reported elsewhere."""
+    """The first refused character in these lines as (line number, message), or None. A leading byte-order mark is reported elsewhere."""
     for number, line in enumerate(lines, 1):
         for m in NON_ASCII.finditer(line):
             if number == 1 and m.start() == 0 and m.group() == "\ufeff":
                 continue
             why = hidden_character(m.group())
             if why:
-                return number, "%s (U+%04X) can hide text from the leak scan" % (why, ord(m.group()))
+                return number, "%s (use plain ASCII, or add the character to the allowlist in validate_docs.py)" % why
     return None
 PLACEHOLDER = re.compile(r"\b(?:TODO|TBD|FIXME|XXX)\b|<<<<<<<|>>>>>>>")
 
@@ -315,19 +368,30 @@ def fence_mask(lines):
     return mask, inside
 
 
+def line_endings(text):
+    """(lines that end in CRLF, lone carriage returns, lines that end in LF only) of a text."""
+    crlf = text.count("\r\n")
+    return crlf, text.count("\r") - crlf, text.count("\n") - crlf
+
+
+def split_lines(text):
+    """The lines of a text. Only LF ends a line (CRLF counts as LF), which is how Git sees it; str.splitlines() would also split at
+    characters such as a vertical tab, a form feed or U+2028, and the checks would never see them."""
+    lines = text.replace("\r\n", "\n").split("\n")
+    if lines and lines[-1] == "":
+        lines.pop()
+    return lines
+
+
 class Doc:
     def __init__(self, root, path):
         self.path = path
         self.rel = path.relative_to(root).as_posix()
         self.raw = path.read_bytes()
         text = self.raw.decode("utf-8", errors="replace")
-        self.crlf = text.count("\r\n")
-        self.lone_cr = text.count("\r") - self.crlf
-        self.lf = text.count("\n") - self.crlf
+        self.crlf, self.lone_cr, self.lf = line_endings(text)
         self.text = text.replace("\r\n", "\n")
-        self.lines = self.text.split("\n")
-        if self.lines and self.lines[-1] == "":
-            self.lines.pop()
+        self.lines = split_lines(text)
         self.is_markdown = path.suffix == ".md"
         if self.is_markdown:
             self.mask, self.unclosed = fence_mask(self.lines)
@@ -471,6 +535,28 @@ def check_required(ctx):
     ctx.report.note("required-file", "%d required files, %d missing" % (len(REQUIRED), len(missing)))
 
 
+def check_endings(report, rel, crlf, lone_cr, lf):
+    """Lone carriage returns, and a mix of CRLF and LF line endings."""
+    if lone_cr:
+        report.error("hygiene", rel, 0, "file contains lone carriage returns")
+    if crlf and lf:
+        report.error("hygiene", rel, 0, "mixed line endings (%d CRLF, %d LF)" % (crlf, lf))
+
+
+def check_lines(report, rel, lines):
+    """Garbled text, control characters and refused characters, for a project file and for a file given with --scan-file alike."""
+    control_reported = False
+    for number, line in enumerate(lines, 1):
+        if MOJIBAKE.search(line):
+            report.error("mojibake", rel, number, "garbled text (encoding damage)")
+        if not control_reported and CONTROL_CHARS.search(line):
+            report.error("hygiene", rel, number, "control character (it can split a word without showing, and Git could treat the file as binary and store it unchanged)")
+            control_reported = True
+    hidden = hidden_in(lines)
+    if hidden:
+        report.error("hygiene", rel, hidden[0], hidden[1])
+
+
 def check_hygiene(ctx):
     crlf_only = 0
     for doc in ctx.docs.values():
@@ -478,26 +564,14 @@ def check_hygiene(ctx):
             ctx.report.warn("hygiene", doc.rel, 1, "file starts with a byte-order mark")
         if b"\x00" in doc.raw:
             ctx.report.error("hygiene", doc.rel, 0, "file contains NUL bytes")
-        if doc.lone_cr:
-            ctx.report.error("hygiene", doc.rel, 0, "file contains lone carriage returns")
-        if doc.crlf and doc.lf:
-            ctx.report.error("hygiene", doc.rel, 0, "mixed line endings (%d CRLF, %d LF)" % (doc.crlf, doc.lf))
-        elif doc.crlf:
+        check_endings(ctx.report, doc.rel, doc.crlf, doc.lone_cr, doc.lf)
+        if doc.crlf and not doc.lf:
             crlf_only += 1
         if doc.raw and not doc.raw.endswith(b"\n"):
             ctx.report.error("hygiene", doc.rel, len(doc.lines), "file does not end with a newline")
         if len(doc.raw) > 500 * 1024 and doc.is_markdown:
             ctx.report.warn("hygiene", doc.rel, 0, "file is over 500 KB, GitHub may not render it")
-        control_reported = False
-        for i, line in enumerate(doc.lines, 1):
-            if MOJIBAKE.search(line):
-                ctx.report.error("mojibake", doc.rel, i, "garbled text (encoding damage)")
-            if not control_reported and CONTROL_CHARS.search(line):
-                ctx.report.error("hygiene", doc.rel, i, "control character (Git could treat the file as binary and store it unchanged)")
-                control_reported = True
-        hidden = hidden_in(doc.lines)
-        if hidden:
-            ctx.report.error("hygiene", doc.rel, hidden[0], hidden[1])
+        check_lines(ctx.report, doc.rel, doc.lines)
     ctx.report.note("hygiene", "%d text files, %d with CRLF endings (git stores them as LF)" % (len(ctx.docs), crlf_only))
 
 
@@ -1144,14 +1218,9 @@ def check_extra_file(ctx, path, label, deny):
     except UnicodeDecodeError:
         ctx.report.error("hygiene", label, 0, "file is not valid UTF-8, so the leak scan cannot read it")
         return 0
-    lines = text.splitlines()
-    for number, line in enumerate(lines, 1):
-        if CONTROL_CHARS.search(line):
-            ctx.report.error("hygiene", label, number, "control character (Git could treat the file as binary and store it unchanged)")
-            break
-    hidden = hidden_in(lines)
-    if hidden:
-        ctx.report.error("hygiene", label, hidden[0], hidden[1])
+    lines = split_lines(text)
+    check_endings(ctx.report, label, *line_endings(text))
+    check_lines(ctx.report, label, lines)
     return scan_lines(ctx, label, lines, deny)
 
 
@@ -1277,7 +1346,8 @@ def main(argv=None):
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--root", type=Path, default=Path(__file__).resolve().parent.parent, help="project folder")
+    # absolute(), not resolve(): resolving would follow a link on the project folder before run() can refuse it
+    parser.add_argument("--root", type=Path, default=Path(__file__).absolute().parent.parent, help="project folder")
     parser.add_argument("--denylist", type=Path, help="file of private terms, one per line (never published). Defaults to private/denylist.txt in the project folder when that exists")
     parser.add_argument("--require-denylist", action="store_true", help="fail when no denylist is given or it holds no terms (use when publishing)")
     parser.add_argument("--scan-file", type=Path, action="append", default=[], help="also scan this file, which may be outside the project (repeatable)")

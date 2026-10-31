@@ -10,13 +10,14 @@ PowerShell is not installed. Run from the project folder:
     python -m unittest discover -s scripts -p "test_*.py" -v
 """
 
+import os
 import shutil
 import subprocess
 import tempfile
 import unittest
 from pathlib import Path
 
-SCRIPT = Path(__file__).resolve().parent / "sync_to_github.ps1"
+SCRIPT = Path(os.environ.get("SYNC_SCRIPT_UNDER_TEST") or Path(__file__).resolve().parent / "sync_to_github.ps1")
 REPO = "apkola29/fabric"
 
 ACCEPTED = [
@@ -65,27 +66,39 @@ def powershell():
 @unittest.skipUnless(powershell(), "PowerShell is not installed")
 class SyncScriptTests(unittest.TestCase):
     def run_ps(self, code, **env):
-        import os
-        full = dict(os.environ, SYNC_SCRIPT=str(SCRIPT), SYNC_REPO=REPO, **env)
+        full = dict(os.environ, SYNC_SCRIPT=str(SCRIPT), SYNC_REPO=REPO)
+        full.update(env)
         proc = subprocess.run([powershell(), "-NoProfile", "-NonInteractive", "-Command", code],
-                              capture_output=True, text=True, env=full)
+                              capture_output=True, text=True, encoding="utf-8", errors="replace", env=full)
         return proc
+
+    def answers(self, addresses, repo=REPO):
+        with tempfile.TemporaryDirectory() as tmp:
+            listing = Path(tmp) / "addresses.txt"
+            listing.write_text("\n".join(addresses) + "\n", encoding="utf-8")
+            proc = self.run_ps(ASK, SYNC_ADDRESSES=str(listing), SYNC_REPO=repo)
+        self.assertEqual(0, proc.returncode, proc.stdout + proc.stderr)
+        return dict(line.split("|", 1)[::-1] for line in proc.stdout.splitlines() if "|" in line)
 
     def test_the_script_parses_and_holds_the_address_check(self):
         proc = self.run_ps(LOAD)
         self.assertEqual(0, proc.returncode, proc.stdout + proc.stderr)
 
     def test_only_the_canonical_addresses_of_the_repository_are_accepted(self):
-        addresses = ACCEPTED + REFUSED
-        with tempfile.TemporaryDirectory() as tmp:
-            listing = Path(tmp) / "addresses.txt"
-            listing.write_text("\n".join(addresses) + "\n", encoding="utf-8")
-            proc = self.run_ps(ASK, SYNC_ADDRESSES=str(listing))
-        self.assertEqual(0, proc.returncode, proc.stdout + proc.stderr)
-        answers = dict(line.split("|", 1)[::-1] for line in proc.stdout.splitlines() if "|" in line)
+        answers = self.answers(ACCEPTED + REFUSED)
         for address in ACCEPTED:
             self.assertEqual("True", answers.get(address), "should accept %s" % address)
         for address in REFUSED:
+            self.assertEqual("False", answers.get(address), "should refuse %s" % address)
+
+    def test_a_dot_in_the_repository_name_is_not_a_wildcard_in_the_address_check(self):
+        accepted = ["https://github.com/ow.ner/re.po.git", "git@github.com:ow.ner/re.po", "ssh://git@github.com/ow.ner/re.po"]
+        refused = ["https://github.com/owXner/re.po.git", "https://github.com/ow.ner/reXpo", "git@github.com:owXner/reXpo.git",
+                   "https://github.com/ow.ner/re.po.gitX"]
+        answers = self.answers(accepted + refused, repo="ow.ner/re.po")
+        for address in accepted:
+            self.assertEqual("True", answers.get(address), "should accept %s" % address)
+        for address in refused:
             self.assertEqual("False", answers.get(address), "should refuse %s" % address)
 
 

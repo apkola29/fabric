@@ -1,15 +1,17 @@
 #!/usr/bin/env python3
-"""Tests for verify_remote.py in its --clone mode, which checks a commit before it is pushed.
+"""Tests for verify_remote.py: its --clone mode, which checks a commit before it is pushed, and its GitHub mode.
 
-Each test builds a small project and a throwaway clone, commits a mirror of the
-project, changes one thing and asserts what the check reports. GitHub is never
-contacted. Run from the project folder:
+The clone tests build a small project and a throwaway clone, commit a mirror of the
+project, change one thing and assert what the check reports. The GitHub tests replace
+`gh` with a stand-in that answers from a table. GitHub is never contacted. Run from
+the project folder:
 
     python -m unittest discover -s scripts -p "test_*.py" -v
 """
 
 import contextlib
 import io
+import json
 import shutil
 import subprocess
 import sys
@@ -54,7 +56,7 @@ class CloneModeTests(unittest.TestCase):
         self.tmp.cleanup()
 
     def git(self, cwd, *args):
-        proc = subprocess.run(GIT + list(args), cwd=cwd, capture_output=True, text=True)
+        proc = subprocess.run(GIT + list(args), cwd=cwd, capture_output=True, text=True, encoding="utf-8", errors="replace")
         self.assertEqual(0, proc.returncode, proc.stderr)
         return proc.stdout.strip()
 
@@ -84,7 +86,8 @@ class CloneModeTests(unittest.TestCase):
 
     def stage_entry(self, mode, content, path):
         """Put an entry with the given mode into the index without creating a file, then commit."""
-        blob = subprocess.run(GIT + ["hash-object", "-w", "--stdin"], cwd=self.clone, input=content, capture_output=True, text=True)
+        blob = subprocess.run(GIT + ["hash-object", "-w", "--stdin"], cwd=self.clone, input=content, capture_output=True,
+                              text=True, encoding="utf-8", errors="replace")
         self.assertEqual(0, blob.returncode, blob.stderr)
         self.git(self.clone, "update-index", "--add", "--cacheinfo", "%s,%s,%s" % (mode, blob.stdout.strip(), path))
         self.git(self.clone, "commit", "-q", "-m", "special entry")
@@ -139,6 +142,18 @@ class CloneModeTests(unittest.TestCase):
         code, out = self.check()
         self.assertEqual(1, code, out)
         self.assertIn("DIFFERENT      %s" % WORKFLOW, out)
+
+    def test_an_extra_file_that_is_missing_locally_is_a_problem(self):
+        code, out = self.check(more=["x.md=docs/no-such-file.md"])
+        self.assertEqual(1, code, out)
+        self.assertIn("MISSING-LOCAL  docs/no-such-file.md", out)
+        self.assertIn("1 problem(s)", out)
+
+    def test_an_extra_file_that_is_missing_from_the_commit_is_a_problem(self):
+        code, out = self.check(more=["docs/not-in-the-commit.md=docs/a.md"])
+        self.assertEqual(1, code, out)
+        self.assertIn("MISSING-REMOTE docs/not-in-the-commit.md", out)
+        self.assertIn("1 problem(s)", out)
 
     def test_the_earlier_commit_is_judged_not_the_head(self):
         first = self.git(self.clone, "rev-parse", "HEAD")
@@ -279,6 +294,102 @@ class GithubListingTests(unittest.TestCase):
     def test_an_entry_of_a_type_that_is_not_known_stops_the_check(self):
         with self.assertRaises(SystemExit):
             self.read({"truncated": False, "tree": [dict(self.BLOB, type="weird")]})
+
+    def test_a_listing_without_a_list_of_entries_stops_the_check(self):
+        answers = {"an object": {"truncated": False, "tree": {}}, "null": {"truncated": False, "tree": None},
+                   "text": {"truncated": False, "tree": ""}, "a number": {"truncated": False, "tree": 5}, "no entries key": {"truncated": False}}
+        for name, full in answers.items():
+            with self.subTest(name):
+                with self.assertRaises(SystemExit) as stopped:
+                    self.read(full)
+                self.assertIn("without a tree listing", str(stopped.exception))
+
+
+class GithubModeTests(unittest.TestCase):
+    """main() against GitHub, with `gh` replaced by a stand-in that answers from a table, so that GitHub is never contacted."""
+    HEAD = "c" * 40
+    FOLDER = "d" * 40
+    CONTENTS = "repos/o/r/contents/%s?ref=%s" % (WORKFLOW, HEAD)
+
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.project = Path(tmp.name) / "project"
+        write(self.project / ".gitignore", "private/\n__pycache__/\n*.pyc\n")
+        write(self.project / "README.md", "# title\n")
+        write(self.project / "docs" / "a.md", "text\n")
+        write(self.project / "ci" / "w.yml", "name: w\n")
+        files = [{"path": rel, "mode": "100644", "type": "blob", "sha": verify_remote.blob_sha((self.project / rel).read_bytes())}
+                 for rel in verify_remote.publishable_files(self.project)]
+        self.answers = {
+            "repos/o/r/commits/master": {"sha": self.HEAD, "commit": {"message": "the head\n\nits body"}},
+            "repos/o/r/git/trees/" + self.HEAD: {"tree": [{"path": "fabric-automation", "mode": "040000", "type": "tree", "sha": self.FOLDER}]},
+            "repos/o/r/git/trees/%s?recursive=1" % self.FOLDER: {"truncated": False, "tree": files},
+        }
+        self.workflow_sha = verify_remote.blob_sha((self.project / "ci" / "w.yml").read_bytes())
+
+    def gh(self, command, **kwargs):
+        """Stands in for subprocess.run(["gh", "api", PATH, ...]): the text or JSON in the table, or a failure for a path that is not in it."""
+        self.assertEqual(["gh", "api"], command[:2])
+        answer = self.answers.get(command[2])
+        if answer is None:
+            return subprocess.CompletedProcess(command, 1, "", "gh: Not Found (HTTP 404)")
+        return subprocess.CompletedProcess(command, 0, answer if isinstance(answer, str) else json.dumps(answer), "")
+
+    def check(self, commit=None, extra=None):
+        argv = ["--repo", "o/r", "--ref", "master", "--local", str(self.project)]
+        if commit:
+            argv += ["--commit", commit]
+        if extra:
+            argv += ["--extra", extra]
+        out = io.StringIO()
+        with mock.patch.object(verify_remote.subprocess, "run", self.gh), contextlib.redirect_stdout(out):
+            code = verify_remote.main(argv)
+        return code, out.getvalue()
+
+    def test_a_remote_folder_that_holds_the_local_files_passes(self):
+        code, out = self.check()
+        self.assertEqual(0, code, out)
+        self.assertIn("4 file(s) identical in fabric-automation", out)
+        self.assertIn("0 problem(s)", out)
+
+    def test_a_head_that_is_not_the_expected_commit_is_a_problem(self):
+        code, out = self.check(commit="deadbeef00")
+        self.assertEqual(1, code, out)
+        self.assertIn("MISMATCH head is cccccccccc, expected deadbeef00", out)
+        self.assertIn("1 problem(s)", out)
+
+    def test_a_head_that_matches_the_expected_commit_is_not_a_problem(self):
+        for expected in (self.HEAD, self.HEAD[:7]):
+            with self.subTest(expected=expected):
+                code, out = self.check(commit=expected)
+                self.assertEqual(0, code, out)
+                self.assertNotIn("MISMATCH", out)
+
+    def test_a_regular_file_on_github_is_compared_by_its_hash(self):
+        extra = "%s=ci/w.yml" % WORKFLOW
+        self.answers[self.CONTENTS] = "file\t%s\n" % self.workflow_sha
+        code, out = self.check(extra=extra)
+        self.assertEqual(0, code, out)
+        self.assertIn("1 managed file(s) identical", out)
+        self.answers[self.CONTENTS] = "file\t%s\n" % ("0" * 40)
+        code, out = self.check(extra=extra)
+        self.assertEqual(1, code, out)
+        self.assertIn("DIFFERENT      %s" % WORKFLOW, out)
+
+    def test_a_symbolic_link_or_a_submodule_on_github_is_not_a_regular_file(self):
+        # Each entry has the hash of the local file, so only the type that GitHub reports tells it from the file.
+        for kind, mode in (("symlink", "120000"), ("submodule", "160000"), ("weird", "weird")):
+            with self.subTest(kind):
+                self.answers[self.CONTENTS] = "%s\t%s\n" % (kind, self.workflow_sha)
+                code, out = self.check(extra="%s=ci/w.yml" % WORKFLOW)
+                self.assertEqual(1, code, out)
+                self.assertIn("UNEXPECTED-MODE %s %s" % (WORKFLOW, mode), out)
+
+    def test_a_file_that_gh_cannot_find_on_github_is_missing(self):
+        code, out = self.check(extra="%s=ci/w.yml" % WORKFLOW)
+        self.assertEqual(1, code, out)
+        self.assertIn("MISSING-REMOTE %s" % WORKFLOW, out)
 
 
 if __name__ == "__main__":

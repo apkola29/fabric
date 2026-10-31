@@ -1,0 +1,33 @@
+# Verification round 6: GPT 6.1 Sol
+
+Lens: the publish script and its behavioural tests (slice A of a closure check of what round 5 changed, with the slices handed to different families than in round 5). The reviewer had not seen an earlier round. It read a frozen copy of the published commit `f6ed0fc4de` and the diff of round 5. Its environment gave it no working folder, so it ran only probes that need no files: the real functions with input held in memory, and inspection of the parsed script and tests. This is the reply condensed; locations refer to that commit. The disposition of each finding is in [round-6-findings.md](round-6-findings.md).
+
+## Findings
+
+| ID | Severity | Where | Evidence | Why it matters | Concrete fix |
+|---|---|---|---|---|---|
+| R6-A-1 | High | `sync_to_github.ps1` (the README scan and the two verifier calls), `verify_remote.py` (the `--extra` comparison) | The README is scanned before the commit, but both verifications compare the commit with the live clone file. A probe with the unchanged verifier returned 1 when the committed README differed from the scanned bytes, and 0 once the live file was changed to match the commit | With the option that publishes the README, a change after the scan (an editor, or a hook that edits and stages the file) can carry a private term past both comparisons. A real hook was not run | Scan a snapshot of the README, compare the committed blob with the snapshot's bytes, and add a regression for a change after the scan |
+| R6-A-2 | High | `sync_to_github.ps1` (the link predicate, the workflow copy, the mirror) | The predicate returned a link type of HardLink and `detected=False` for a hard link. The workflow files are written in place with `WriteAllText`. Windows documents that a change through one hard link changes every name | A workflow file or a mirror file that is hard-linked to a file elsewhere is accepted, and the other file is overwritten. Hard links need no privilege. The overwrite itself was not run | Refuse files that have several names, in the mirror and at the workflow files, and add a test with a real hard link |
+| R6-A-3 | Medium | `sync_to_github.ps1` (`Assert-ManagedPaths`, `Invoke-Native`) | Probes of the real functions accepted `fabric-automation/README.md` together with `Fabric-Automation/README.md` in PowerShell 7, and the reverse order in 5.1. Both versions accepted outside paths with a leading space after the output was trimmed | `Sort-Object -Unique` removes duplicates without regard to case before the case-sensitive check, and `.Trim()` changes a path. A forbidden path can be accepted and then folded away instead of refused | Keep the raw output, remove duplicates and compare case-sensitively, and test case collisions in both orders and a leading space |
+| R6-A-4 | Medium | `sync_to_github.ps1` (the link guards) | The guards cover the mirror folder, `.github`, the workflow folder and the README, but not the clone folder or the folders above it | A junction at or above the clone would redirect the purge, the mirror and the workflow writes while every checked leaf stays an ordinary file. Not reproduced on disk | Check the clone and its ancestors before any change, or confine writes by handle, and add a parent-junction test |
+| R6-A-5 | Medium | `sync_to_github.ps1` (the fold), `test_sync_flow.py` | The reset has no pathspec, and Git describes the mixed reset as resetting the HEAD and the index. The real-Git fixtures test the recovery of an ignored file and not unrelated staged work | When earlier commits are folded, work that someone staged elsewhere in the clone is unstaged too. The files survive but the selection is lost, even if a later gate stops the run. Not run | Refuse unrelated staged work before the fold, or keep it: a soft reset followed by an index reset of the managed paths. Add a staged-hunk test with real Git |
+| R6-A-6 | Medium | `test_sync_flow.py`, `test_sync_script.py` | The verifier stand-in answers from an environment variable and does not look at the workflow mappings. Leaving the pre-push mappings out passed the four order tests. With the real verifier a missing mapping turned a differing workflow from 1 to 0. A scan of the tests found none for `-WaitCi`, hard links or strict mode | The failure injection does not show that the workflow bytes are part of the pre-push check | Assert both mappings in both verifier calls, and add tests for a failed CI run and for warnings under strict mode |
+| R6-A-7 | Low | `sync_to_github.ps1` (the README path), `verify_remote.py` | With a relative clone path the scan reads the file relative to the current folder, while the verifier resolves its relative `--extra` path under the project folder | With the option that publishes the README the check runs against the wrong file and fails closed, which can leave a new commit unpublished. Absolute paths work | Make the clone path absolute before any argument is built, and test a relative path with the option |
+
+## Mutations tried
+
+The reviewer could not run the behavioural suite, so it tried five mutations against the four text-order tests and one against the address function. None was caught by the four tests: the mirror scan without strict mode, the pre-push workflow mappings left out, the README link guard removed, the abort on a failed CI run removed, and the history check cut to the last commit. Removing the escaping of the repository name was not caught by the shipped address fixtures, and a new fixture with a dot in the name caught it.
+
+## Checked and sound
+
+- In both Windows PowerShell 5.1 and PowerShell 7: a warning on standard error of a successful command does not throw and does not enter its answer, an exit code of 7 survives the pipeline, and an ordinary failure throws with both streams.
+- The address function passed all 19 shipped fixtures and refused the extra look-alike.
+- Native calls kept UTF-8 Git output and arguments that contain spaces, including a path that runs through a cloud-sync folder.
+- By reading: the scan comes before the fold, the working tree survives the mixed reset, the commit takes explicit paths, the push goes by SHA, the workflow mappings exist, and the verifier refuses missing, different and non-regular files.
+- The parsed tests hold 33 behavioural tests and two fold tests.
+
+## Could not verify
+
+The suite that needs the file system, a real hook, a hard-link overwrite, a junction above the clone, dangling links, OneDrive placeholders, swap races, long paths, a first mirror into an absent folder, and a full publication with the README option.
+
+Verdict from the reviewer: 2 high, 4 medium, 1 low. Closure was not reached, because the file-system-backed verification stayed incomplete.

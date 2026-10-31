@@ -3,15 +3,18 @@
 
 The checks talk to the network, so these tests replace the HTTP call with a
 fake and show that each kind of check reports PASS, DRIFT, FAIL or UNREACHABLE
-for the right reason. They also check that facts.json is well formed. Run from
-the project folder:
+for the right reason. They also check that main() turns those statuses into an
+exit status and that facts.json is well formed. Run from the project folder:
 
     python -m unittest discover -s scripts -p "test_*.py" -v
 """
 
+import contextlib
+import io
 import json
 import re
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -42,6 +45,13 @@ def fake_web(routes, seen=None):
 def status_of(fact, routes, seen=None):
     with mock.patch.object(verify_facts, "http_get", fake_web(routes, seen)):
         return verify_facts.run([fact], pause=0)[0][0]
+
+
+def result_of(fact, routes):
+    """(status, evidence) of one fact, for a test that has to show why the status was given."""
+    with mock.patch.object(verify_facts, "http_get", fake_web(routes)):
+        status, _fact, evidence = verify_facts.run([fact], pause=0)[0]
+    return status, evidence
 
 
 def file_fact(**extra):
@@ -140,6 +150,40 @@ class PageTests(unittest.TestCase):
             self.assertEqual(verify_facts.UNREACHABLE, verify_facts.run([page_fact()], pause=0)[0][0])
 
 
+class SegmentTests(unittest.TestCase):
+    """A section of a page is the text between two markers, and a claim about it holds only inside those markers."""
+
+    @staticmethod
+    def fact(**segment):
+        return page_fact(segment=dict({"start": "BEGIN", "end": "STOP", "present": ["one"]}, **segment))
+
+    def test_a_section_with_its_markers_and_its_text_passes(self):
+        self.assertEqual(verify_facts.PASS, status_of(self.fact(absent=["forbidden"]), {PAGE: (200, "<p>alpha beta</p><p>BEGIN one STOP</p>")}))
+
+    def test_a_text_that_the_section_must_not_mention_fails_the_check(self):
+        body = "<p>alpha beta</p><p>BEGIN one and a Forbidden word STOP</p>"
+        fact = self.fact(absent=["forbidden"])
+        status, evidence = result_of(fact, {PAGE: (200, body)})
+        self.assertEqual(verify_facts.FAIL, status, evidence)
+        self.assertIn("section now mentions: forbidden", evidence)
+        self.assertEqual(verify_facts.DRIFT, result_of(dict(fact, stable=False), {PAGE: (200, body)})[0])
+
+    def test_a_forbidden_text_outside_the_section_does_not_count(self):
+        body = "<p>alpha beta forbidden</p><p>BEGIN one STOP</p><p>forbidden again</p>"
+        self.assertEqual(verify_facts.PASS, status_of(self.fact(absent=["forbidden"]), {PAGE: (200, body)}))
+
+    def test_a_section_whose_start_or_end_text_is_missing_fails(self):
+        bodies = {"no start": "<p>alpha beta</p><p>one STOP</p>",
+                  "no end": "<p>alpha beta</p><p>BEGIN one</p>",
+                  "an end only before the start": "<p>alpha beta STOP</p><p>BEGIN one</p>",
+                  "neither": "<p>alpha beta one</p>"}
+        for name, body in bodies.items():
+            with self.subTest(name):
+                status, evidence = result_of(self.fact(), {PAGE: (200, body)})
+                self.assertEqual(verify_facts.FAIL, status, evidence)
+                self.assertIn("could not find the section", evidence)
+
+
 class ErrorStatusTests(unittest.TestCase):
     def test_an_error_page_is_never_read_as_evidence_that_a_pattern_is_absent(self):
         for code in (401, 403, 429, 500, 502):
@@ -207,6 +251,10 @@ class HttpGetTests(unittest.TestCase):
         with mock.patch.object(verify_facts.urlrequest, "urlopen", serving(200, "text", "https://EXAMPLE.test/moved/y")):
             self.assertEqual((200, "text"), verify_facts.http_get("https://example.test/x"))
 
+    def test_a_host_written_in_capitals_in_the_request_is_the_same_host(self):
+        with mock.patch.object(verify_facts.urlrequest, "urlopen", serving(200, "text", "https://example.test/x")):
+            self.assertEqual((200, "text"), verify_facts.http_get("https://Example.TEST/x"))
+
     def test_server_errors_and_throttling_are_unreachable(self):
         for code in (429, 500, 502, 503):
             with self.subTest(code=code):
@@ -231,6 +279,13 @@ class RegistryTests(unittest.TestCase):
     @staticmethod
     def pypi_fact(version="1.0"):
         return {"id": "p", "kind": "pypi", "package": "p", "version": version, "claim": "c", "cited_in": "d"}
+
+    @staticmethod
+    def npm_fact(version=None):
+        fact = {"id": "n", "kind": "npm", "package": "p", "claim": "c", "cited_in": "d"}
+        if version:
+            fact["version"] = version
+        return fact
 
     def pypi_body(self, latest, published):
         return json.dumps({"info": {"version": latest}, "releases": {v: [{"f": 1}] for v in published}})
@@ -264,6 +319,35 @@ class RegistryTests(unittest.TestCase):
         fact = {"id": "n", "kind": "npm", "package": "p", "claim": "c", "cited_in": "d"}
         self.assertEqual(verify_facts.FAIL, status_of(fact, {self.NPM: (404, "")}))
 
+    def test_a_pypi_answer_whose_releases_are_not_an_object_is_unreachable(self):
+        for name, releases in (("a list", ["1.0"]), ("text", "1.0"), ("null", None), ("a number", 5)):
+            with self.subTest(name):
+                body = json.dumps({"info": {"version": "1.0"}, "releases": releases})
+                self.assertEqual(verify_facts.UNREACHABLE, status_of(self.pypi_fact(), {self.PYPI: (200, body)}))
+
+    def test_an_npm_package_without_a_listed_latest_version_is_unreachable(self):
+        answers = {"no versions at all": {"dist-tags": {"latest": "1.0.0"}, "versions": {}},
+                   "a latest version that is not among the versions": {"dist-tags": {"latest": "2.0.0"}, "versions": {"1.0.0": {}}}}
+        for name, answer in answers.items():
+            with self.subTest(name):
+                self.assertEqual(verify_facts.UNREACHABLE, status_of(self.npm_fact(), {self.NPM: (200, json.dumps(answer))}))
+
+    def test_an_npm_version_that_is_named_is_judged_by_its_own_presence(self):
+        body = json.dumps({"dist-tags": {"latest": "2.0.0"}, "versions": {"1.0.0": {}}})
+        self.assertEqual(verify_facts.PASS, status_of(self.npm_fact("1.0.0"), {self.NPM: (200, body)}))
+
+    def test_an_npm_answer_whose_versions_or_tags_are_not_objects_is_unreachable(self):
+        answers = {"versions as a list": ({"latest": "1.2.3"}, ["1.2.3"]),
+                   "versions as text": ({"latest": "1.2.3"}, "1.2.3"),
+                   "versions as null": ({"latest": "1.2.3"}, None),
+                   "tags as a list": (["latest"], {"1.2.3": {}}),
+                   "tags as null": (None, {"1.2.3": {}})}
+        for name, (tags, versions) in answers.items():
+            body = json.dumps({"dist-tags": tags, "versions": versions})
+            for fact in (self.npm_fact(), self.npm_fact("1.2.3")):
+                with self.subTest(name, named=bool(fact.get("version"))):
+                    self.assertEqual(verify_facts.UNREACHABLE, status_of(fact, {self.NPM: (200, body)}))
+
 
 class GithubKindsTests(unittest.TestCase):
     API = "https://api.github.com/repos/o/r/"
@@ -286,12 +370,34 @@ class GithubKindsTests(unittest.TestCase):
         self.assertEqual(verify_facts.FAIL, status_of(fact, {self.API + "git/trees/main": (200, self.tree(["c.yml", "tests/x.py"]))}))
 
     def test_a_missing_expected_file_fails(self):
-        fact = self.fact("github-tree", present=["c.yml"], absent=[])
+        fact = self.fact("github-tree", present=["c.yml"])
         self.assertEqual(verify_facts.FAIL, status_of(fact, {self.API + "git/trees/main": (200, self.tree(["a.md"]))}))
 
     def test_a_truncated_listing_is_unreachable(self):
-        fact = self.fact("github-tree", present=[], absent=["tests/"])
+        fact = self.fact("github-tree", absent=["tests/"])
         self.assertEqual(verify_facts.UNREACHABLE, status_of(fact, {self.API + "git/trees/main": (200, self.tree(["a.md"], True))}))
+
+    def test_a_listing_that_does_not_say_whether_it_is_complete_is_unreachable(self):
+        fact = self.fact("github-tree", absent=["tests/"])
+        flags = {"no flag": {}, "a null flag": {"truncated": None}, "a flag written as text": {"truncated": "false"}, "a flag that is 0": {"truncated": 0}}
+        for name, flag in flags.items():
+            with self.subTest(name):
+                body = json.dumps(dict({"tree": [{"path": "a.md"}]}, **flag))
+                self.assertEqual(verify_facts.UNREACHABLE, status_of(fact, {self.API + "git/trees/main": (200, body)}))
+
+    def test_a_tree_that_is_not_a_list_is_unreachable(self):
+        fact = self.fact("github-tree", absent=["tests/"])
+        for name, tree in (("an object", {}), ("null", None), ("a number", 5), ("true", True), ("text", "a.md")):
+            with self.subTest(name):
+                body = json.dumps({"tree": tree, "truncated": False})
+                self.assertEqual(verify_facts.UNREACHABLE, status_of(fact, {self.API + "git/trees/main": (200, body)}))
+
+    def test_an_empty_tree_listing_is_unreachable(self):
+        # Nothing is listed, so nothing can be shown to be absent, and a missing file would be blamed on the claim.
+        body = self.tree([])
+        for fact in (self.fact("github-tree", absent=["tests/"]), self.fact("github-tree", present=["c.yml"])):
+            with self.subTest(sorted(set(fact) & {"present", "absent"})):
+                self.assertEqual(verify_facts.UNREACHABLE, status_of(fact, {self.API + "git/trees/main": (200, body)}))
 
     def test_a_path_that_exists_passes_and_one_that_does_not_fails(self):
         fact = self.fact("github-path", path="p")
@@ -355,16 +461,20 @@ class UnusableAnswerTests(unittest.TestCase):
 
     def cases(self):
         make = GithubKindsTests.fact
-        return {
+        cases = {
             "pypi": (RegistryTests.pypi_fact(), "https://pypi.org/"),
-            "npm": ({"id": "n", "kind": "npm", "package": "p", "claim": "c", "cited_in": "d"}, "https://registry.npmjs.org/"),
-            "github-tree": (make("github-tree", present=[], absent=[]), self.API + "git/trees/"),
+            "npm": (RegistryTests.npm_fact(), "https://registry.npmjs.org/"),
+            "github-tree": (make("github-tree", present=["a.md"]), self.API + "git/trees/"),
             "github-path": (make("github-path", path="p"), self.API + "contents/"),
             "github-repo": (make("github-repo"), self.API[:-1]),
             "github-tag": (make("github-tag", tag="v1", sha="abc"), self.API + "git/ref/tags/"),
             "advisory": (AdvisoryAndPaperTests.advisory(), "https://api.github.com/advisories/"),
             "latest release": (file_fact(), LATEST),
         }
+        for name, (fact, _prefix) in cases.items():
+            # An entry that is itself broken would turn every answer below into a FAIL for a reason that has nothing to do with the answer.
+            verify_facts.validate_definition(fact)
+        return cases
 
     def test_malformed_json_is_unreachable_not_a_failed_claim(self):
         for name, (fact, prefix) in self.cases().items():
@@ -390,8 +500,9 @@ class UnusableAnswerTests(unittest.TestCase):
         self.assertEqual(verify_facts.UNREACHABLE, status_of(RegistryTests.pypi_fact(), {"https://pypi.org/": (200, no_version)}))
 
     def test_a_tree_entry_without_a_path_is_unreachable(self):
-        fact = GithubKindsTests.fact("github-tree", present=[], absent=[])
-        self.assertEqual(verify_facts.UNREACHABLE, status_of(fact, {self.API + "git/trees/": (200, json.dumps({"tree": [{}]}))}))
+        fact = GithubKindsTests.fact("github-tree", present=["a.md"])
+        body = json.dumps({"tree": [{}], "truncated": False})
+        self.assertEqual(verify_facts.UNREACHABLE, status_of(fact, {self.API + "git/trees/": (200, body)}))
 
     def test_an_annotated_tag_that_cannot_be_followed_is_unreachable(self):
         fact = GithubKindsTests.fact("github-tag", tag="v1", sha="abc")
@@ -415,8 +526,8 @@ class UnusableAnswerTests(unittest.TestCase):
             "a folder listing of nulls": (make("github-path", path="p"), self.API + "contents/", "[null]"),
             "a file without a path": (make("github-path", path="p"), self.API + "contents/", json.dumps({"path": None})),
             "a folder entry without a path": (make("github-path", path="p"), self.API + "contents/", json.dumps([{"name": "x"}])),
-            "a tree entry whose path is null": (make("github-tree", present=[], absent=["x/"]), self.API + "git/trees/",
-                                                json.dumps({"tree": [{"path": None}]})),
+            "a tree entry whose path is null": (make("github-tree", absent=["x/"]), self.API + "git/trees/",
+                                                json.dumps({"tree": [{"path": None}], "truncated": False})),
             "a repository name that is a number": (make("github-repo"), self.API[:-1], json.dumps({"full_name": 5})),
             "a tag object whose sha is a list": (make("github-tag", tag="v1", sha="abc"), self.API + "git/ref/tags/",
                                                  json.dumps({"object": {"sha": ["a"], "type": "commit"}})),
@@ -510,6 +621,82 @@ class DefinitionTests(unittest.TestCase):
         verify_facts.validate_definition(fact)
         verify_facts.validate_definition(file_fact(expect="present", show="(x)", stable=True))
 
+    TREE = {"id": "t", "kind": "github-tree", "repo": "o/r", "ref": "main", "claim": "c", "cited_in": "d"}
+
+    def assert_broken(self, broken, reason):
+        for name, fact in broken.items():
+            with self.subTest(name):
+                with mock.patch.object(verify_facts, "http_get", fake_web({})):
+                    status, _fact, evidence = verify_facts.run([fact], pause=0)[0]
+                self.assertEqual(verify_facts.FAIL, status, evidence)
+                self.assertIn("invalid fact definition", evidence)
+                self.assertIn(reason, evidence)
+
+    def test_an_empty_list_is_a_broken_entry(self):
+        broken = {
+            "an empty 'all' next to a section": page_fact(all=[], segment={"start": "a", "end": "b", "present": ["x"]}),
+            "an empty 'present' next to an 'absent'": dict(self.TREE, present=[], absent=["x/"]),
+            "an empty 'absent' next to a 'present'": dict(self.TREE, present=["a.md"], absent=[]),
+            "an empty 'present' in a section": page_fact(segment={"start": "a", "end": "b", "present": [], "absent": ["x"]}),
+            "an empty 'absent' in a section": page_fact(segment={"start": "a", "end": "b", "present": ["x"], "absent": []}),
+        }
+        self.assert_broken(broken, "non-empty list")
+
+    def test_a_tree_fact_that_checks_nothing_is_a_broken_entry(self):
+        self.assert_broken({"neither 'present' nor 'absent'": dict(self.TREE), "only a flag": dict(self.TREE, stable=False)}, "checks nothing")
+
+    def test_a_segment_that_checks_nothing_is_a_broken_entry(self):
+        broken = {"only its two markers": page_fact(segment={"start": "a", "end": "b"}),
+                  "its markers next to an 'all' that is not about the section": page_fact(all=["x"], segment={"start": "a", "end": "b"})}
+        self.assert_broken(broken, "checks nothing")
+
+    def test_a_tree_or_a_section_with_one_of_its_two_lists_is_accepted(self):
+        verify_facts.validate_definition(dict(self.TREE, present=["a.md"]))
+        verify_facts.validate_definition(dict(self.TREE, absent=["x/"]))
+        verify_facts.validate_definition(page_fact(segment={"start": "a", "end": "b", "present": ["x"]}))
+        verify_facts.validate_definition(page_fact(segment={"start": "a", "end": "b", "absent": ["x"]}))
+
+
+class MainTests(unittest.TestCase):
+    """The exit status is what a pipeline reads: a FAIL always sets it, and --strict extends it to every status but PASS."""
+
+    def run_main(self, outcomes, *flags):
+        facts = [{"id": name, "kind": "page", "url": PAGE, "all": ["x"], "claim": "c", "cited_in": "d"} for name in outcomes]
+
+        def standin(fact):
+            if outcomes[fact["id"]] == verify_facts.UNREACHABLE:
+                raise verify_facts.Unreachable("stand-in")
+            return outcomes[fact["id"]], "stand-in"
+
+        real_run = verify_facts.run
+        out = io.StringIO()
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "facts.json"
+            path.write_text(json.dumps({"facts": facts}), encoding="utf-8")
+            with mock.patch.dict(verify_facts.CHECKS, {"page": standin}), \
+                    mock.patch.object(verify_facts, "run", lambda items: real_run(items, pause=0)), \
+                    contextlib.redirect_stdout(out):
+                code = verify_facts.main(["--facts", str(path), *flags])
+        return code, out.getvalue()
+
+    def test_the_exit_status_follows_the_statuses_of_the_claims(self):
+        passed, drifted, failed, unreachable = verify_facts.PASS, verify_facts.DRIFT, verify_facts.FAIL, verify_facts.UNREACHABLE
+        # (statuses of the claims, exit status as it is, exit status with --strict)
+        table = [({"a": passed}, 0, 0), ({"a": passed, "b": passed}, 0, 0),
+                 ({"a": failed}, 1, 1), ({"a": passed, "b": failed}, 1, 1), ({"a": failed, "b": unreachable}, 1, 1),
+                 ({"a": drifted}, 0, 1), ({"a": unreachable}, 0, 1), ({"a": passed, "b": unreachable, "c": drifted}, 0, 1)]
+        for outcomes, plain, strict in table:
+            with self.subTest(outcomes=outcomes):
+                self.assertEqual(plain, self.run_main(outcomes)[0])
+                self.assertEqual(strict, self.run_main(outcomes, "--strict")[0])
+
+    def test_the_summary_counts_what_the_checks_said(self):
+        passed, drifted, failed, unreachable = verify_facts.PASS, verify_facts.DRIFT, verify_facts.FAIL, verify_facts.UNREACHABLE
+        said = [passed] + [drifted] * 2 + [failed] * 3 + [unreachable] * 4
+        code, out = self.run_main({"fact-%d" % number: status for number, status in enumerate(said)})
+        self.assertEqual(1, code)
+        self.assertIn("1 PASS, 2 DRIFT, 3 FAIL, 4 UNREACHABLE", out)
+
 
 class FactsFileTests(unittest.TestCase):
     @classmethod
@@ -521,11 +708,13 @@ class FactsFileTests(unittest.TestCase):
         self.assertEqual(len(ids), len(set(ids)))
 
     def test_every_fact_has_a_known_kind_and_its_keys(self):
+        problems = []
         for fact in self.facts:
             try:
                 verify_facts.validate_definition(fact)
             except verify_facts.InvalidFact as exc:
-                self.fail("%s: %s" % (fact.get("id", "?"), exc))
+                problems.append("%s: %s" % (fact.get("id", "?"), exc))
+        self.assertEqual([], problems)
 
     def test_every_kind_has_its_required_keys_listed(self):
         self.assertEqual(set(verify_facts.CHECKS), set(verify_facts.REQUIRED_KEYS))
@@ -571,7 +760,8 @@ class ClaimPrecisionTests(unittest.TestCase):
 
     def assert_needs(self, fact_id, good, removed, replacement=""):
         fact = real_fact(fact_id)
-        self.assertEqual(verify_facts.PASS, status_of(fact, routes_for(fact, good)), "the sample must pass before it is changed")
+        status, evidence = result_of(fact, routes_for(fact, good))
+        self.assertEqual(verify_facts.PASS, status, "the sample must pass before it is changed (%s)" % evidence)
         mutated = good.replace(removed, replacement)
         self.assertNotEqual(good, mutated, "the mutation changed nothing")
         self.assertNotEqual(verify_facts.PASS, status_of(fact, routes_for(fact, mutated)))
@@ -608,6 +798,29 @@ class ClaimPrecisionTests(unittest.TestCase):
                 "The subject setting values must exactly match the configuration on the GitHub workflow configuration. "
                 "Wildcard characters aren't supported in any federated identity credential property value.")
         self.assert_needs("page-entra-federated-credential-limits", good, "aren't supported", "are supported")
+        self.assert_needs("page-entra-federated-credential-limits", good, " on the GitHub workflow configuration", "")
+
+    def test_the_best_effort_pricing_note_must_be_the_one_about_credit_values(self):
+        good = ("Use the top-level `max-ai-credits` frontmatter field to cap the AI Credits (AIC) budget for a single workflow run. "
+                "It provides a hard stop for unusually expensive runs and a consistent guardrail. One AIC equals $0.01 USD. "
+                "> AIC values are computed on a best-effort basis using pricing data sourced from a catalog. "
+                "### Cap Daily AI Credits per Workflow")
+        self.assert_needs("gh-aw-ai-credit-caps", good, "AIC values are computed", "Delivery times are computed")
+        self.assert_needs("gh-aw-ai-credit-caps", good + " Elsewhere, shipping is estimated on a best-effort basis.", "AIC values are computed", "Delivery times are computed")
+
+    def test_the_table_batch_check_needs_the_sentence_about_the_whole_batch(self):
+        good = ("The transaction can include at most 100 entities, and its total payload may be no more than 4 MiB in size. "
+                "All entities subject to operations as part of the transaction must have the same PartitionKey value. "
+                "Operations within a change set are processed atomically; that is, all operations in the change set either succeed or fail. "
+                "The operations in a change set are processed atomically; that is, either all operations in the batch succeed, or the entire batch fails.")
+        self.assert_needs("page-table-entity-group-transactions", good,
+                          " The operations in a change set are processed atomically; that is, either all operations in the batch succeed, or the entire batch fails.")
+
+    def test_an_app_can_be_the_expected_source_only_as_the_page_says(self):
+        good = ("When you add a required status check rule, you can select an app as the expected source of status updates. "
+                "The app must be installed in the repository with the statuses:write permission, must have recently submitted a check run, "
+                "and must be associated with a pre-existing required status check in the ruleset.")
+        self.assert_needs("page-required-check-app-source", good, "you can select an app as the expected source of status updates. ")
 
     def test_the_bot_signature_check_needs_the_conditions_not_only_the_heading(self):
         good = ("Signature verification for bots will only work if the request is verified and authenticated as the GitHub App or bot "
@@ -622,12 +835,21 @@ class ClaimPrecisionTests(unittest.TestCase):
         self.assert_needs("page-retention-recovery", good, "recoverable item No No No Yes", "recoverable item No No Yes Yes")
 
     def test_the_organization_budget_alert_sentence_must_sit_in_the_organization_paragraph(self):
-        good = ('Organization budget An organization\'s metered charges From first metered use Per organization Only if "Stop usage when budget limit is reached" is enabled '
+        good = ("Control What it caps When it's active Scope Hard stop? Universal user-level budget Each user's total AI credit consumption All usage Per user Always "
+                'Organization budget An organization\'s metered charges From first metered use Per organization Only if "Stop usage when budget limit is reached" is enabled '
                 "The user-level budget (ULB) caps how many AI credits a single user can consume in a billing cycle, whether usage is metered or drawn from an included pool. ULBs always enforce a hard stop. "
                 "Organization budget An organization budget limits metered charges for users whose Copilot seats are billed to that organization. "
                 "If Stop usage when budget limit is reached is not enabled, the budget only sends alerts and app spending continues after the limit is reached. "
                 "For information about managing app access, see the page.")
         self.assert_needs("page-copilot-budget-stop-setting", good, "the budget only sends alerts", "the budget enforces a limit")
+
+    def test_the_organization_row_must_sit_in_the_hard_stop_table(self):
+        good = ("Control What it caps When it's active Scope Hard stop? Universal user-level budget Each user's total AI credit consumption All usage Per user Always "
+                'Organization budget An organization\'s metered charges From first metered use Per organization Only if "Stop usage when budget limit is reached" is enabled '
+                "The user-level budget (ULB) caps how many AI credits a single user can consume in a billing cycle. ULBs always enforce a hard stop. "
+                "Organization budget An organization budget limits metered charges. If Stop usage when budget limit is reached is not enabled, the budget only sends alerts "
+                "and app spending continues. For information about managing app access, see the page.")
+        self.assert_needs("page-copilot-budget-stop-setting", good, "Hard stop? ", "Alerts? ")
 
     def test_every_webhook_action_must_be_in_the_openapi_description(self):
         operations = ("membership/added", "membership/removed", "team/edited", "team/added-to-repository", "team/removed-from-repository")
