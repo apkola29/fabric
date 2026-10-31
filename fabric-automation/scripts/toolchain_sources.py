@@ -21,7 +21,6 @@ import json
 import os
 import re
 import shutil
-import stat
 import sys
 import tempfile
 import urllib.parse
@@ -32,7 +31,7 @@ HERE = Path(__file__).resolve().parent
 if str(HERE) not in sys.path:
     sys.path.insert(0, str(HERE))
 
-from toolchain_io import WINDOWS, SystemRunner, replace_retrying, retrying, safe_detail  # noqa: E402
+from toolchain_io import WINDOWS, SystemRunner, make_writable, replace_retrying, retrying, safe_detail  # noqa: E402
 
 MAX_TREE_BYTES = 100 * 1024 * 1024
 MAX_TREE_FILES = 5000
@@ -1136,7 +1135,7 @@ def _is_link(path):
 
 def _rmtree(path):
     def retry(function, target, _info):
-        os.chmod(target, stat.S_IWRITE)
+        make_writable(target)
         function(target)
 
     if sys.version_info >= (3, 12):
@@ -1156,7 +1155,7 @@ def _remove(path):
     elif os.path.isdir(path):
         _rmtree(path)
     else:
-        os.chmod(path, stat.S_IWRITE)
+        make_writable(path)
         retrying(lambda: os.unlink(path))
 
 

@@ -14,6 +14,7 @@ import hashlib
 import json
 import os
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
@@ -479,9 +480,9 @@ class WalkTests(unittest.TestCase):
             calls.append(path)
             return _FakeScan(entries if len(calls) == 1 else [])
         # A Python that is not Windows (the hosted Linux runner) has no reparse constants in `stat`, so the junction rule must not need them.
-        with mock.patch.object(ts.os, "scandir", side_effect=scandir), mock.patch.object(ts, "WINDOWS", windows), mock.patch.dict(vars(ts.stat)):
+        with mock.patch.object(ts.os, "scandir", side_effect=scandir), mock.patch.object(ts, "WINDOWS", windows), mock.patch.dict(vars(stat)):
             for name in ("IO_REPARSE_TAG_MOUNT_POINT", "IO_REPARSE_TAG_SYMLINK", "IO_REPARSE_TAG_APPEXECLINK", "FILE_ATTRIBUTE_REPARSE_POINT"):
-                vars(ts.stat).pop(name, None)
+                vars(stat).pop(name, None)
             return list(ts._walk("fake-folder")), calls
 
     def test_a_symbolic_link_to_a_folder_is_a_link_entry_and_is_not_followed(self):
@@ -2545,6 +2546,34 @@ class VendorRetryTests(unittest.TestCase):
             ts._remove(path)
         self.assertFalse(path.exists())
         self.assertEqual(3, len(calls))
+
+    def test_what_is_removed_has_its_read_only_attribute_cleared_on_windows_and_its_mode_left_alone_elsewhere(self):
+        for windows in (True, False):
+            with self.subTest(windows=windows):
+                path = Path(self.tmp.name) / ("file-%s.txt" % windows)
+                path.write_text("x", encoding="utf-8")
+                folder = Path(self.tmp.name) / ("folder-%s" % windows)
+                folder.mkdir()
+                (folder / "inner.txt").write_text("x", encoding="utf-8")
+                with mock.patch.object(toolchain_io, "WINDOWS", windows), mock.patch.object(toolchain_io.os, "chmod") as chmod:
+                    ts._remove(path)
+                self.assertEqual(windows, chmod.called, "a file")
+                if windows:
+                    chmod.assert_called_once_with(path, stat.S_IWRITE)
+                self.assertFalse(path.exists())
+                real = shutil.rmtree
+
+                def failing_once(target, *args, **kwargs):
+                    handler = kwargs.get("onexc") or kwargs.get("onerror")
+                    handler(os.unlink, str(folder / "inner.txt"), (PermissionError, PermissionError("x"), None) if "onerror" in kwargs else PermissionError("x"))
+                    return real(target, *args, **kwargs)
+                with mock.patch.object(toolchain_io, "WINDOWS", windows), mock.patch.object(toolchain_io.os, "chmod") as chmod, \
+                        mock.patch.object(shutil, "rmtree", side_effect=failing_once):
+                    ts._remove(folder)
+                self.assertEqual(windows, chmod.called, "a folder whose delete failed once")
+                if windows:
+                    chmod.assert_called_once_with(str(folder / "inner.txt"), stat.S_IWRITE)
+                self.assertFalse(folder.exists())
 
 
 class VendorLinkTests(unittest.TestCase):

@@ -208,7 +208,7 @@ def write_stdout(text):
 def remove_tree(path):
     """Remove a folder, also one with read-only files, and wait for what Windows refuses to delete for a moment."""
     def retry(function, target, _info):
-        os.chmod(target, stat.S_IWRITE)
+        toolchain_io.make_writable(target)
         function(target)
 
     toolchain_io.retrying(lambda: shutil.rmtree(path, onerror=retry))

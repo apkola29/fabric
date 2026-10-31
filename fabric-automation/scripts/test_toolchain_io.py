@@ -18,6 +18,7 @@ import posixpath
 import shutil
 import socket
 import ssl
+import stat
 import subprocess
 import sys
 import tempfile
@@ -1234,6 +1235,36 @@ class RetryTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             with mock.patch.object(toolchain_io, "WINDOWS", True), self.assertRaises(FileNotFoundError):
                 toolchain_io.replace_retrying(Path(tmp) / "missing", Path(tmp) / "target", sleep=lambda _delay: self.fail("a pause for a missing file"))
+
+
+class MakeWritableTests(unittest.TestCase):
+    """Only Windows needs the read-only attribute cleared before a delete. Elsewhere the mode of a file is left alone, because a hard link
+    shares it with every other name of the same file (found on the hosted Linux runner: a chmod before the delete made the other name
+    of the file unreadable)."""
+
+    def test_on_windows_the_read_only_attribute_is_cleared(self):
+        with mock.patch.object(toolchain_io, "WINDOWS", True), mock.patch.object(toolchain_io.os, "chmod") as chmod:
+            toolchain_io.make_writable("some-file")
+        chmod.assert_called_once_with("some-file", stat.S_IWRITE)
+
+    def test_anywhere_else_nothing_is_changed(self):
+        with mock.patch.object(toolchain_io, "WINDOWS", False), mock.patch.object(toolchain_io.os, "chmod") as chmod:
+            toolchain_io.make_writable("some-file")
+        chmod.assert_not_called()
+
+    def test_the_mode_of_a_file_that_has_a_second_name_is_not_changed_when_the_system_is_not_windows(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            first, second = Path(tmp) / "first", Path(tmp) / "second"
+            first.write_text("keep me", encoding="utf-8")
+            try:
+                os.link(str(first), str(second))
+            except (OSError, NotImplementedError, AttributeError):
+                self.skipTest("this file system has no hard links")
+            before = os.stat(first).st_mode
+            with mock.patch.object(toolchain_io, "WINDOWS", False):
+                toolchain_io.make_writable(second)
+            self.assertEqual(before, os.stat(first).st_mode)
+            self.assertEqual("keep me", first.read_text(encoding="utf-8"))
 
 
 if __name__ == "__main__":

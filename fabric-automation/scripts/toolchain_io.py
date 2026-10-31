@@ -21,6 +21,7 @@ import re
 import signal
 import socket
 import ssl
+import stat
 import subprocess
 import time
 import urllib.error
@@ -159,6 +160,15 @@ def retrying(action, sleep=None):
 def replace_retrying(source, target, sleep=None):
     """os.replace that waits for a file or folder that Windows refuses to move for a moment."""
     retrying(lambda: os.replace(source, target), sleep)
+
+
+def make_writable(path):
+    """Clear what stops Windows from deleting a file: its read-only attribute (git writes its objects that way).
+
+    Anywhere else deleting a file depends on its folder, and the mode of the file is left alone: a hard link shares it with every other
+    name of the same file, so a chmod before the delete would change a file that is not being deleted."""
+    if WINDOWS:
+        os.chmod(path, stat.S_IWRITE)
 
 
 def _is_absolute(path):

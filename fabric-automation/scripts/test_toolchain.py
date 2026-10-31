@@ -19,6 +19,7 @@ import json
 import os
 import re
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
@@ -4016,6 +4017,24 @@ class InstallSafetyTests(InstallBase):
             toolchain.remove_tree(folder)
         self.assertFalse(folder.exists())
         self.assertEqual(3, len(calls))
+
+    def test_what_is_removed_has_its_read_only_attribute_cleared_on_windows_and_its_mode_left_alone_elsewhere(self):
+        for windows in (True, False):
+            with self.subTest(windows=windows):
+                folder = self.root / ("to-remove-%s" % windows)
+                write(folder / "inner.txt", "x")
+                real = shutil.rmtree
+
+                def failing_once(target, *args, **kwargs):
+                    kwargs["onerror"](os.unlink, str(folder / "inner.txt"), (PermissionError, PermissionError("x"), None))
+                    return real(target, *args, **kwargs)
+                with mock.patch.object(toolchain.toolchain_io, "WINDOWS", windows), mock.patch.object(toolchain.toolchain_io.os, "chmod") as chmod, \
+                        mock.patch.object(shutil, "rmtree", side_effect=failing_once):
+                    toolchain.remove_tree(folder)
+                self.assertEqual(windows, chmod.called)
+                if windows:
+                    chmod.assert_called_once_with(str(folder / "inner.txt"), stat.S_IWRITE)
+                self.assertFalse(folder.exists())
 
     def test_an_install_that_stopped_half_way_is_finished_by_the_next_run(self):
         real = os.replace
