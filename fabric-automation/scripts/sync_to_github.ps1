@@ -271,10 +271,11 @@ Assert-NotALink $workflowDir 'the workflow folder of the clone'
 foreach ($name in $Workflows) { Assert-NotALink (Join-Path $workflowDir $name) "the workflow file $name" }
 if ($IncludeReadme) { Assert-NotALink $ReadmeLive 'the README of the clone' }
 # A bare name excludes folders of that name at any depth, like the validator, which skips private folders anywhere.
-# The folders that the toolchain generates for a machine (its pack, and the skills it copies for a host) are ignored by
-# Git and are rebuilt from the lock, so they are not mirrored either; the MCP files in .github and .vscode are.
+# The folders that the toolchain generates for a machine (its pack, and the skills and the shared folder it copies for a host)
+# are ignored by Git and are rebuilt from the lock, so they are not mirrored either; the MCP files in .github and .vscode are.
 $exclude = @('private', '.factory', (Join-Path $Project 'docs\research\local'), (Join-Path $Project '.github\skills'),
-             (Join-Path $Project '.claude\skills'), '__pycache__', '.pytest_cache')
+             (Join-Path $Project '.github\common'), (Join-Path $Project '.claude\skills'), (Join-Path $Project '.claude\common'),
+             '__pycache__', '.pytest_cache')
 if (Test-Path -LiteralPath $destination) {
     $links = @(Find-Links $destination)
     if ($links.Count -gt 0) { throw "the mirror holds a link ($($links[0])); robocopy /MIR could delete what it points to. Remove the link by hand and run again" }

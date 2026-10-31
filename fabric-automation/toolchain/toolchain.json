@@ -72,7 +72,7 @@
     }
   },
   "tools": [
-    {"id": "git", "command": "git", "version_args": ["--version"], "min": "2.30", "needed_for": "everything", "required": true},
+    {"id": "git", "command": "git", "version_args": ["--version"], "min": "2.32", "needed_for": "everything (fetching the skill repositories with a private configuration needs 2.32)", "required": true},
     {"id": "python", "command": "python", "alternatives": ["python3", "py"], "version_args": ["--version"], "min": "3.10", "needed_for": "this kit and its checks", "required": true},
     {"id": "node", "command": "node", "version_args": ["--version"], "min": "22", "needed_for": "MCP servers that are npm packages (the Fabric server's README asks for Node.js 22 or later)", "required": true},
     {"id": "npx", "command": "npx", "version_args": ["--version"], "min": "10", "needed_for": "launching npm MCP servers", "required": true},
@@ -80,7 +80,8 @@
     {"id": "az", "command": "az", "version_args": ["--version"], "min": "2.60", "needed_for": "sign-in for the azure-identity variants", "required": false},
     {"id": "dotnet", "command": "dotnet", "version_args": ["--version"], "min": "10", "needed_for": "the Bicep MCP server (dnx)", "required": false},
     {"id": "uv", "command": "uv", "version_args": ["--version"], "min": "0.4", "needed_for": "the Real-Time Intelligence MCP server (uvx)", "required": false},
-    {"id": "fab", "command": "fab", "version_args": ["--version"], "min": "1.0", "needed_for": "the Fabric CLI that many Fabric skills call", "required": false, "package": {"ecosystem": "pypi", "name": "ms-fabric-cli", "track": "latest"}}
+    {"id": "fab", "command": "fab", "version_args": ["--version"], "min": "1.0", "needed_for": "the Fabric CLI that the git-integration skill calls", "required": false, "package": {"ecosystem": "pypi", "name": "ms-fabric-cli", "track": "latest"}},
+    {"id": "powerbi-report-author", "command": "powerbi-report-author", "version_args": ["--version"], "min": "0.3.0", "needed_for": "the report skill, which names it a required helper for packing, unpacking, validating and previewing reports", "required": false, "package": {"ecosystem": "npm", "name": "@microsoft/powerbi-report-authoring-cli", "track": "latest"}}
   ],
   "skill_sources": [
     {
@@ -94,7 +95,8 @@
         {"name": "fabric-skills", "path": "plugins/fabric-skills"},
         {"name": "powerbi-authoring", "path": "plugins/powerbi-authoring"}
       ],
-      "notes": "The plugins also bundle MCP servers (unpinned, and with a name that both plugins use for different servers). The kit takes the skills only and defines its own MCP servers below."
+      "shared": [{"folder": "common", "plugin": "fabric-skills"}],
+      "notes": "The plugins also bundle MCP servers (unpinned, and with a name that both plugins use for different servers). The kit takes the skills only and defines its own MCP servers below. Skills of both plugins link to a folder named common at the root of the fabric-skills plugin (as ../../common/), so the kit pins that folder in the lock and installs it once beside the skills folder of each host."
     },
     {
       "id": "azure-skills",
@@ -114,7 +116,7 @@
     {
       "source": "skills-for-fabric",
       "skill": "fabriciq-ontology-cli",
-      "reason": "It authors the ontology entity-JSON format that retires on 2027-01-31 (design 3.10, 3.13).",
+      "reason": "It authors ontology definitions as entity JSON, which the design takes to be the old experience of ontology; Learn says that experience retires on 2027-01-31 (design 3.10, 3.13).",
       "design": "3.13"
     }
   ],
@@ -295,7 +297,7 @@
       "title": "Bicep MCP Server",
       "transport": "stdio",
       "status": "unverified",
-      "summary": "Bicep authoring help: resource type schemas, formatting, build and best practices.",
+      "summary": "Bicep authoring help: resource type schemas, formatting, build and best practices. The launch is not verified: the .NET page for `dotnet tool exec` lists `--yes` as available starting with .NET 11, while NuGet's own launch template passes it on .NET 10, and the hosted runner's SDK 10 has no `dnx` on its path, so no contract could be captured.",
       "docs": ["https://github.com/Azure/bicep/blob/main/docs/mcp-tools.md"],
       "package": {"ecosystem": "nuget", "name": "Azure.Bicep.McpServer", "track": "latest"},
       "launch": {"command": "dnx", "args": ["{package}", "--yes"]},
@@ -303,6 +305,22 @@
         "default": {
           "summary": "All tools. Its offline behaviour is not verified, so its network class is internet.",
           "credentials": "none", "network": "internet", "access": "read", "unattended": true
+        }
+      }
+    },
+    {
+      "id": "azure-arm-cost",
+      "title": "Azure Resource Manager MCP, cost toolset (hosted)",
+      "transport": "http",
+      "url": "https://mcp.management.azure.com",
+      "headers": {"x-mcp-toolset": "CostManagement"},
+      "status": "unverified",
+      "summary": "The hosted Azure Resource Manager server with the toolset that the Azure cost skills call (their text names it azure-resource-manager-mcp). The server as a whole can also deploy and change resources, and the header only selects the cost toolset (the Azure cost plugin's own configuration), so the variant is declared read-write because nothing here could measure the toolset without a sign-in.",
+      "docs": ["https://github.com/Azure/Azure-Resource-Manager-MCP"],
+      "variants": {
+        "default": {
+          "summary": "Cost and pricing queries. A person signs in; the sign-in method is not documented in the plugin's configuration.",
+          "credentials": "entra-delegated", "network": "microsoft-cloud", "access": "read-write", "unattended": false
         }
       }
     },

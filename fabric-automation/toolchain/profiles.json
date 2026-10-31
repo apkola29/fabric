@@ -176,6 +176,7 @@
       "mcp": [
         {"server": "azure-mcp", "variant": "read"},
         {"server": "bicep-mcp", "variant": "default"},
+        {"server": "azure-arm-cost", "variant": "default"},
         {"server": "microsoft-learn", "variant": "default"}
       ],
       "instructions": ["instructions/factory-preamble.md"]
@@ -198,6 +199,7 @@
         {"server": "powerbi-authoring-local", "variant": "interactive"},
         {"server": "fabric-sql", "variant": "default"},
         {"server": "azure-mcp", "variant": "read"},
+        {"server": "azure-arm-cost", "variant": "default"},
         {"server": "microsoft-learn", "variant": "default"}
       ],
       "instructions": ["instructions/factory-preamble.md"]

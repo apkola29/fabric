@@ -1,13 +1,15 @@
 #!/usr/bin/env python3
 """Minimal MCP client of the toolchain kit: read the tool contract of a server, probe a hosted URL, compare two contracts.
 
-probe_stdio starts a server and talks newline-delimited JSON-RPC over its standard streams. It tries the handshake
-of the legacy era first (`initialize`, `notifications/initialized`, `tools/list`). The 2026-07-28 revision of the
-specification made the protocol stateless: there is no handshake and every request carries `_meta`. A server of
-that era refuses `initialize` and names the versions it supports, and then the probe switches to `server/discover`
-and `tools/list` with the metadata. Whatever happens, the child and its descendants are ended before the call
-returns. Server messages are never copied into an error: an error holds a reason code and a short fixed detail.
-Standard library only.
+probe_stdio starts a server and talks newline-delimited JSON-RPC over its standard streams. It asks `server/discover` first, as
+the stdio page of the 2026-07-28 revision of the specification asks a client of both eras to do. That revision made the protocol
+stateless: there is no handshake and every request carries `_meta`. A server that answers `server/discover` is modern, and the
+probe goes on with `tools/list` and the metadata. A server that refuses the version asked for is modern and is not asked anything
+else. A server that answers with any other error is legacy and gets the handshake (`initialize`, `notifications/initialized`,
+`tools/list`). One that says nothing within a short wait, or leaves, is legacy too, but it is started again for the handshake:
+a server may settle its era on the first request it reads, and then refuse the requests of the other era. Whatever happens, the
+child and its descendants are ended before the call returns. Server messages are never copied into an error: an error holds a
+reason code and a short fixed detail. Standard library only.
 """
 
 from __future__ import annotations
@@ -31,12 +33,16 @@ from toolchain_io import WINDOWS, LaunchError, SystemRunner, kill_tree, popen_tr
 
 LEGACY_VERSION = "2025-11-25"
 MODERN_VERSION = "2026-07-28"
+HANDSHAKE_VERSIONS = ("2024-11-05", "2025-03-26", "2025-06-18", LEGACY_VERSION)  # the revisions that start with `initialize`
 META = "io.modelcontextprotocol/"
 CLIENT_INFO = {"name": "fabric-automation-toolchain", "version": "1"}
 MAX_LINE = 16 * 1024 * 1024
 MAX_PAGES = 200
 GRACE = 1.0  # seconds a server gets to leave by itself once its input is closed
-DISCOVER_WAIT = 10.0  # seconds to wait for server/discover when it only serves to tell the eras apart
+# Seconds that server/discover gets to be answered. A server that stays silent for that long, for instance because it is slow to
+# start, is started again and gets the handshake; the handshake finds a modern server too (see _identify). A longer wait means
+# fewer new starts of slow servers and a longer delay for a server that never answers.
+DISCOVER_WAIT = 5.0
 UNSUPPORTED_VERSION = -32022
 METHOD_NOT_FOUND = -32601
 
@@ -54,13 +60,20 @@ ENV_ALLOW_LIST = (
     "LANG", "LC_ALL",
     "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY", "SSL_CERT_FILE", "SSL_CERT_DIR", "REQUESTS_CA_BUNDLE", "CURL_CA_BUNDLE", "NODE_EXTRA_CA_CERTS",
 )
-ENV_ALLOW_PREFIXES = ("npm_config_",)
+# The npm settings (npm_config_<name>, in any case) that pass: a fixed set. A credential of npm lives in names such as
+# npm_config__authToken, npm_config__auth, npm_config__password, npm_config_username and npm_config_//host/:_authToken, so there is
+# no prefix rule.
+ENV_ALLOW_NPM = ("registry", "cache", "cafile", "ca", "strict_ssl", "ignore_scripts", "offline", "prefer_offline", "fund", "audit",
+                 "update_notifier", "loglevel", "userconfig", "globalconfig", "prefix", "proxy", "https_proxy", "noproxy")
+# Variables that hold an address, which may carry user:password@. It is removed; an address that cannot be read is dropped.
+ENV_ADDRESS_NAMES = ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "npm_config_proxy", "npm_config_https_proxy", "npm_config_registry")
 
 _EOF = object()
 _TOO_LONG = object()
 _DATE = re.compile(r"\b\d{4}-\d{2}-\d{2}\b")
 _VERSION_WORDS = re.compile(r"version|protocol|support", re.IGNORECASE)
-_PLAIN_VERSION = re.compile(r"[0-9A-Za-z][0-9A-Za-z.+_~-]{0,63}")
+_SERVER_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9 ._-]{0,63}")
+_SERVER_VERSION = re.compile(r"[0-9A-Za-z][0-9A-Za-z.+_~-]{0,63}")
 
 
 class McpProbeError(Exception):
@@ -135,16 +148,51 @@ def _declared_value(name, spec, parent):
     raise _fail("spawn-failed", "bad environment declaration")
 
 
+_ADDRESS_SCHEME = re.compile(r"[A-Za-z][A-Za-z0-9+.-]*")
+_ADDRESS_HOST = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?|\[[0-9A-Fa-f:.]+\]")
+_ADDRESS_TAIL = re.compile(r"([^/?#]*)([^?#]*)")
+
+
+def _without_credentials(value):
+    """An address (a proxy or a registry) without user:password@; its query and fragment go too. None when it cannot be read."""
+    if not isinstance(value, str) or any(char.isspace() or ord(char) < 32 or ord(char) == 127 for char in value):
+        return None
+    scheme, separator, rest = value.partition("://")
+    if separator:
+        if not _ADDRESS_SCHEME.fullmatch(scheme):
+            return None
+    else:
+        scheme, rest = "", value
+    authority, path = _ADDRESS_TAIL.match(rest).groups()
+    host_port = authority.rpartition("@")[2]
+    if host_port.endswith("]") or ":" not in host_port:
+        host, port = host_port, ""
+    else:
+        host, _, port = host_port.rpartition(":")
+    if not _ADDRESS_HOST.fullmatch(host) or (port and not (port.isascii() and port.isdigit() and 0 < int(port) < 65536)):
+        return None
+    return (scheme + separator) + host_port + path
+
+
 def capture_env(declared=None, parent=None):
     """The whole environment of a server started for contract capture.
 
-    It holds the variables of ENV_ALLOW_LIST (and the npm_config_ ones) that the parent has, and then exactly the variables
-    that `declared` names: {name: "value"} or {name: {"from_env": "SOURCE", "default": "value"}}. A declared name replaces an
-    allow-listed one of the same name and None removes it. Everything else in the parent environment stays behind."""
+    It holds the variables of ENV_ALLOW_LIST and the npm settings of ENV_ALLOW_NPM that the parent has (an address in them without
+    user:password@), and then exactly the variables that `declared` names: {name: "value"} or {name: {"from_env": "SOURCE",
+    "default": "value"}}. A declared name replaces an allow-listed one of the same name and None removes it. Everything else in the
+    parent environment stays behind."""
     parent = os.environ if parent is None else parent
-    allowed = {name.upper() for name in ENV_ALLOW_LIST}
-    prefixes = tuple(prefix.upper() for prefix in ENV_ALLOW_PREFIXES)
-    child = {key: value for key, value in parent.items() if key.upper() in allowed or key.upper().startswith(prefixes)}
+    allowed = {name.upper() for name in ENV_ALLOW_LIST} | {"NPM_CONFIG_" + name.upper() for name in ENV_ALLOW_NPM}
+    addresses = {name.upper() for name in ENV_ADDRESS_NAMES}
+    child = {}
+    for key, value in parent.items():
+        if key.upper() not in allowed:
+            continue
+        if key.upper() in addresses:
+            value = _without_credentials(value)
+            if value is None:
+                continue
+        child[key] = value
     for name, spec in (declared or {}).items():
         if not isinstance(name, str) or not name or "=" in name or "\x00" in name:
             raise _fail("spawn-failed", "bad environment name")
@@ -271,12 +319,13 @@ class _Server:
 
 
 def _server_info(info):
+    """The name and version a server calls itself, each only when it is a plain label; anything else is the word unknown."""
     info = info if isinstance(info, dict) else {}
-    name = info.get("name")
-    version = info.get("version")
-    if isinstance(version, str) and not _PLAIN_VERSION.fullmatch(version):
-        version = safe_detail(version, 64)
-    return {"name": safe_detail(name, 64) if isinstance(name, str) else "", "version": version if isinstance(version, str) else ""}
+    return {"name": _label(info.get("name"), _SERVER_NAME), "version": _label(info.get("version"), _SERVER_VERSION)}
+
+
+def _label(value, pattern):
+    return value if isinstance(value, str) and pattern.fullmatch(value) else "unknown"
 
 
 def _flag(value):
@@ -330,27 +379,43 @@ def _list_tools(server, deadline, meta):
     return {name: tools[name] for name in sorted(tools)}
 
 
-def _discover(server, deadline, expected_modern):
-    """server/discover. Returns the server info, or None when the server turns out not to be modern.
+def _modern_answer(answer):
+    """The server info of an answer to server/discover that is a DiscoverResult, or None when it is anything else (a legacy server).
 
-    expected_modern: the refusal of `initialize` already named a modern version, so discover only adds the server info and an
-    answer that does not fit is no reason to doubt the era. Otherwise it is the probe that tells the two eras apart."""
-    limit = deadline if expected_modern else min(deadline, time.monotonic() + DISCOVER_WAIT)
-    try:
-        answer = server.call("server/discover", {"_meta": _meta()}, limit)
-    except McpProbeError as exc:
-        if exc.code == "timeout" and not expected_modern:
-            return None
-        raise
+    A result that lists the version this client speaks is a modern server. One that lists only versions of the handshake era is a
+    server that advertises itself as legacy: it gets the handshake. A server that lists none of ours, or that refuses the version asked
+    for with the modern error, is modern and is not asked anything else: a protocol error, and no fallback."""
     result = answer.get("result")
     if isinstance(result, dict) and isinstance(result.get("supportedVersions"), list):
-        if MODERN_VERSION not in result["supportedVersions"]:
-            raise _fail("protocol-error", "no mutually supported protocol version")
-        meta = result.get("_meta") if isinstance(result.get("_meta"), dict) else {}
-        return _server_info(meta.get(META + "serverInfo"))
+        versions = result["supportedVersions"]
+        if MODERN_VERSION in versions:
+            meta = result.get("_meta") if isinstance(result.get("_meta"), dict) else {}
+            return _server_info(meta.get(META + "serverInfo"))
+        if any(version in HANDSHAKE_VERSIONS for version in versions):
+            return None
+        raise _fail("protocol-error", "no mutually supported protocol version")
     if _error_code(answer.get("error")) == UNSUPPORTED_VERSION:
         raise _fail("protocol-error", "no mutually supported protocol version")
-    return _server_info(None) if expected_modern else None
+    return None
+
+
+_SILENT = object()  # what _discover gives when nothing came within DISCOVER_WAIT
+
+
+def _discover(server, deadline):
+    """server/discover as the first request, as the stdio page of revision 2026-07-28 asks for.
+
+    Returns the server info of a modern server, None for any other answer (a legacy server) and _SILENT when nothing came within
+    DISCOVER_WAIT. A silent server is not asked anything more on this process: one that takes its era from the first request it
+    reads may by now be settled on the modern one, and refuse the requests of the handshake."""
+    short = time.monotonic() + DISCOVER_WAIT
+    try:
+        answer = server.call("server/discover", {"_meta": _meta()}, min(deadline, short))
+    except McpProbeError as exc:
+        if exc.code == "timeout" and short < deadline:
+            return _SILENT
+        raise
+    return _modern_answer(answer)
 
 
 def _modern(server, deadline, info):
@@ -367,7 +432,19 @@ def _legacy(server, deadline, answer):
             "tools": _list_tools(server, deadline, None)}
 
 
-def _probe(server, deadline):
+def _identify(server, deadline, answered):
+    """The server info of a server that refused `initialize` as a modern one does, or None.
+
+    A server that answered the first server/discover has said what it is. One that did not (it was started again) is asked now, on a
+    process that has seen nothing else."""
+    if answered:
+        return None
+    info = _discover(server, deadline)
+    return info if isinstance(info, dict) else None
+
+
+def _initialize(server, deadline, answered):
+    """The legacy handshake. `answered` tells whether server/discover was answered, whatever the answer was."""
     requested = LEGACY_VERSION
     while True:
         params = {"protocolVersion": requested, "capabilities": {}, "clientInfo": dict(CLIENT_INFO)}
@@ -377,15 +454,50 @@ def _probe(server, deadline):
         error = answer["error"]
         named = _named_versions(error)
         if any(version >= MODERN_VERSION for version in named):
-            return _modern(server, deadline, _discover(server, deadline, True))
+            return _modern(server, deadline, _identify(server, deadline, answered) or _server_info(None))
         older = [version for version in named if version < LEGACY_VERSION]
         if older and requested == LEGACY_VERSION:
             requested = older[-1]
             continue
-        info = _discover(server, deadline, False)
-        if info is None:
-            raise _fail("protocol-error", "initialize failed with code %d" % _error_code(error))
-        return _modern(server, deadline, info)
+        info = _identify(server, deadline, answered)
+        if info is not None:
+            return _modern(server, deadline, info)
+        raise _fail("protocol-error", "initialize failed with code %d" % _error_code(error))
+
+
+class _Session:
+    """The server process of one probe. It is started again once at most, for a server that did not answer server/discover."""
+
+    def __init__(self, argv, env, cwd):
+        self.argv, self.env, self.cwd = argv, env, cwd
+        self.server = _Server(argv, env, cwd)
+
+    def restart(self):
+        self.server.close()
+        self.server = _Server(self.argv, self.env, self.cwd)
+
+    def close(self):
+        self.server.close()
+
+
+def _probe(session, deadline):
+    """Ask server/discover first. A server that answers it is modern; one that refuses the version asked for is modern and is not
+    asked anything else; one that answers with another error is legacy and gets the handshake on the same process. One that stays
+    silent for a short while or leaves is legacy too, but gets a new process for the handshake: it was sent a request that it never
+    answered, and what it makes of that is not known."""
+    try:
+        info = _discover(session.server, deadline)
+    except McpProbeError as exc:
+        if exc.code != "exited":
+            raise
+        info = _SILENT
+    answered = info is not _SILENT
+    if not answered:
+        session.restart()
+        info = None
+    if info is not None:
+        return _modern(session.server, deadline, info)
+    return _initialize(session.server, deadline, answered)
 
 
 def probe_stdio(argv, *, env=None, cwd=None, timeout=60):
@@ -396,15 +508,15 @@ def probe_stdio(argv, *, env=None, cwd=None, timeout=60):
     if not isinstance(argv, (list, tuple)) or not argv:
         raise _fail("spawn-failed", "no command")
     deadline = time.monotonic() + timeout
-    server = _Server(list(argv), capture_env(env), cwd)
+    session = _Session(list(argv), capture_env(env), cwd)
     try:
-        return _probe(server, deadline)
+        return _probe(session, deadline)
     except McpProbeError:
         raise
     except Exception as exc:
         raise _fail("protocol-error", "unexpected " + type(exc).__name__) from None
     finally:
-        server.close()
+        session.close()
 
 
 def probe_http(url, *, headers=None, runner=None, timeout=15):

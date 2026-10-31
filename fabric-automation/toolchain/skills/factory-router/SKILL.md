@@ -19,32 +19,38 @@ This skill routes work. It does not replace the workload skills or the MCP tools
 
 ## 2. Pick the owner
 
-| The task | Owning skill | MCP server (variant by profile) |
-|---|---|---|
-| Questions about a report or a semantic model | `fabriciq` | `fabric-iq`: read-only consumption, dev mode only |
-| Semantic model objects, DAX, TMDL | `semantic-model-authoring` | `powerbi-authoring-local`, or `powerbi-authoring-remote` if the profile chose the hosted one |
-| Reports (PBIR, PBIP) | `powerbi-report-cli` | the authoring server of the profile, plus the skill's own CLI |
-| Warehouse or lakehouse SQL | `sqldw-cli`, `sqldb-cli` | `fabric-sql`, dev mode only |
-| Notebooks and Spark | `spark-cli` | `fabric-local` |
-| Eventhouse, KQL, Eventstreams, Activator | `eventhouse-cli`, `eventstream-cli`, `activator-cli` | `fabric-rti-local` |
-| Workspaces, folders, items, roles | the workload skill | `fabric-core` (dev mode) or the core tools of `fabric-local` |
-| Fabric documentation, API specs, item definitions | none | `fabric-local` with the `docs` variant, then `microsoft-learn` where the profile has it |
-| Long Lakehouse and OneLake engineering | `project-osmos`, given one complete outcome as one task | `fabric-local` |
-| Azure resources, Bicep, deployment | `azure-prepare`, then `azure-validate`, then `azure-deploy` | `azure-mcp`, `bicep-mcp` |
+The skills name MCP servers as their plugins register them. The kit registers its own servers under other ids (so that an installed plugin cannot replace a pinned server), so read the last column as a translation, not as a rename. A host shows a tool as the server id and the tool name joined in its own way; match on both parts.
 
-If two skills could own the task, take the more specific one. If none owns it, say so and use current official documentation, not memory.
+| The task | Owning skill | How the skill works | Kit server (the skill's name for it) |
+|---|---|---|---|
+| Questions about a report or a semantic model | `fabriciq` | MCP tools of Fabric IQ | `fabric-iq` (`FabricIQ`): read-only, dev mode only |
+| Semantic model objects, DAX, TMDL | `semantic-model-authoring` | MCP tools of the authoring server first; TMDL files, and `az rest` to deploy | `powerbi-authoring-local` (`powerbi-modeling-mcp`), or `powerbi-authoring-remote` if the profile chose the hosted one |
+| Reports (PBIR, PBIP) | `powerbi-report-cli` | the `powerbi-report-author` CLI, `az rest` to publish, and the authoring server only for the model | the authoring server of the profile |
+| Warehouse, lakehouse SQL endpoint and mirrored database queries and DDL | `sqldw-cli` | all T-SQL through one MCP tool, `az rest` only to find the workspace and item, `sqlcmd` only as the skill's own fallback | `fabric-sql` (`fabric-sqlendpoint`), dev mode only. The skill and the plugin call the tool `execute_query`, and Microsoft Learn lists `executeSQL` for the server. The kit has not seen the live list, because that needs a sign-in. Use the name the loaded server lists, and tell the person when it differs from the skill's |
+| A Fabric SQL database (OLTP) | `sqldb-cli` | CLI and REST (`sqlcmd`, `az rest`), no MCP | none: `fabric-sql` serves warehouses and SQL endpoints, not this item type |
+| Notebooks, Spark, one Lakehouse or OneLake outcome | `spark-cli`, `project-osmos` (one complete outcome as one task) | CLI and REST (`az rest`, helper scripts), no MCP | `fabric-local` with the `docs` variant for API references only |
+| Eventhouse, Eventstreams, Activator | `eventhouse-cli`, `eventstream-cli`, `activator-cli` | CLI and REST (`az rest`). `eventhouse-cli` and `activator-cli` also name MCP servers that the kit does not load (a Fabric KQL server, and the per-item Activator server): do not install or call them | none; `fabric-rti-local` (only in `dev-realtime`) is a separate toolset for ad-hoc KQL and Eventstream work when the person asks |
+| Dataflows Gen2, event schema sets, Azure Monitor data in an Eventhouse | `dataflows-cli`, `eventschemaset-cli`, `azmon-mirroredcatalogs-operations-cli` | CLI and REST | none |
+| Git integration, deployment pipelines, variable libraries, catalog and search, migrations | `git-integration-operations-cli`, `deployment-pipelines-authoring-cli`, `variable-library-cli`, `onelake-catalog-cli`, `search-consumption-cli`, the `*-migration` skills | CLI and REST (`synapse-migration` also calls the SQL endpoint tool for warehouse SQL) | none |
+| Workspaces, folders, items, roles | the workload skill | REST in the skill | `fabric-core` (dev mode) or the core tools of `fabric-local` |
+| Fabric documentation, API specs, item definitions | none | read documentation | `fabric-local` with the `docs` variant, then `microsoft-learn` where the profile has it |
+| Azure resources, Bicep, deployment | `azure-prepare` (azd projects), `azure-validate`, `azure-deploy` and the other `azure-*` skills | MCP tools of the Azure and Bicep servers, and the azd, `az` and Terraform CLIs | `azure-mcp` (`azure`) and `bicep-mcp` (`bicep`), the second only in `dev-azure` |
+| Azure costs | `cost-analysis`, `cost-estimation`, `cost-optimization`, `cost-governance` | MCP tools such as `query_costs`, with `az rest` and Azure CLI fallbacks inside the skill | `azure-arm-cost` (`azure-resource-manager-mcp`), dev mode only |
+
+The table names the usual owners, not every pinned skill: `python scripts/toolchain.py list --profile NAME` lists them all, and each skill's description says what it is for. If two skills could own the task, take the more specific one. If none owns it, say so and use current official documentation, not memory.
 
 ## 3. Run it
 
-1. Live work goes through the MCP tool, with the skill's safeguards. Do not swap in a script, the Fabric CLI or REST because a tool is missing. Say what is missing, and ask before using another route.
-2. A read-only request stays read-only. A tool listing or a connection test is not permission to write.
-3. A skill step that asks for a confirmation means escalate when no person is there.
+1. Follow the skill's surface. Where it calls an MCP tool, use the tool of the server your profile loaded. Where the skill's own procedure is a CLI or REST workflow, run it as written in the dev mode, and have the person approve anything that changes a tenant. In the agent and executor modes no live CLI or REST step runs: the agent plane has no credentials and no network, and the executor plane acts only through the read-only tools of its profile and its own typed operations. Say that the step needs a dev-mode session or an executor operation, and stop it.
+2. Some pinned skills tell you to fall back to another route when their MCP tool is missing, or to install a tool (`winget install`, `pip install`, `npm install -g`, an `npx` package). The rules here are stricter on purpose. If a tool is missing, say what is missing and ask the person before another route. Never install anything: the person installs tools with `python scripts/toolchain.py doctor` and `install`.
+3. A read-only request stays read-only. A tool listing or a connection test is not permission to write.
+4. A skill step that asks for a confirmation means escalate when no person is there.
 
 ## 4. Things that go wrong
 
 1. The local and the hosted Power BI authoring servers are twins. Use the one in your profile, never both.
-2. The authoring server is blocked until its license agreement is accepted. Never accept it for someone. The operator does that, once, on purpose.
-3. A tool that is missing, renamed or changed against the lock is a contract drift. Stop and report it.
+2. The local authoring server (the npm package) is blocked until its license agreement is accepted. Never accept it for someone. The operator does that, once, on purpose.
+3. A tool that is missing, renamed or changed against the lock is a contract drift. Stop and report it. The lock holds the tool lists of the stdio servers only, so a hosted server has no recorded list to drift from: compare its tools with what the skill expects, and tell the person about a difference.
 4. The ontology skill `fabriciq-ontology-cli` is quarantined and never loaded.
 5. Hosted Fabric servers act as the signed-in person. Do not use them in a job.
 

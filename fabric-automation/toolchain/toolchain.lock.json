@@ -1,7 +1,7 @@
 {
   "schema": 1,
   "generated": "2026-10-31",
-  "inputs_digest": "sha256:36eb5de6933f1d4608ad9105a21ba3f61390f1339198bc6b9341ecb81fdda4f6",
+  "inputs_digest": "sha256:a162c163e169dcb014471a684a2bea54e61614d2247c26e186b5f1836bf3a194",
   "skill_sources": {
     "azure-skills": {
       "repo": "https://github.com/microsoft/azure-skills.git",
@@ -126,7 +126,7 @@
               "files": 56,
               "bytes": 243192,
               "description_chars": 621,
-              "install_hints": 5,
+              "install_hints": 8,
               "findings": []
             },
             "azure-kusto": {
@@ -584,6 +584,14 @@
             "powerbi-modeling-mcp"
           ]
         }
+      },
+      "shared": {
+        "common": {
+          "plugin": "fabric-skills",
+          "digest": "sha256:d5d756d2ab4c9fe79e54c6946773de54ae9bef484cf1934f85e34f056e350f88",
+          "files": 25,
+          "bytes": 435667
+        }
       }
     }
   },
@@ -606,10 +614,17 @@
       "integrity": "sha512-purQLCSiXeUlFGdioqBNfSnr/aSo03D3gJhM2zjKtRWx6bmQg/SbE0N+0WEcxvS1wd3BRtG2z5IxUnLjWYlb2Q==",
       "via": "npm-cli"
     },
+    "npm:@microsoft/powerbi-report-authoring-cli": {
+      "status": "resolved",
+      "version": "0.5.0",
+      "integrity": "sha512-TnWa858fOuETUi44XpdIsyPVdwUZbrB3CFVSfonvqXF9FpHmaN4tB9YQUgWPZFtWoiIBe3y9rPPsR7kTtZCoAw==",
+      "via": "npm-cli"
+    },
     "nuget:Azure.Bicep.McpServer": {
-      "status": "unresolved",
-      "reason": "network",
-      "detail": "tls"
+      "status": "resolved",
+      "version": "0.48.1",
+      "integrity": null,
+      "via": "nuget"
     },
     "pypi:microsoft-fabric-rti-mcp": {
       "status": "resolved",
@@ -625,75 +640,1371 @@
     }
   },
   "contracts": {
-    "azure-mcp/read": {
+    "azure-arm-cost/default": {
       "status": "skipped",
       "reason": "skipped",
       "detail": "contracts not captured"
+    },
+    "azure-mcp/read": {
+      "status": "captured",
+      "era": "legacy",
+      "protocol": "2025-11-25",
+      "server": {
+        "name": "Azure MCP Server",
+        "version": "4.0.0-beta.4"
+      },
+      "package_version": "4.0.0-beta.4",
+      "tools": {
+        "acr": {
+          "schema": "sha256:d29390f9d486a10750d90dc1c26944ad46ab9d6356778640c4df5d0bbdfd575c",
+          "read_only": null,
+          "destructive": null,
+          "idempotent": null
+        },
+        "adme": {
+          "schema": "sha256:d29390f9d486a10750d90dc1c26944ad46ab9d6356778640c4df5d0bbdfd575c",
+          "read_only": null,
+          "destructive": null,
+          "idempotent": null
+        },
+        "advisor": {
+          "schema": "sha256:d29390f9d486a10750d90dc1c26944ad46ab9d6356778640c4df5d0bbdfd575c",
+          "read_only": null,
+          "destructive": null,
+          "idempotent": null
+        },
+        "aks": {
+          "schema": "sha256:d29390f9d486a10750d90dc1c26944ad46ab9d6356778640c4df5d0bbdfd575c",
+          "read_only": null,
+          "destructive": null,
+          "idempotent": null
+        },
+        "appconfig": {
+          "schema": "sha256:d29390f9d486a10750d90dc1c26944ad46ab9d6356778640c4df5d0bbdfd575c",
+          "read_only": null,
+          "destructive": null,
+          "idempotent": null
+        },
+        "applens": {
+          "schema": "sha256:d29390f9d486a10750d90dc1c26944ad46ab9d6356778640c4df5d0bbdfd575c",
+          "read_only": null,
+          "destructive": null,
+          "idempotent": null
+        },
+        "applicationinsights": {
+          "schema": "sha256:d29390f9d486a10750d90dc1c26944ad46ab9d6356778640c4df5d0bbdfd575c",
+          "read_only": null,
+          "destructive": null,
+          "idempotent": null
+        },
+        "appservice": {
+          "schema": "sha256:d29390f9d486a10750d90dc1c26944ad46ab9d6356778640c4df5d0bbdfd575c",
+          "read_only": null,
+          "destructive": null,
+          "idempotent": null
+        },
+        "arm": {
+          "schema": "sha256:d29390f9d486a10750d90dc1c26944ad46ab9d6356778640c4df5d0bbdfd575c",
+          "read_only": null,
+          "destructive": null,
+          "idempotent": null
+        },
+        "azd": {
+          "schema": "sha256:d29390f9d486a10750d90dc1c26944ad46ab9d6356778640c4df5d0bbdfd575c",
+          "read_only": null,
+          "destructive": null,
+          "idempotent": null
+        },
+        "azurebackup": {
+          "schema": "sha256:d29390f9d486a10750d90dc1c26944ad46ab9d6356778640c4df5d0bbdfd575c",
+          "read_only": null,
+          "destructive": null,
+          "idempotent": null
+        },
+        "azureterraform": {
+          "schema": "sha256:d29390f9d486a10750d90dc1c26944ad46ab9d6356778640c4df5d0bbdfd575c",
+          "read_only": null,
+          "destructive": null,
+          "idempotent": null
+        },
+        "azureterraformbestpractices": {
+          "schema": "sha256:d29390f9d486a10750d90dc1c26944ad46ab9d6356778640c4df5d0bbdfd575c",
+          "read_only": null,
+          "destructive": null,
+          "idempotent": null
+        },
+        "bicepschema": {
+          "schema": "sha256:d29390f9d486a10750d90dc1c26944ad46ab9d6356778640c4df5d0bbdfd575c",
+          "read_only": null,
+          "destructive": null,
+          "idempotent": null
+        },
+        "cloudarchitect": {
+          "schema": "sha256:d29390f9d486a10750d90dc1c26944ad46ab9d6356778640c4df5d0bbdfd575c",
+          "read_only": null,
+          "destructive": null,
+          "idempotent": null
+        },
+        "compute": {
+          "schema": "sha256:d29390f9d486a10750d90dc1c26944ad46ab9d6356778640c4df5d0bbdfd575c",
+          "read_only": null,
+          "destructive": null,
+          "idempotent": null
+        },
+        "confidentialledger": {
+          "schema": "sha256:d29390f9d486a10750d90dc1c26944ad46ab9d6356778640c4df5d0bbdfd575c",
+          "read_only": null,
+          "destructive": null,
+          "idempotent": null
+        },
+        "containerapps": {
+          "schema": "sha256:d29390f9d486a10750d90dc1c26944ad46ab9d6356778640c4df5d0bbdfd575c",
+          "read_only": null,
+          "destructive": null,
+          "idempotent": null
+        },
+        "cosmos": {
+          "schema": "sha256:d29390f9d486a10750d90dc1c26944ad46ab9d6356778640c4df5d0bbdfd575c",
+          "read_only": null,
+          "destructive": null,
+          "idempotent": null
+        },
+        "datadog": {
+          "schema": "sha256:d29390f9d486a10750d90dc1c26944ad46ab9d6356778640c4df5d0bbdfd575c",
+          "read_only": null,
+          "destructive": null,
+          "idempotent": null
+        },
+        "deploy": {
+          "schema": "sha256:d29390f9d486a10750d90dc1c26944ad46ab9d6356778640c4df5d0bbdfd575c",
+          "read_only": null,
+          "destructive": null,
+          "idempotent": null
+        },
+        "deviceprovisioning": {
+          "schema": "sha256:d29390f9d486a10750d90dc1c26944ad46ab9d6356778640c4df5d0bbdfd575c",
+          "read_only": null,
+          "destructive": null,
+          "idempotent": null
+        },
+        "deviceregistry": {
+          "schema": "sha256:d29390f9d486a10750d90dc1c26944ad46ab9d6356778640c4df5d0bbdfd575c",
+          "read_only": null,
+          "destructive": null,
+          "idempotent": null
+        },
+        "documentation": {
+          "schema": "sha256:d29390f9d486a10750d90dc1c26944ad46ab9d6356778640c4df5d0bbdfd575c",
+          "read_only": null,
+          "destructive": null,
+          "idempotent": null
+        },
+        "eventgrid": {
+          "schema": "sha256:d29390f9d486a10750d90dc1c26944ad46ab9d6356778640c4df5d0bbdfd575c",
+          "read_only": null,
+          "destructive": null,
+          "idempotent": null
+        },
+        "eventhubs": {
+          "schema": "sha256:d29390f9d486a10750d90dc1c26944ad46ab9d6356778640c4df5d0bbdfd575c",
+          "read_only": null,
+          "destructive": null,
+          "idempotent": null
+        },
+        "extension_cli_generate": {
+          "schema": "sha256:c77c133e2f03b33ae4e7f48b7c6dd9f2e024fbb79881764adaa82680f6095a3d",
+          "read_only": true,
+          "destructive": false,
+          "idempotent": true
+        },
+        "extension_cli_install": {
+          "schema": "sha256:705e57cb197c1d3778b43b28d3c38b2b0c6b2148b9819b5032a67bf374356cfb",
+          "read_only": true,
+          "destructive": false,
+          "idempotent": true
+        },
+        "fileshares": {
+          "schema": "sha256:d29390f9d486a10750d90dc1c26944ad46ab9d6356778640c4df5d0bbdfd575c",
+          "read_only": null,
+          "destructive": null,
+          "idempotent": null
+        },
+        "foundry": {
+          "schema": "sha256:d29390f9d486a10750d90dc1c26944ad46ab9d6356778640c4df5d0bbdfd575c",
+          "read_only": null,
+          "destructive": null,
+          "idempotent": null
+        },
+        "foundryextensions": {
+          "schema": "sha256:d29390f9d486a10750d90dc1c26944ad46ab9d6356778640c4df5d0bbdfd575c",
+          "read_only": null,
+          "destructive": null,
+          "idempotent": null
+        },
+        "functionapp": {
+          "schema": "sha256:d29390f9d486a10750d90dc1c26944ad46ab9d6356778640c4df5d0bbdfd575c",
+          "read_only": null,
+          "destructive": null,
+          "idempotent": null
+        },
+        "functions": {
+          "schema": "sha256:d29390f9d486a10750d90dc1c26944ad46ab9d6356778640c4df5d0bbdfd575c",
+          "read_only": null,
+          "destructive": null,
+          "idempotent": null
+        },
+        "get_azure_bestpractices": {
+          "schema": "sha256:d29390f9d486a10750d90dc1c26944ad46ab9d6356778640c4df5d0bbdfd575c",
+          "read_only": null,
+          "destructive": null,
+          "idempotent": null
+        },
+        "grafana": {
+          "schema": "sha256:d29390f9d486a10750d90dc1c26944ad46ab9d6356778640c4df5d0bbdfd575c",
+          "read_only": null,
+          "destructive": null,
+          "idempotent": null
+        },
+        "group_list": {
+          "schema": "sha256:970c15caf5676ac233109f325d09a72647772c500356919a79a4aac132dd6a67",
+          "read_only": true,
+          "destructive": false,
+          "idempotent": true
+        },
+        "group_resource_list": {
+          "schema": "sha256:e30931a6437b15e80b76abc2ff8a575c66f3021a5ebd40fdb10c365bb29e45a5",
+          "read_only": true,
+          "destructive": false,
+          "idempotent": true
+        },
+        "insights": {
+          "schema": "sha256:d29390f9d486a10750d90dc1c26944ad46ab9d6356778640c4df5d0bbdfd575c",
+          "read_only": null,
+          "destructive": null,
+          "idempotent": null
+        },
+        "iothub": {
+          "schema": "sha256:d29390f9d486a10750d90dc1c26944ad46ab9d6356778640c4df5d0bbdfd575c",
+          "read_only": null,
+          "destructive": null,
+          "idempotent": null
+        },
+        "iotoperations": {
+          "schema": "sha256:d29390f9d486a10750d90dc1c26944ad46ab9d6356778640c4df5d0bbdfd575c",
+          "read_only": null,
+          "destructive": null,
+          "idempotent": null
+        },
+        "keyvault": {
+          "schema": "sha256:d29390f9d486a10750d90dc1c26944ad46ab9d6356778640c4df5d0bbdfd575c",
+          "read_only": null,
+          "destructive": null,
+          "idempotent": null
+        },
+        "kusto": {
+          "schema": "sha256:d29390f9d486a10750d90dc1c26944ad46ab9d6356778640c4df5d0bbdfd575c",
+          "read_only": null,
+          "destructive": null,
+          "idempotent": null
+        },
+        "loadtesting": {
+          "schema": "sha256:d29390f9d486a10750d90dc1c26944ad46ab9d6356778640c4df5d0bbdfd575c",
+          "read_only": null,
+          "destructive": null,
+          "idempotent": null
+        },
+        "managedlustre": {
+          "schema": "sha256:d29390f9d486a10750d90dc1c26944ad46ab9d6356778640c4df5d0bbdfd575c",
+          "read_only": null,
+          "destructive": null,
+          "idempotent": null
+        },
+        "marketplace": {
+          "schema": "sha256:d29390f9d486a10750d90dc1c26944ad46ab9d6356778640c4df5d0bbdfd575c",
+          "read_only": null,
+          "destructive": null,
+          "idempotent": null
+        },
+        "monitor": {
+          "schema": "sha256:d29390f9d486a10750d90dc1c26944ad46ab9d6356778640c4df5d0bbdfd575c",
+          "read_only": null,
+          "destructive": null,
+          "idempotent": null
+        },
+        "mysql": {
+          "schema": "sha256:d29390f9d486a10750d90dc1c26944ad46ab9d6356778640c4df5d0bbdfd575c",
+          "read_only": null,
+          "destructive": null,
+          "idempotent": null
+        },
+        "netappfiles": {
+          "schema": "sha256:d29390f9d486a10750d90dc1c26944ad46ab9d6356778640c4df5d0bbdfd575c",
+          "read_only": null,
+          "destructive": null,
+          "idempotent": null
+        },
+        "optimization": {
+          "schema": "sha256:d29390f9d486a10750d90dc1c26944ad46ab9d6356778640c4df5d0bbdfd575c",
+          "read_only": null,
+          "destructive": null,
+          "idempotent": null
+        },
+        "policy": {
+          "schema": "sha256:d29390f9d486a10750d90dc1c26944ad46ab9d6356778640c4df5d0bbdfd575c",
+          "read_only": null,
+          "destructive": null,
+          "idempotent": null
+        },
+        "postgres": {
+          "schema": "sha256:d29390f9d486a10750d90dc1c26944ad46ab9d6356778640c4df5d0bbdfd575c",
+          "read_only": null,
+          "destructive": null,
+          "idempotent": null
+        },
+        "pricing": {
+          "schema": "sha256:d29390f9d486a10750d90dc1c26944ad46ab9d6356778640c4df5d0bbdfd575c",
+          "read_only": null,
+          "destructive": null,
+          "idempotent": null
+        },
+        "quota": {
+          "schema": "sha256:d29390f9d486a10750d90dc1c26944ad46ab9d6356778640c4df5d0bbdfd575c",
+          "read_only": null,
+          "destructive": null,
+          "idempotent": null
+        },
+        "redis": {
+          "schema": "sha256:d29390f9d486a10750d90dc1c26944ad46ab9d6356778640c4df5d0bbdfd575c",
+          "read_only": null,
+          "destructive": null,
+          "idempotent": null
+        },
+        "resiliency": {
+          "schema": "sha256:d29390f9d486a10750d90dc1c26944ad46ab9d6356778640c4df5d0bbdfd575c",
+          "read_only": null,
+          "destructive": null,
+          "idempotent": null
+        },
+        "resourcehealth": {
+          "schema": "sha256:d29390f9d486a10750d90dc1c26944ad46ab9d6356778640c4df5d0bbdfd575c",
+          "read_only": null,
+          "destructive": null,
+          "idempotent": null
+        },
+        "role": {
+          "schema": "sha256:d29390f9d486a10750d90dc1c26944ad46ab9d6356778640c4df5d0bbdfd575c",
+          "read_only": null,
+          "destructive": null,
+          "idempotent": null
+        },
+        "search": {
+          "schema": "sha256:d29390f9d486a10750d90dc1c26944ad46ab9d6356778640c4df5d0bbdfd575c",
+          "read_only": null,
+          "destructive": null,
+          "idempotent": null
+        },
+        "servicebus": {
+          "schema": "sha256:d29390f9d486a10750d90dc1c26944ad46ab9d6356778640c4df5d0bbdfd575c",
+          "read_only": null,
+          "destructive": null,
+          "idempotent": null
+        },
+        "servicefabric": {
+          "schema": "sha256:d29390f9d486a10750d90dc1c26944ad46ab9d6356778640c4df5d0bbdfd575c",
+          "read_only": null,
+          "destructive": null,
+          "idempotent": null
+        },
+        "signalr": {
+          "schema": "sha256:d29390f9d486a10750d90dc1c26944ad46ab9d6356778640c4df5d0bbdfd575c",
+          "read_only": null,
+          "destructive": null,
+          "idempotent": null
+        },
+        "speech": {
+          "schema": "sha256:d29390f9d486a10750d90dc1c26944ad46ab9d6356778640c4df5d0bbdfd575c",
+          "read_only": null,
+          "destructive": null,
+          "idempotent": null
+        },
+        "sql": {
+          "schema": "sha256:d29390f9d486a10750d90dc1c26944ad46ab9d6356778640c4df5d0bbdfd575c",
+          "read_only": null,
+          "destructive": null,
+          "idempotent": null
+        },
+        "sreagent": {
+          "schema": "sha256:d29390f9d486a10750d90dc1c26944ad46ab9d6356778640c4df5d0bbdfd575c",
+          "read_only": null,
+          "destructive": null,
+          "idempotent": null
+        },
+        "storage": {
+          "schema": "sha256:d29390f9d486a10750d90dc1c26944ad46ab9d6356778640c4df5d0bbdfd575c",
+          "read_only": null,
+          "destructive": null,
+          "idempotent": null
+        },
+        "storagesync": {
+          "schema": "sha256:d29390f9d486a10750d90dc1c26944ad46ab9d6356778640c4df5d0bbdfd575c",
+          "read_only": null,
+          "destructive": null,
+          "idempotent": null
+        },
+        "subscription_list": {
+          "schema": "sha256:a9f87905941ef515619671fd12f81430a4cddbc1f820a768955f696d38c15349",
+          "read_only": true,
+          "destructive": false,
+          "idempotent": true
+        },
+        "virtualdesktop": {
+          "schema": "sha256:d29390f9d486a10750d90dc1c26944ad46ab9d6356778640c4df5d0bbdfd575c",
+          "read_only": null,
+          "destructive": null,
+          "idempotent": null
+        },
+        "wellarchitectedframework": {
+          "schema": "sha256:d29390f9d486a10750d90dc1c26944ad46ab9d6356778640c4df5d0bbdfd575c",
+          "read_only": null,
+          "destructive": null,
+          "idempotent": null
+        },
+        "workbooks": {
+          "schema": "sha256:d29390f9d486a10750d90dc1c26944ad46ab9d6356778640c4df5d0bbdfd575c",
+          "read_only": null,
+          "destructive": null,
+          "idempotent": null
+        }
+      }
     },
     "bicep-mcp/default": {
-      "status": "skipped",
-      "reason": "skipped",
-      "detail": "contracts not captured"
+      "status": "unavailable",
+      "reason": "spawn-failed",
+      "detail": "not found"
     },
     "fabric-core/default": {
-      "status": "skipped",
-      "reason": "skipped",
-      "detail": "contracts not captured"
+      "status": "needs-sign-in"
     },
     "fabric-iq/default": {
-      "status": "skipped",
-      "reason": "skipped",
-      "detail": "contracts not captured"
+      "status": "needs-sign-in"
     },
     "fabric-local/docs": {
-      "status": "skipped",
-      "reason": "skipped",
-      "detail": "contracts not captured"
+      "status": "captured",
+      "era": "legacy",
+      "protocol": "2025-11-25",
+      "server": {
+        "name": "Fabric MCP Server",
+        "version": "1.6.0"
+      },
+      "package_version": "1.6.0",
+      "tools": {
+        "docs_api-examples": {
+          "schema": "sha256:70d53fb0ff0296c4595e27c893ee7d357e1f2a7ece508ceda58ff14abad51630",
+          "read_only": true,
+          "destructive": false,
+          "idempotent": true
+        },
+        "docs_best-practices": {
+          "schema": "sha256:0c3ac7037bf4c2d405eea260e46499ba07c2c016dd6df89c2a997d2b6e25fd70",
+          "read_only": true,
+          "destructive": false,
+          "idempotent": true
+        },
+        "docs_item-api-spec": {
+          "schema": "sha256:70d53fb0ff0296c4595e27c893ee7d357e1f2a7ece508ceda58ff14abad51630",
+          "read_only": true,
+          "destructive": false,
+          "idempotent": true
+        },
+        "docs_item-definitions": {
+          "schema": "sha256:70d53fb0ff0296c4595e27c893ee7d357e1f2a7ece508ceda58ff14abad51630",
+          "read_only": true,
+          "destructive": false,
+          "idempotent": true
+        },
+        "docs_list-item-types": {
+          "schema": "sha256:99334726611ccf58a148b0814696bfa6fe08c1b2d027e946beccf5a74331c9aa",
+          "read_only": true,
+          "destructive": false,
+          "idempotent": true
+        },
+        "docs_platform-api-spec": {
+          "schema": "sha256:99334726611ccf58a148b0814696bfa6fe08c1b2d027e946beccf5a74331c9aa",
+          "read_only": true,
+          "destructive": false,
+          "idempotent": true
+        }
+      }
     },
     "fabric-local/full": {
-      "status": "skipped",
-      "reason": "skipped",
-      "detail": "contracts not captured"
+      "status": "captured",
+      "era": "legacy",
+      "protocol": "2025-11-25",
+      "server": {
+        "name": "Fabric MCP Server",
+        "version": "1.6.0"
+      },
+      "package_version": "1.6.0",
+      "tools": {
+        "core_assign-workspace-to-capacity": {
+          "schema": "sha256:ad343d112ff97079a75f43628da9d6bb1c9e5430c958793c2ae80f86ba629237",
+          "read_only": false,
+          "destructive": true,
+          "idempotent": false
+        },
+        "core_create-item": {
+          "schema": "sha256:2683d8360a5ff20025650b00a2ba21c2d12a839eb5ada4b4981fb68d59a7d4b3",
+          "read_only": false,
+          "destructive": false,
+          "idempotent": false
+        },
+        "core_create-workspace": {
+          "schema": "sha256:4234eab886bc5386233437175992409c683e44375ca20b0ffcfc7934229d3c2b",
+          "read_only": false,
+          "destructive": false,
+          "idempotent": false
+        },
+        "core_delete-item": {
+          "schema": "sha256:ec4ab052e4e35b6347b438cf9ecb67c94f83b12196669e6a6779625dd3e90e98",
+          "read_only": false,
+          "destructive": true,
+          "idempotent": true
+        },
+        "core_delete-workspace": {
+          "schema": "sha256:de13a47ef2ba652eb1107ff56cd53f2d647ecc96c76c79fe59c5761f14458486",
+          "read_only": false,
+          "destructive": true,
+          "idempotent": true
+        },
+        "core_get-capacity": {
+          "schema": "sha256:7dd48063f2657979742f7685c7fcae7a0dda95a629cd62823bac39f5adc4e77a",
+          "read_only": true,
+          "destructive": false,
+          "idempotent": true
+        },
+        "core_get-item": {
+          "schema": "sha256:8cd129e35eeb5d24ef22a19ca65fee822638c71157a656fadbf16be2c94b7c31",
+          "read_only": true,
+          "destructive": false,
+          "idempotent": true
+        },
+        "core_get-operation-result": {
+          "schema": "sha256:8db03ca70f94cc29b533c37979a9c8d0f863d0bea03d1554a9744c7caef68462",
+          "read_only": true,
+          "destructive": false,
+          "idempotent": true
+        },
+        "core_get-operation-state": {
+          "schema": "sha256:8db03ca70f94cc29b533c37979a9c8d0f863d0bea03d1554a9744c7caef68462",
+          "read_only": true,
+          "destructive": false,
+          "idempotent": true
+        },
+        "core_get-workspace": {
+          "schema": "sha256:6a0b465dfa4b3490081a7eb3f62e3a28cee7208aa5425dbd4c002b07816a7da8",
+          "read_only": true,
+          "destructive": false,
+          "idempotent": true
+        },
+        "core_list-capacities": {
+          "schema": "sha256:15a4a241b99afab1a6c954ac4dc1ebe757a1bf562c3be30ea7fd19ed5dcc87c9",
+          "read_only": true,
+          "destructive": false,
+          "idempotent": true
+        },
+        "core_list-items": {
+          "schema": "sha256:63efef05c3e02f60b68af8a41ea3831a3ece69026a753aba62efa96d18a27a06",
+          "read_only": true,
+          "destructive": false,
+          "idempotent": true
+        },
+        "core_list-workspaces": {
+          "schema": "sha256:f9240cfb40ebf510a8b95c1a765d9a6a9604765584a7ab9538b476551b80497c",
+          "read_only": true,
+          "destructive": false,
+          "idempotent": true
+        },
+        "core_search-catalog": {
+          "schema": "sha256:92190e770e45fdf301349b3faaa944b935246efae55ce8257dbe99b4ffc66f43",
+          "read_only": true,
+          "destructive": false,
+          "idempotent": true
+        },
+        "core_update-item": {
+          "schema": "sha256:a6a547ebdc9a854042180a5f785470f908acf0d204bce09bff713996a9a7e545",
+          "read_only": false,
+          "destructive": true,
+          "idempotent": true
+        },
+        "core_update-workspace": {
+          "schema": "sha256:7483e4fc4d61aacc75d1c593f847e714e7a14636b9ff32f0ebea730cb7acbfd0",
+          "read_only": false,
+          "destructive": true,
+          "idempotent": true
+        },
+        "datafactory_create-dataflow": {
+          "schema": "sha256:b9145bdc8a66b8dc5dee4a96c743be13b1b1384cf382f8dbaef3014de958c949",
+          "read_only": false,
+          "destructive": false,
+          "idempotent": false
+        },
+        "datafactory_create-pipeline": {
+          "schema": "sha256:b9145bdc8a66b8dc5dee4a96c743be13b1b1384cf382f8dbaef3014de958c949",
+          "read_only": false,
+          "destructive": false,
+          "idempotent": false
+        },
+        "datafactory_execute-query": {
+          "schema": "sha256:f8cb14329f427b7734491c1556dad06718929172357e698ada033a3bc025accb",
+          "read_only": true,
+          "destructive": false,
+          "idempotent": true
+        },
+        "datafactory_get-pipeline": {
+          "schema": "sha256:452629b5a9c4b6c184b0a8647b6d498c3edfd31c60225caa8a536ea3efdd9cc7",
+          "read_only": true,
+          "destructive": false,
+          "idempotent": true
+        },
+        "datafactory_list-dataflows": {
+          "schema": "sha256:bea4a1323e37a9b370059cd50853d781ccbc8050439bc988768614c27f491866",
+          "read_only": true,
+          "destructive": false,
+          "idempotent": true
+        },
+        "datafactory_list-pipelines": {
+          "schema": "sha256:bea4a1323e37a9b370059cd50853d781ccbc8050439bc988768614c27f491866",
+          "read_only": true,
+          "destructive": false,
+          "idempotent": true
+        },
+        "datafactory_run-pipeline": {
+          "schema": "sha256:452629b5a9c4b6c184b0a8647b6d498c3edfd31c60225caa8a536ea3efdd9cc7",
+          "read_only": false,
+          "destructive": false,
+          "idempotent": false
+        },
+        "docs_api-examples": {
+          "schema": "sha256:70d53fb0ff0296c4595e27c893ee7d357e1f2a7ece508ceda58ff14abad51630",
+          "read_only": true,
+          "destructive": false,
+          "idempotent": true
+        },
+        "docs_best-practices": {
+          "schema": "sha256:0c3ac7037bf4c2d405eea260e46499ba07c2c016dd6df89c2a997d2b6e25fd70",
+          "read_only": true,
+          "destructive": false,
+          "idempotent": true
+        },
+        "docs_item-api-spec": {
+          "schema": "sha256:70d53fb0ff0296c4595e27c893ee7d357e1f2a7ece508ceda58ff14abad51630",
+          "read_only": true,
+          "destructive": false,
+          "idempotent": true
+        },
+        "docs_item-definitions": {
+          "schema": "sha256:70d53fb0ff0296c4595e27c893ee7d357e1f2a7ece508ceda58ff14abad51630",
+          "read_only": true,
+          "destructive": false,
+          "idempotent": true
+        },
+        "docs_list-item-types": {
+          "schema": "sha256:99334726611ccf58a148b0814696bfa6fe08c1b2d027e946beccf5a74331c9aa",
+          "read_only": true,
+          "destructive": false,
+          "idempotent": true
+        },
+        "docs_platform-api-spec": {
+          "schema": "sha256:99334726611ccf58a148b0814696bfa6fe08c1b2d027e946beccf5a74331c9aa",
+          "read_only": true,
+          "destructive": false,
+          "idempotent": true
+        },
+        "onelake_create-directory": {
+          "schema": "sha256:e8788814ab590174f5d9ad0eb22f4f3683d7c1b25e0dc8294fdc28a5b061951c",
+          "read_only": false,
+          "destructive": false,
+          "idempotent": true
+        },
+        "onelake_create-or-update-data-access-role": {
+          "schema": "sha256:32ef596e7f2a69529dbe5bc83bb82c76e7f6826f9b68cbf7ffc596c572fc08c6",
+          "read_only": false,
+          "destructive": false,
+          "idempotent": true
+        },
+        "onelake_create-shortcut-adls-gen2": {
+          "schema": "sha256:2a6a9f80d6f27275711ad94d5e35d20ae63a439d11a1442eabc85a776b79e307",
+          "read_only": false,
+          "destructive": false,
+          "idempotent": true
+        },
+        "onelake_create-shortcut-amazon-s3": {
+          "schema": "sha256:2d9a7a3ffdb0f9b11202d70dd877a20c42949faa6ee4f889655d18fe8dc9c67d",
+          "read_only": false,
+          "destructive": false,
+          "idempotent": true
+        },
+        "onelake_create-shortcut-azure-blob": {
+          "schema": "sha256:2d9a7a3ffdb0f9b11202d70dd877a20c42949faa6ee4f889655d18fe8dc9c67d",
+          "read_only": false,
+          "destructive": false,
+          "idempotent": true
+        },
+        "onelake_create-shortcut-dataverse": {
+          "schema": "sha256:923ef3438e95fd4c6b29fe873be5c52aeb2fba8a26f04c91f10b8909677bbc65",
+          "read_only": false,
+          "destructive": false,
+          "idempotent": true
+        },
+        "onelake_create-shortcut-gcs": {
+          "schema": "sha256:2d9a7a3ffdb0f9b11202d70dd877a20c42949faa6ee4f889655d18fe8dc9c67d",
+          "read_only": false,
+          "destructive": false,
+          "idempotent": true
+        },
+        "onelake_create-shortcut-onedrive-sharepoint": {
+          "schema": "sha256:392922edd92d46a81e395759382429961894cada2b0a8d2fc88b0f0896771c49",
+          "read_only": false,
+          "destructive": false,
+          "idempotent": true
+        },
+        "onelake_create-shortcut-onelake": {
+          "schema": "sha256:0f18f06e969e4d37c4094cef5f76375da4b44d94a959dd50f9375f8faebd4433",
+          "read_only": false,
+          "destructive": false,
+          "idempotent": true
+        },
+        "onelake_create-shortcut-s3-compatible": {
+          "schema": "sha256:984d4fb3482f25761364e4841606ee6eeff383021d9d043b9bf07620532324d1",
+          "read_only": false,
+          "destructive": false,
+          "idempotent": true
+        },
+        "onelake_delete-data-access-role": {
+          "schema": "sha256:057d4800a93ee0832627727b783ddf751fa5b52435eef99373911330debb7e15",
+          "read_only": false,
+          "destructive": true,
+          "idempotent": true
+        },
+        "onelake_delete-directory": {
+          "schema": "sha256:3ed457d74f4ce1ce3651e5844b19ac21b053b54ca702eeae3d892be6c2b4b698",
+          "read_only": false,
+          "destructive": true,
+          "idempotent": true
+        },
+        "onelake_delete-file": {
+          "schema": "sha256:e9405a6c7ac83d62d669fb6f958748b36e92c4d9790a192b94e4c13058834644",
+          "read_only": false,
+          "destructive": true,
+          "idempotent": true
+        },
+        "onelake_delete-shortcut": {
+          "schema": "sha256:7986f7814a74409d82eae9f37b66d3e39f3f2c97ab9e70ccd2082d98c77ebf1d",
+          "read_only": false,
+          "destructive": true,
+          "idempotent": true
+        },
+        "onelake_download-file": {
+          "schema": "sha256:7022b4a9507635da8bcdc00e8f920496171b9a87865896c6fa64a854d52b8c83",
+          "read_only": true,
+          "destructive": false,
+          "idempotent": true
+        },
+        "onelake_get-data-access-role": {
+          "schema": "sha256:057d4800a93ee0832627727b783ddf751fa5b52435eef99373911330debb7e15",
+          "read_only": true,
+          "destructive": false,
+          "idempotent": true
+        },
+        "onelake_get-settings": {
+          "schema": "sha256:7e74c7a8f4e10b95e874482e20346621436db8f1dffe0738abeb09313c9bec44",
+          "read_only": true,
+          "destructive": false,
+          "idempotent": true
+        },
+        "onelake_get-shortcut": {
+          "schema": "sha256:7986f7814a74409d82eae9f37b66d3e39f3f2c97ab9e70ccd2082d98c77ebf1d",
+          "read_only": true,
+          "destructive": false,
+          "idempotent": true
+        },
+        "onelake_get-table": {
+          "schema": "sha256:ffee7c36ca4f8f67754dde1483d7717249b298a7cf54a630b85f637da069ca47",
+          "read_only": true,
+          "destructive": false,
+          "idempotent": true
+        },
+        "onelake_get-table-config": {
+          "schema": "sha256:e01064057dc818347aa1ef82abef95eae9b69dc9755ebeeeb22e53c801f6ce53",
+          "read_only": true,
+          "destructive": false,
+          "idempotent": true
+        },
+        "onelake_get-table-namespace": {
+          "schema": "sha256:f03d9c2c013f8b45cf6c0407245341bd5ffb07ac5a6a8e5e0d770e818d3996b5",
+          "read_only": true,
+          "destructive": false,
+          "idempotent": true
+        },
+        "onelake_list-data-access-roles": {
+          "schema": "sha256:4f38ebbdc788bc14b5cf99b771bd5446685d888d0009b9bde4854f4edfcc5c83",
+          "read_only": true,
+          "destructive": false,
+          "idempotent": true
+        },
+        "onelake_list-files": {
+          "schema": "sha256:fc164323cdf2a48ba6b3c4499a889d8a5c2c2f09c3951b37c6dea8a5eba6bc8d",
+          "read_only": true,
+          "destructive": false,
+          "idempotent": true
+        },
+        "onelake_list-items": {
+          "schema": "sha256:ec45c04ab5070baa363ba6bdf66b4076785a99fda75990c55a395bfe315a024b",
+          "read_only": true,
+          "destructive": false,
+          "idempotent": true
+        },
+        "onelake_list-items-dfs": {
+          "schema": "sha256:e273998aeabb5b71451cc387d628a3fd02e5495d5f0245c4f1bd131fbd498d7b",
+          "read_only": true,
+          "destructive": false,
+          "idempotent": true
+        },
+        "onelake_list-shortcuts": {
+          "schema": "sha256:472f78655c334c76260916b93d0636e6373dcb70bc85d59c40f1f2e0d9796ce0",
+          "read_only": true,
+          "destructive": false,
+          "idempotent": true
+        },
+        "onelake_list-table-namespaces": {
+          "schema": "sha256:e01064057dc818347aa1ef82abef95eae9b69dc9755ebeeeb22e53c801f6ce53",
+          "read_only": true,
+          "destructive": false,
+          "idempotent": true
+        },
+        "onelake_list-tables": {
+          "schema": "sha256:f03d9c2c013f8b45cf6c0407245341bd5ffb07ac5a6a8e5e0d770e818d3996b5",
+          "read_only": true,
+          "destructive": false,
+          "idempotent": true
+        },
+        "onelake_list-workspaces": {
+          "schema": "sha256:c04800ef83c9998782ca5d97b0c8d60751f2d88d071873badd223900be1f9ec4",
+          "read_only": true,
+          "destructive": false,
+          "idempotent": true
+        },
+        "onelake_modify-diagnostics": {
+          "schema": "sha256:f57d3fe3ef1f76d0fd894c0bc326b3661081af733cb80fb06b7ae18499b1462c",
+          "read_only": false,
+          "destructive": false,
+          "idempotent": true
+        },
+        "onelake_modify-immutability-policy": {
+          "schema": "sha256:8ad1ec69e173466d969e117d7423115aa26723a42760efe7bac3e39d59a48093",
+          "read_only": false,
+          "destructive": false,
+          "idempotent": true
+        },
+        "onelake_reset-shortcut-cache": {
+          "schema": "sha256:bea4a1323e37a9b370059cd50853d781ccbc8050439bc988768614c27f491866",
+          "read_only": false,
+          "destructive": false,
+          "idempotent": true
+        },
+        "onelake_upload-file": {
+          "schema": "sha256:d6cecbdcebca36804eb81c5878eb42a1730a1deb492705cec6f145d9871ff2d6",
+          "read_only": false,
+          "destructive": true,
+          "idempotent": false
+        }
+      }
     },
     "fabric-local/read": {
-      "status": "skipped",
-      "reason": "skipped",
-      "detail": "contracts not captured"
+      "status": "captured",
+      "era": "legacy",
+      "protocol": "2025-11-25",
+      "server": {
+        "name": "Fabric MCP Server",
+        "version": "1.6.0"
+      },
+      "package_version": "1.6.0",
+      "tools": {
+        "core_get-capacity": {
+          "schema": "sha256:7dd48063f2657979742f7685c7fcae7a0dda95a629cd62823bac39f5adc4e77a",
+          "read_only": true,
+          "destructive": false,
+          "idempotent": true
+        },
+        "core_get-item": {
+          "schema": "sha256:8cd129e35eeb5d24ef22a19ca65fee822638c71157a656fadbf16be2c94b7c31",
+          "read_only": true,
+          "destructive": false,
+          "idempotent": true
+        },
+        "core_get-operation-result": {
+          "schema": "sha256:8db03ca70f94cc29b533c37979a9c8d0f863d0bea03d1554a9744c7caef68462",
+          "read_only": true,
+          "destructive": false,
+          "idempotent": true
+        },
+        "core_get-operation-state": {
+          "schema": "sha256:8db03ca70f94cc29b533c37979a9c8d0f863d0bea03d1554a9744c7caef68462",
+          "read_only": true,
+          "destructive": false,
+          "idempotent": true
+        },
+        "core_get-workspace": {
+          "schema": "sha256:6a0b465dfa4b3490081a7eb3f62e3a28cee7208aa5425dbd4c002b07816a7da8",
+          "read_only": true,
+          "destructive": false,
+          "idempotent": true
+        },
+        "core_list-capacities": {
+          "schema": "sha256:15a4a241b99afab1a6c954ac4dc1ebe757a1bf562c3be30ea7fd19ed5dcc87c9",
+          "read_only": true,
+          "destructive": false,
+          "idempotent": true
+        },
+        "core_list-items": {
+          "schema": "sha256:63efef05c3e02f60b68af8a41ea3831a3ece69026a753aba62efa96d18a27a06",
+          "read_only": true,
+          "destructive": false,
+          "idempotent": true
+        },
+        "core_list-workspaces": {
+          "schema": "sha256:f9240cfb40ebf510a8b95c1a765d9a6a9604765584a7ab9538b476551b80497c",
+          "read_only": true,
+          "destructive": false,
+          "idempotent": true
+        },
+        "core_search-catalog": {
+          "schema": "sha256:92190e770e45fdf301349b3faaa944b935246efae55ce8257dbe99b4ffc66f43",
+          "read_only": true,
+          "destructive": false,
+          "idempotent": true
+        },
+        "datafactory_execute-query": {
+          "schema": "sha256:f8cb14329f427b7734491c1556dad06718929172357e698ada033a3bc025accb",
+          "read_only": true,
+          "destructive": false,
+          "idempotent": true
+        },
+        "datafactory_get-pipeline": {
+          "schema": "sha256:452629b5a9c4b6c184b0a8647b6d498c3edfd31c60225caa8a536ea3efdd9cc7",
+          "read_only": true,
+          "destructive": false,
+          "idempotent": true
+        },
+        "datafactory_list-dataflows": {
+          "schema": "sha256:bea4a1323e37a9b370059cd50853d781ccbc8050439bc988768614c27f491866",
+          "read_only": true,
+          "destructive": false,
+          "idempotent": true
+        },
+        "datafactory_list-pipelines": {
+          "schema": "sha256:bea4a1323e37a9b370059cd50853d781ccbc8050439bc988768614c27f491866",
+          "read_only": true,
+          "destructive": false,
+          "idempotent": true
+        },
+        "docs_api-examples": {
+          "schema": "sha256:70d53fb0ff0296c4595e27c893ee7d357e1f2a7ece508ceda58ff14abad51630",
+          "read_only": true,
+          "destructive": false,
+          "idempotent": true
+        },
+        "docs_best-practices": {
+          "schema": "sha256:0c3ac7037bf4c2d405eea260e46499ba07c2c016dd6df89c2a997d2b6e25fd70",
+          "read_only": true,
+          "destructive": false,
+          "idempotent": true
+        },
+        "docs_item-api-spec": {
+          "schema": "sha256:70d53fb0ff0296c4595e27c893ee7d357e1f2a7ece508ceda58ff14abad51630",
+          "read_only": true,
+          "destructive": false,
+          "idempotent": true
+        },
+        "docs_item-definitions": {
+          "schema": "sha256:70d53fb0ff0296c4595e27c893ee7d357e1f2a7ece508ceda58ff14abad51630",
+          "read_only": true,
+          "destructive": false,
+          "idempotent": true
+        },
+        "docs_list-item-types": {
+          "schema": "sha256:99334726611ccf58a148b0814696bfa6fe08c1b2d027e946beccf5a74331c9aa",
+          "read_only": true,
+          "destructive": false,
+          "idempotent": true
+        },
+        "docs_platform-api-spec": {
+          "schema": "sha256:99334726611ccf58a148b0814696bfa6fe08c1b2d027e946beccf5a74331c9aa",
+          "read_only": true,
+          "destructive": false,
+          "idempotent": true
+        },
+        "onelake_download-file": {
+          "schema": "sha256:7022b4a9507635da8bcdc00e8f920496171b9a87865896c6fa64a854d52b8c83",
+          "read_only": true,
+          "destructive": false,
+          "idempotent": true
+        },
+        "onelake_get-data-access-role": {
+          "schema": "sha256:057d4800a93ee0832627727b783ddf751fa5b52435eef99373911330debb7e15",
+          "read_only": true,
+          "destructive": false,
+          "idempotent": true
+        },
+        "onelake_get-settings": {
+          "schema": "sha256:7e74c7a8f4e10b95e874482e20346621436db8f1dffe0738abeb09313c9bec44",
+          "read_only": true,
+          "destructive": false,
+          "idempotent": true
+        },
+        "onelake_get-shortcut": {
+          "schema": "sha256:7986f7814a74409d82eae9f37b66d3e39f3f2c97ab9e70ccd2082d98c77ebf1d",
+          "read_only": true,
+          "destructive": false,
+          "idempotent": true
+        },
+        "onelake_get-table": {
+          "schema": "sha256:ffee7c36ca4f8f67754dde1483d7717249b298a7cf54a630b85f637da069ca47",
+          "read_only": true,
+          "destructive": false,
+          "idempotent": true
+        },
+        "onelake_get-table-config": {
+          "schema": "sha256:e01064057dc818347aa1ef82abef95eae9b69dc9755ebeeeb22e53c801f6ce53",
+          "read_only": true,
+          "destructive": false,
+          "idempotent": true
+        },
+        "onelake_get-table-namespace": {
+          "schema": "sha256:f03d9c2c013f8b45cf6c0407245341bd5ffb07ac5a6a8e5e0d770e818d3996b5",
+          "read_only": true,
+          "destructive": false,
+          "idempotent": true
+        },
+        "onelake_list-data-access-roles": {
+          "schema": "sha256:4f38ebbdc788bc14b5cf99b771bd5446685d888d0009b9bde4854f4edfcc5c83",
+          "read_only": true,
+          "destructive": false,
+          "idempotent": true
+        },
+        "onelake_list-files": {
+          "schema": "sha256:fc164323cdf2a48ba6b3c4499a889d8a5c2c2f09c3951b37c6dea8a5eba6bc8d",
+          "read_only": true,
+          "destructive": false,
+          "idempotent": true
+        },
+        "onelake_list-items": {
+          "schema": "sha256:ec45c04ab5070baa363ba6bdf66b4076785a99fda75990c55a395bfe315a024b",
+          "read_only": true,
+          "destructive": false,
+          "idempotent": true
+        },
+        "onelake_list-items-dfs": {
+          "schema": "sha256:e273998aeabb5b71451cc387d628a3fd02e5495d5f0245c4f1bd131fbd498d7b",
+          "read_only": true,
+          "destructive": false,
+          "idempotent": true
+        },
+        "onelake_list-shortcuts": {
+          "schema": "sha256:472f78655c334c76260916b93d0636e6373dcb70bc85d59c40f1f2e0d9796ce0",
+          "read_only": true,
+          "destructive": false,
+          "idempotent": true
+        },
+        "onelake_list-table-namespaces": {
+          "schema": "sha256:e01064057dc818347aa1ef82abef95eae9b69dc9755ebeeeb22e53c801f6ce53",
+          "read_only": true,
+          "destructive": false,
+          "idempotent": true
+        },
+        "onelake_list-tables": {
+          "schema": "sha256:f03d9c2c013f8b45cf6c0407245341bd5ffb07ac5a6a8e5e0d770e818d3996b5",
+          "read_only": true,
+          "destructive": false,
+          "idempotent": true
+        },
+        "onelake_list-workspaces": {
+          "schema": "sha256:c04800ef83c9998782ca5d97b0c8d60751f2d88d071873badd223900be1f9ec4",
+          "read_only": true,
+          "destructive": false,
+          "idempotent": true
+        }
+      }
     },
     "fabric-rti-local/default": {
-      "status": "skipped",
-      "reason": "skipped",
-      "detail": "contracts not captured"
+      "status": "captured",
+      "era": "legacy",
+      "protocol": "2025-11-25",
+      "server": {
+        "name": "fabric-rti-mcp-server",
+        "version": "1.30.0"
+      },
+      "package_version": "0.6.2",
+      "tools": {
+        "activator_create_trigger": {
+          "schema": "sha256:9d5ae27bd73094fa9bba8f9c69add572ce52238674674038322ed165c54c0a35",
+          "read_only": false,
+          "destructive": true,
+          "idempotent": null
+        },
+        "activator_list_artifacts": {
+          "schema": "sha256:0f719286e1daebc4e1680b454b9a8b203949bd90a2952174325be3d83390e59d",
+          "read_only": true,
+          "destructive": false,
+          "idempotent": null
+        },
+        "eventstream_add_custom_endpoint_destination": {
+          "schema": "sha256:49b889a8032a162e0776926db07167d05cec5d3cdd62fe5e15e69b6e0bb4eae8",
+          "read_only": false,
+          "destructive": false,
+          "idempotent": null
+        },
+        "eventstream_add_custom_endpoint_source": {
+          "schema": "sha256:0194f1333bcba454edb728ef401eb0f2f6e61583ff35317aa9459be25637f11d",
+          "read_only": false,
+          "destructive": false,
+          "idempotent": null
+        },
+        "eventstream_add_derived_stream": {
+          "schema": "sha256:2d8de61bd9afb989416eda34ae3fb44863f4bed955538afbed939e7ad88bac64",
+          "read_only": false,
+          "destructive": false,
+          "idempotent": null
+        },
+        "eventstream_add_eventhouse_destination": {
+          "schema": "sha256:a8c653fde08f395f7eb7a39c22dba150afd53e4b2ff87f8730e9a727de167016",
+          "read_only": false,
+          "destructive": false,
+          "idempotent": null
+        },
+        "eventstream_add_sample_data_source": {
+          "schema": "sha256:9378f80a47283424a3660202fdccd32a3f44003f6e9659c26f2fe6162d5f3a2b",
+          "read_only": false,
+          "destructive": false,
+          "idempotent": null
+        },
+        "eventstream_clear_definition": {
+          "schema": "sha256:80e88442b11a7138105a2a70dc1adfbf405df2ad551440841e5d7a524f10e57b",
+          "read_only": false,
+          "destructive": true,
+          "idempotent": null
+        },
+        "eventstream_create": {
+          "schema": "sha256:62f69c96e95e393a925ce23f8dc11d427ab342379e98b2e1ea14a0963ee0a3c2",
+          "read_only": false,
+          "destructive": true,
+          "idempotent": null
+        },
+        "eventstream_create_from_definition": {
+          "schema": "sha256:2878eceeea7b6c79b156d2084b1d9bafb3ef28860e2df27e268c99cdc3fbc3ca",
+          "read_only": false,
+          "destructive": true,
+          "idempotent": null
+        },
+        "eventstream_delete": {
+          "schema": "sha256:c12eeca0891f468f0d5533bf640338c15b4065b9b8768b90b82ba7ee8e9ac470",
+          "read_only": false,
+          "destructive": true,
+          "idempotent": null
+        },
+        "eventstream_get": {
+          "schema": "sha256:5a2df9ccea53905bfa46ce9d431c2db9d3b99254484566d87b29fe0da1045295",
+          "read_only": true,
+          "destructive": false,
+          "idempotent": null
+        },
+        "eventstream_get_current_definition": {
+          "schema": "sha256:f0c1fec5f8605942f985bfe96e2e61113da35a581726e43cdbb9e234a2ac033d",
+          "read_only": true,
+          "destructive": false,
+          "idempotent": null
+        },
+        "eventstream_get_definition": {
+          "schema": "sha256:dbbf0f9b0bec1b68f2f779930950497a605404abe66865cb40118fef259e3935",
+          "read_only": true,
+          "destructive": false,
+          "idempotent": null
+        },
+        "eventstream_list": {
+          "schema": "sha256:dc83a3530af1d0f7458f74f370f905dacab8b5ded03a806ada3a817cd33a2bcf",
+          "read_only": true,
+          "destructive": false,
+          "idempotent": null
+        },
+        "eventstream_list_available_components": {
+          "schema": "sha256:9ea7a586ce93facfac2752b090acc9a33efe5992e1d96a781b1b763dce269797",
+          "read_only": true,
+          "destructive": false,
+          "idempotent": null
+        },
+        "eventstream_start_definition": {
+          "schema": "sha256:3dedb4bca990bd4da4c68bd293cfe8ae5598a5dee096419fc126cde58edd2df6",
+          "read_only": false,
+          "destructive": false,
+          "idempotent": null
+        },
+        "eventstream_update": {
+          "schema": "sha256:9b52501781bdda57dd8bf7da3a607b8e6a76f6b68b55532c7dba5bd41d8be680",
+          "read_only": false,
+          "destructive": true,
+          "idempotent": null
+        },
+        "eventstream_validate_definition": {
+          "schema": "sha256:dffa1efe34b39fbfe301db4e7795d77fb6b3d7cf220941e8f0ea02e415b4e6f1",
+          "read_only": true,
+          "destructive": false,
+          "idempotent": null
+        },
+        "kusto_command": {
+          "schema": "sha256:e6dcdee6bcd44433821c75038a69a322e4d2dfbc06c0bad648f77ada7cb9ed3d",
+          "read_only": false,
+          "destructive": true,
+          "idempotent": null
+        },
+        "kusto_deeplink_from_query": {
+          "schema": "sha256:332d6db17b356f2a065346f3de9a1bcbd54dcc13a7213e2012fc15ec5416faec",
+          "read_only": true,
+          "destructive": false,
+          "idempotent": null
+        },
+        "kusto_describe_database": {
+          "schema": "sha256:e780ea0ee1af33a6798c3b7aa282f7f365ebdbf976165c6644c238dbb28d3d6b",
+          "read_only": true,
+          "destructive": false,
+          "idempotent": null
+        },
+        "kusto_describe_database_entity": {
+          "schema": "sha256:d5866ac329db87970e3df3a4a988fa294682c425d8fb7765b0aff380e656cc07",
+          "read_only": true,
+          "destructive": false,
+          "idempotent": null
+        },
+        "kusto_diagnostics": {
+          "schema": "sha256:6f926b441360d5fdec74611efc063134d93fa93c04fc9de754d7e4d590d548da",
+          "read_only": true,
+          "destructive": false,
+          "idempotent": null
+        },
+        "kusto_graph_query": {
+          "schema": "sha256:eab3e66ca6ab173fba93f192d13957dd10245dedf72c2eaefeb9778cf69a20ba",
+          "read_only": true,
+          "destructive": false,
+          "idempotent": null
+        },
+        "kusto_ingest_inline_into_table": {
+          "schema": "sha256:e99e7c3f64e95c568ac068e099853e48bca4b90e44f2e9e6def695f207e9592e",
+          "read_only": false,
+          "destructive": false,
+          "idempotent": null
+        },
+        "kusto_known_services": {
+          "schema": "sha256:1d2959f2cf06604459d21cc550893feb05267fb19228b294840d8f4159f6c393",
+          "read_only": true,
+          "destructive": false,
+          "idempotent": null
+        },
+        "kusto_list_entities": {
+          "schema": "sha256:24aea2ad6ea947160d125ca61eae23f5f3a1f5224bb087a7d453e0bdd9ce92d4",
+          "read_only": true,
+          "destructive": false,
+          "idempotent": null
+        },
+        "kusto_query": {
+          "schema": "sha256:8991599830fc7c05dfd0c5897b92e8d7c78468b4e7789d36e44c6120c9939eea",
+          "read_only": true,
+          "destructive": false,
+          "idempotent": null
+        },
+        "kusto_sample_entity": {
+          "schema": "sha256:639852fa0ffea67c2d754557e24e73ef42e94e4d9f0b464b83114b352bc98e00",
+          "read_only": true,
+          "destructive": false,
+          "idempotent": null
+        },
+        "kusto_show_command": {
+          "schema": "sha256:04caaeb3e3105c861d8784489c8ce62038464d79ac23825074754dbc45e29c40",
+          "read_only": true,
+          "destructive": false,
+          "idempotent": null
+        },
+        "kusto_show_queryplan": {
+          "schema": "sha256:30206df725cf7b79fc5ab731a2061773100c2d17d62b9a729ea06276dfd35a85",
+          "read_only": true,
+          "destructive": false,
+          "idempotent": null
+        },
+        "map_create": {
+          "schema": "sha256:ba7f9b36143b897b3e54cba0917c821c0afaa32b983186160c9cf534966a7c51",
+          "read_only": false,
+          "destructive": true,
+          "idempotent": null
+        },
+        "map_delete": {
+          "schema": "sha256:d7932fe56332a5f3b54c19eb58e6dae5cc557eb0d35f6c68876e210e234374cd",
+          "read_only": false,
+          "destructive": true,
+          "idempotent": null
+        },
+        "map_get": {
+          "schema": "sha256:f54640032368ae949c31a19abb26e058166d07157de006e1210a4dff4c05d047",
+          "read_only": true,
+          "destructive": false,
+          "idempotent": null
+        },
+        "map_get_definition": {
+          "schema": "sha256:66a77b38fa2b4e5bcf18beda817ed4ecce6d4af7e66d68c3828f8614ef349aa0",
+          "read_only": true,
+          "destructive": false,
+          "idempotent": null
+        },
+        "map_list": {
+          "schema": "sha256:30c85626c0e583f863358e7eadb31588120fe1c2fefb9cfbcdb7624db3e3fe48",
+          "read_only": true,
+          "destructive": false,
+          "idempotent": null
+        },
+        "map_update": {
+          "schema": "sha256:eaa27119f947122951e81ed5a8157363e451a960a31584ba516e274703df5141",
+          "read_only": false,
+          "destructive": true,
+          "idempotent": null
+        },
+        "map_update_definition": {
+          "schema": "sha256:24b1ab119da75dd7a9e807238a31ea7a7affda7fd90c3b22f5e9704e0b115250",
+          "read_only": false,
+          "destructive": true,
+          "idempotent": null
+        }
+      }
     },
     "fabric-sql/default": {
-      "status": "skipped",
-      "reason": "skipped",
-      "detail": "contracts not captured"
+      "status": "needs-sign-in"
     },
     "microsoft-learn/default": {
-      "status": "skipped",
-      "reason": "skipped",
-      "detail": "contracts not captured"
+      "status": "open"
     },
     "powerbi-authoring-local/interactive": {
       "status": "skipped",
       "reason": "skipped",
-      "detail": "contracts not captured"
+      "detail": "license not accepted"
     },
     "powerbi-authoring-local/offline-readonly": {
       "status": "skipped",
       "reason": "skipped",
-      "detail": "contracts not captured"
+      "detail": "license not accepted"
     },
     "powerbi-authoring-local/service-readonly": {
       "status": "skipped",
       "reason": "skipped",
-      "detail": "contracts not captured"
+      "detail": "license not accepted"
     },
     "powerbi-authoring-remote/default": {
-      "status": "skipped",
-      "reason": "skipped",
-      "detail": "contracts not captured"
+      "status": "needs-sign-in"
     }
   }
 }

@@ -14,6 +14,7 @@ Standard library only.
 
 from __future__ import annotations
 
+import base64
 import fnmatch
 import hashlib
 import json
@@ -22,6 +23,7 @@ import re
 import shutil
 import stat
 import sys
+import tempfile
 import urllib.parse
 from pathlib import Path
 from typing import NamedTuple
@@ -35,7 +37,8 @@ from toolchain_io import WINDOWS, SystemRunner, safe_detail  # noqa: E402
 MAX_TREE_BYTES = 100 * 1024 * 1024
 MAX_TREE_FILES = 5000
 MAX_LINT_FILE = 2 * 1024 * 1024
-GIT_ENV = {"GIT_TERMINAL_PROMPT": "0"}
+MAX_NUPKG = 200 * 1024 * 1024
+NUPKG_TOTAL = 300  # seconds for the whole download of a package
 LOCAL_TIMEOUT = 120
 NETWORK_TIMEOUT = 300
 NPM_TIMEOUT = 90
@@ -80,6 +83,25 @@ def _combine(entries):
     return {"digest": "sha256:" + outer.hexdigest(), "files": files, "bytes": size}
 
 
+def _junction(info):
+    """True for the stat result of a Windows junction (a mount point). Other reparse points, such as a cloud file that is not
+    downloaded yet, are ordinary files and folders."""
+    return (bool(getattr(info, "st_file_attributes", 0) & stat.FILE_ATTRIBUTE_REPARSE_POINT)
+            and getattr(info, "st_reparse_tag", 0) == stat.IO_REPARSE_TAG_MOUNT_POINT)
+
+
+def _entry_is_link(entry):
+    """A symbolic link, or on Windows a junction. Neither is ever followed: it only points somewhere else."""
+    if entry.is_symlink():
+        return True
+    if not WINDOWS:
+        return False
+    try:
+        return _junction(entry.stat(follow_symlinks=False))
+    except OSError:
+        raise _fail("unresolved", "cannot read a folder") from None
+
+
 def _walk(directory, prefix="", top=True):
     """(relative POSIX path, full path, is a link) of every file and link below a folder. A top-level .git is skipped."""
     try:
@@ -91,7 +113,7 @@ def _walk(directory, prefix="", top=True):
         if top and entry.name == ".git":
             continue
         rel = prefix + entry.name
-        if entry.is_symlink():
+        if _entry_is_link(entry):
             yield rel, entry.path, True
         elif entry.is_dir(follow_symlinks=False):
             yield from _walk(entry.path, rel + "/", False)
@@ -147,7 +169,9 @@ def _relative(path, what="path"):
 
 
 def _check_url(url):
-    """Only https and file addresses are used; returns True for a file address. Anything else never reaches git."""
+    """Only https and file addresses are used; returns True for a file address. Anything else never reaches git.
+
+    A file address must have an empty host part (file:///path): with a host it names a network share."""
     try:
         parts = urllib.parse.urlsplit(url) if isinstance(url, str) else None
     except ValueError:
@@ -156,15 +180,40 @@ def _check_url(url):
         raise _fail("unresolved", "unsupported repository url")
     if parts.scheme not in ("https", "file") or (parts.scheme == "https" and not parts.hostname):
         raise _fail("unresolved", "unsupported repository url")
+    if parts.scheme == "file" and (parts.netloc or not parts.path.startswith("/") or parts.path.startswith("//")
+                                   or "\\" in url or parts.query or parts.fragment):
+        raise _fail("unresolved", "unsupported repository url")
     return parts.scheme == "file"
 
 
+_GIT_CONFIG_DROPPED = ("GIT_CONFIG_COUNT", "GIT_CONFIG_PARAMETERS")
+_GIT_NETWORK_DROPPED = ("GIT_ASKPASS", "GIT_SSH", "GIT_SSH_COMMAND", "SSH_ASKPASS")
+_GIT_NUMBERED = re.compile(r"GIT_CONFIG_(?:KEY|VALUE)_[0-9]+", re.IGNORECASE)
+
+
+def _git_env(network=False, file_url=False):
+    """The environment overlay of a git call. Git reads no configuration file of the operator or of the system, takes no setting from
+    GIT_CONFIG_* variables and never asks for a password; a network call also takes no program from GIT_ASKPASS or the ssh variables
+    and may use https only (and file for a file address). A value of None removes the variable that the process inherited."""
+    env = {"GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_NOSYSTEM": "1", "GIT_TERMINAL_PROMPT": "0"}
+    env.update(dict.fromkeys(_GIT_CONFIG_DROPPED))
+    env.update(dict.fromkeys(name for name in os.environ if _GIT_NUMBERED.fullmatch(name)))
+    if network:
+        env.update(dict.fromkeys(_GIT_NETWORK_DROPPED))
+        env["GIT_ALLOW_PROTOCOL"] = "https:file" if file_url else "https"
+    return env
+
+
 def _network_argv(url, *args):
-    """git without any stored credential; the file protocol is allowed only for a file address (tests and local mirrors)."""
-    argv = ["git", "-c", "credential.helper="]
+    """git without any stored credential and without the ext transport; the file protocol is allowed only for a file address."""
+    argv = ["git", "-c", "protocol.ext.allow=never", "-c", "credential.helper="]
     if _check_url(url):
         argv += ["-c", "protocol.file.allow=always"]
     return argv + list(args)
+
+
+def _network_env(url):
+    return _git_env(True, _check_url(url))
 
 
 _GIT_FAILURES = (
@@ -197,11 +246,11 @@ def _git_failure(result):
 def _run_bytes(runner, argv, *, input=None, timeout=LOCAL_TIMEOUT):
     """Binary-safe run. A stand-in runner without run_bytes gets the real one: reading a local object store needs no network."""
     method = getattr(runner, "run_bytes", None) or SystemRunner().run_bytes
-    return method(argv, env=GIT_ENV, timeout=timeout, input=input)
+    return method(argv, env=_git_env(), timeout=timeout, input=input)
 
 
 def _has_commit(runner, git_dir, sha):
-    result = runner.run(["git", "--git-dir", str(git_dir), "cat-file", "-e", sha + "^{commit}"], env=GIT_ENV, timeout=60)
+    result = runner.run(["git", "--git-dir", str(git_dir), "cat-file", "-e", sha + "^{commit}"], env=_git_env(), timeout=60)
     return result.returncode == 0
 
 
@@ -297,7 +346,7 @@ def _highest(names):
 
 
 def _ls_remote(url, runner, kind):
-    result = runner.run(_network_argv(url, "ls-remote", kind, url), env=GIT_ENV, timeout=NETWORK_TIMEOUT)
+    result = runner.run(_network_argv(url, "ls-remote", kind, url), env=_network_env(url), timeout=NETWORK_TIMEOUT)
     if result.returncode != 0:
         raise _git_failure(result)
     refs = {}
@@ -353,11 +402,11 @@ def fetch_git(url, commit, dest, runner=None):
     if dest.is_dir() and _has_commit(runner, dest, sha):
         return dest
     dest.mkdir(parents=True, exist_ok=True)
-    created = runner.run(["git", "init", "--bare", "--quiet", str(dest)], env=GIT_ENV, timeout=60)
+    created = runner.run(["git", "init", "--bare", "--quiet", str(dest)], env=_git_env(), timeout=60)
     if created.returncode != 0:
         raise _git_failure(created)
     fetched = runner.run(_network_argv(url, "--git-dir", str(dest), "fetch", "--quiet", "--depth", "1", "--no-tags", url, sha),
-                         env=GIT_ENV, timeout=NETWORK_TIMEOUT)
+                         env=_network_env(url), timeout=NETWORK_TIMEOUT)
     if fetched.returncode != 0:
         raise _git_failure(fetched)
     if not _has_commit(runner, dest, sha):
@@ -373,7 +422,6 @@ _NAME = re.compile(r"[a-z0-9]+(?:-[a-z0-9]+)*")
 _ESCAPES = {"0": "\x00", "a": "\x07", "b": "\x08", "t": "\t", "\t": "\t", "n": "\n", "v": "\x0b", "f": "\x0c", "r": "\r", "e": "\x1b",
             " ": " ", '"': '"', "/": "/", "\\": "\\", "N": "\x85", "_": "\xa0", "L": "\u2028", "P": "\u2029"}
 _HEX_WIDTH = {"x": 2, "u": 4, "U": 8}
-_HINT_ENDINGS = (".md", ".txt", ".json", ".py", ".ps1", ".sh", ".yml", ".yaml")
 _HINT = re.compile(
     r"(?<![\w.-])(?:"
     r"(?:python3?|py)[ \t]+-m[ \t]+pip3?[ \t]+install\b|uv[ \t]+pip[ \t]+install\b|pip3?[ \t]+install\b"
@@ -520,15 +568,28 @@ def _frontmatter(text):
     return fields, problems
 
 
+_BINARY_HEAD = 64 * 1024
+
+
+def _label(rel):
+    """A relative path as text that may be shown: letters, digits and . _ space / -, anything else is ?, at most 80 characters."""
+    return re.sub(r"[^A-Za-z0-9._ /-]", "?", rel)[:80]
+
+
+def _is_text(data):
+    """Text is what has no NUL byte, the rule of the digest. Of a file that is over the limit only the beginning is looked at."""
+    return b"\x00" not in (data if len(data) <= MAX_LINT_FILE else data[:_BINARY_HEAD])
+
+
 def _count_hints(files):
     total = 0
-    for rel, data in files.items():
-        if rel.lower().endswith(_HINT_ENDINGS) and len(data) <= MAX_LINT_FILE:
+    for data in files.values():
+        if len(data) <= MAX_LINT_FILE and _is_text(data):
             total += len(_HINT.findall(data.decode("utf-8", "replace")))
     return total
 
 
-def _lint_files(files, dirname):
+def _lint_body(files, dirname):
     """The lint of a skill given as {relative path: bytes}. `dirname` is the name of its folder."""
     result = {"name": None, "name_ok": False, "description_chars": 0, "frontmatter_ok": False, "install_hints": _count_hints(files), "findings": []}
     findings = result["findings"]
@@ -572,18 +633,46 @@ def _lint_files(files, dirname):
     return result
 
 
+def _lint_files(files, dirname, unread=(), beyond=None):
+    """The lint of a skill given as {relative path: bytes}: every text file is scanned for install commands. A text file that is
+    over MAX_LINT_FILE (`unread` names those that were not even read) and a skill that is over the tree limits (`beyond` names the
+    first file past them) are findings, added after the others."""
+    result = _lint_body(files, dirname)
+    too_large = {rel for rel, data in files.items() if len(data) > MAX_LINT_FILE and _is_text(data)} | set(unread)
+    result["findings"].extend("file too large to scan: " + _label(rel) for rel in sorted(too_large))
+    if beyond is not None:
+        result["findings"].append("skill too large to scan from: " + _label(beyond))
+    return result
+
+
 def lint_skill(root):
     """Lint a skill folder on disk: {"name", "name_ok", "description_chars", "frontmatter_ok", "install_hints", "findings"}."""
     root = Path(root)
-    files = {}
+    files, unread, beyond = {}, [], None
     if root.is_dir():
+        count = total = 0
         for rel, path, is_link in _walk(str(root)):
-            if is_link or not (rel == "SKILL.md" or rel.lower().endswith(_HINT_ENDINGS)):
+            if is_link:
                 continue
-            if rel != "SKILL.md" and os.path.getsize(path) > MAX_LINT_FILE:
+            try:
+                size = os.path.getsize(path)
+            except OSError:
+                raise _fail("unresolved", "cannot read a file") from None
+            count, total = count + 1, total + size
+            if count > MAX_TREE_FILES or total > MAX_TREE_BYTES:
+                beyond = rel
+                break
+            if size > MAX_LINT_FILE and rel != "SKILL.md":
+                try:
+                    with open(path, "rb") as handle:
+                        head = handle.read(_BINARY_HEAD)
+                except OSError:
+                    raise _fail("unresolved", "cannot read a file") from None
+                if b"\x00" not in head:
+                    unread.append(rel)
                 continue
             files[rel] = _read_entry(path, False)
-    return _lint_files(files, root.resolve().name if root.name in ("", ".") else root.name)
+    return _lint_files(files, root.resolve().name if root.name in ("", ".") else root.name, unread, beyond)
 
 
 # ---- plugins -----------------------------------------------------------------------------------------------------
@@ -600,13 +689,60 @@ def _json_of(data):
         return None
 
 
-def read_plugin(git_dir, commit, plugin_path, runner=None):
-    """The skills, agents and bundled MCP server names of one plugin at a commit, read from git objects."""
+_SHARED_NAME = re.compile(r"[a-z0-9][a-z0-9._-]{0,63}")
+
+
+def _shared_folder(name):
+    """A folder that skills of a plugin share: a plain lower-case name, never the skills folder or a name that a file system reads
+    as another (CON, a trailing dot)."""
+    return (isinstance(name, str) and _SHARED_NAME.fullmatch(name) is not None and name != "skills" and name == name.rstrip(". ")
+            and not _RESERVED.fullmatch(name))
+
+
+def _shared_names(shared):
+    """The distinct names of a request for shared folders (a tuple, a list or one bare name), checked before git is used."""
+    if shared is None:
+        return ()
+    names = (shared,) if isinstance(shared, str) else tuple(shared)
+    for name in names:
+        if not _shared_folder(name):
+            raise _fail("unresolved", "bad shared folder name")
+    return tuple(sorted(set(names)))
+
+
+def _shared_entries_of(listing, folder):
+    """The files of one shared folder out of the listing of its plugin, with paths relative to the folder ([] when it is not there).
+
+    A shared folder is copied as it is, so a link in it is refused, and it has the limits of a skill."""
+    prefix = folder + "/"
+    entries = [entry._replace(path=entry.path[len(prefix):]) for entry in listing if entry.path.startswith(prefix)]
+    if not entries:
+        return []
+    if any(entry.mode == "120000" for entry in entries):
+        raise _fail("unresolved", "a link inside a shared folder")
+    if len(entries) > MAX_TREE_FILES or sum(entry.size for entry in entries) > MAX_TREE_BYTES:
+        raise _fail("unresolved", "shared folder too large")
+    return entries
+
+
+def _mcp_names(servers):
+    """The names of the MCP servers that a plugin bundles. A name that is not a plain label is cleaned, or is the word unknown."""
+    if not isinstance(servers, dict):
+        return []
+    return sorted(name if _SERVER_NAME.fullmatch(name) else (safe_detail(name, 64) or "unknown") for name in servers if isinstance(name, str))
+
+
+def read_plugin(git_dir, commit, plugin_path, runner=None, shared=()):
+    """The skills, agents, bundled MCP server names and the asked-for shared folders of one plugin at a commit, read from git objects.
+
+    `shared` names folders at the root of the plugin (a tuple of names). Each gets {"digest", "files", "bytes"}, the digest of a skill
+    over the files below it; a folder that is not there is an error."""
     runner = runner or SystemRunner()
     sha = _sha(commit)
     base = _relative(plugin_path, "plugin path")
     if not base:
         raise _fail("unresolved", "unsafe plugin path")
+    folders = _shared_names(shared)
     listing = _tree_entries(runner, git_dir, sha, base, limits=False)
     grouped, wanted = {}, {}
     for entry in listing:
@@ -626,8 +762,7 @@ def read_plugin(git_dir, commit, plugin_path, runner=None):
     names = []
     if ".mcp.json" in wanted:
         document = _json_of(extra[wanted[".mcp.json"].sha])
-        servers = (document.get("mcpServers") or document.get("servers")) if isinstance(document, dict) else None
-        names = sorted(name if _SERVER_NAME.fullmatch(name) else safe_detail(name, 64) for name in servers if isinstance(name, str)) if isinstance(servers, dict) else []
+        names = _mcp_names((document.get("mcpServers") or document.get("servers")) if isinstance(document, dict) else None)
     agents = sorted(entry.path[len("agents/"):] for entry in listing
                     if entry.path.startswith("agents/") and entry.path.count("/") == 1 and entry.path.endswith(".md"))
     skills = {}
@@ -640,10 +775,31 @@ def read_plugin(git_dir, commit, plugin_path, runner=None):
         blobs = _read_blobs(runner, git_dir, [entry.sha for entry in entries])
         contents = {entry.path: blobs[entry.sha] for entry in entries}
         tree = _combine((rel,) + _hashed(data) for rel, data in contents.items())
-        lint = _lint_files({rel: data for rel, data in contents.items() if rel == "SKILL.md" or rel.lower().endswith(_HINT_ENDINGS)}, name)
+        lint = _lint_files(contents, name)
         skills[name] = {"path": "%s/skills/%s" % (base, name), "digest": tree["digest"], "files": tree["files"], "bytes": tree["bytes"],
                         "description_chars": lint["description_chars"], "install_hints": lint["install_hints"], "findings": lint["findings"]}
-    return {"version": version, "skills": skills, "agents": agents, "bundled_mcp": names}
+    common = {}
+    for folder in folders:
+        entries = _shared_entries_of(listing, folder)
+        if not entries:
+            raise _fail("unresolved", "shared folder not found")
+        blobs = _read_blobs(runner, git_dir, [entry.sha for entry in entries])
+        common[folder] = _combine((entry.path,) + _hashed(blobs[entry.sha]) for entry in entries)
+    return {"version": version, "skills": skills, "agents": agents, "bundled_mcp": names, "shared": common}
+
+
+def read_shared_entries(git_dir, commit, plugin_path, folder, runner=None):
+    """{relative path: "sha256:<hex>"} for every file of one shared folder of a plugin at a commit: the hash of the content as the digest
+    reads it (text with CRLF as LF). {} when the folder is not there."""
+    runner = runner or SystemRunner()
+    sha = _sha(commit)
+    base = _relative(plugin_path, "plugin path")
+    if not base:
+        raise _fail("unresolved", "unsafe plugin path")
+    (name,) = _shared_names((folder,))
+    entries = _shared_entries_of(_tree_entries(runner, git_dir, sha, base, limits=False), name)
+    blobs = _read_blobs(runner, git_dir, [entry.sha for entry in entries])
+    return {entry.path: "sha256:" + _hashed(blobs[entry.sha])[0].hex() for entry in entries}
 
 
 # ---- packages ----------------------------------------------------------------------------------------------------
@@ -725,10 +881,16 @@ def _npm_candidates(payload):
 def _npm_cli(runner, name, pin):
     spec = name if pin is None else name + "@" + pin
     try:
-        result = runner.run(["npm", "view", spec, "version", "dist.integrity", "--json"], timeout=NPM_TIMEOUT)
+        work = tempfile.mkdtemp(prefix="toolchain-npm-")
+    except OSError:
+        return None, ("npm failed", "fail")
+    try:
+        result = runner.run(["npm", "view", spec, "version", "dist.integrity", "--json"], cwd=work, timeout=NPM_TIMEOUT)
         returncode, stdout, stderr = int(result.returncode), result.stdout or "", result.stderr or ""
     except Exception:  # a runner never raises, but a stand-in might
         return None, ("npm failed", "fail")
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
     if returncode == 127:
         return None, ("npm missing", "skip")
     if returncode == 124:
@@ -750,6 +912,8 @@ def _npm_cli(runner, name, pin):
     best = max(releases or candidates, key=lambda item: _version_key(item[0])) if candidates else None
     if best is None:
         return None, ("npm bad answer", "bad")
+    if best[1] is None:
+        return None, ("npm no integrity", "noint")
     return {"status": "resolved", "version": best[0], "integrity": best[1], "via": "npm-cli"}, None
 
 
@@ -763,42 +927,34 @@ def _npm_registry(runner, name, pin):
     if not isinstance(version, str) or not _EXACT.fullmatch(version):
         return None, ("registry bad answer", "bad")
     if version not in versions:
-        return None, ("registry not found", "notfound") if pin else ("registry bad answer", "bad")
+        return None, ("registry not found", "absent") if pin else ("registry bad answer", "bad")
     dist = versions[version].get("dist") if isinstance(versions[version], dict) else None
     integrity = dist.get("integrity") if isinstance(dist, dict) else None
-    if integrity is not None and not (isinstance(integrity, str) and _INTEGRITY.fullmatch(integrity)):
+    if integrity is None:
+        return None, ("registry no integrity", "noint")
+    if not (isinstance(integrity, str) and _INTEGRITY.fullmatch(integrity)):
         return None, ("registry bad answer", "bad")
     return {"status": "resolved", "version": version, "integrity": integrity, "via": "npm-registry"}, None
 
 
-def _npm_jsdelivr(runner, name, pin):
-    document, failure = _get(runner, "https://data.jsdelivr.com/v1/packages/npm/" + urllib.parse.quote(name, safe="@/"), "jsdelivr")
-    if failure:
-        return None, failure
-    listed = document.get("versions") if isinstance(document.get("versions"), list) else []
-    versions = [item.get("version") if isinstance(item, dict) else item for item in listed]
-    versions = [version for version in versions if isinstance(version, str) and _EXACT.fullmatch(version)]
-    if pin:
-        if pin not in versions:
-            return None, ("jsdelivr not found", "notfound")
-        version = pin
-    else:
-        tags = document.get("tags") if isinstance(document.get("tags"), dict) else {}
-        latest = tags.get("latest")
-        version = latest if isinstance(latest, str) and _EXACT.fullmatch(latest) else _highest(versions)
-    if version is None:
-        return None, ("jsdelivr bad answer", "bad")
-    return {"status": "resolved", "version": version, "integrity": None, "via": "jsdelivr"}, None
-
-
 def _resolve_npm(runner, name, pin):
-    stages = []
-    for stage in (_npm_cli, _npm_registry, _npm_jsdelivr):
-        result, failure = stage(runner, name, pin)
-        if result is not None:
-            return result
-        stages.append(failure)
+    """The npm command line answers first, in a folder of its own so that no project file configures it, and the official registry
+    document is asked next. When both answer they must agree on the version and the integrity; an answer without an integrity is
+    never taken. The official registry may be unreachable: then the command line, the operator's own configuration, stands alone."""
+    cli, cli_failure = _npm_cli(runner, name, pin)
+    registry, registry_failure = _npm_registry(runner, name, pin)
+    if cli and registry:
+        agree = (cli["version"], cli["integrity"]) == (registry["version"], registry["integrity"])
+        return cli if agree else _unresolved("unresolved", "mismatch")
+    if cli:
+        # the document answered but does not list the version that the command line gave
+        return _unresolved("unresolved", "mismatch") if registry_failure[1] == "absent" else cli
+    if registry:
+        return registry
+    stages = [cli_failure, registry_failure]
     kinds = {kind for _, kind in stages}
+    if "noint" in kinds:
+        return _unresolved("unresolved", "no integrity")
     reason = "network" if kinds & {"network", "fail"} else "unresolved"
     return _unresolved(reason, " - ".join(label for label, _ in stages))
 
@@ -826,6 +982,33 @@ def _resolve_pypi(runner, name, pin):
     return {"status": "resolved", "version": version, "sha256": digest, "via": "pypi"}
 
 
+def _nupkg_integrity(runner, name, version):
+    """("sha256-<base64>", None) for the .nupkg of one version, or (None, (detail, reason)). The package is hashed while it is read."""
+    lowered, wanted = urllib.parse.quote(name.lower(), safe=""), urllib.parse.quote(version.lower(), safe="")
+    url = "https://api.nuget.org/v3-flatcontainer/%s/%s/%s.%s.nupkg" % (lowered, wanted, lowered, wanted)
+    stream = getattr(runner, "http_hash", None)
+    digest = error = None
+    try:
+        if stream is not None:
+            answer = stream(url, timeout=HTTP_TIMEOUT, max_bytes=MAX_NUPKG, total=NUPKG_TOTAL)
+            status, digest, error = int(answer.status), answer.sha256, answer.error
+        else:
+            answer = runner.http("GET", url, timeout=HTTP_TIMEOUT)
+            status, error, body = int(answer.status), answer.error, answer.body
+            if status == 200 and not error:
+                if len(body) > MAX_NUPKG:
+                    error = "too-large"
+                else:
+                    digest = hashlib.sha256(body).hexdigest()
+    except Exception:  # a runner never raises, but a stand-in might
+        return None, ("download failed", "network")
+    if error == "too-large":
+        return None, ("package too large", "unresolved")
+    if error or status != 200 or not (isinstance(digest, str) and _HEX64.fullmatch(digest)):
+        return None, (_stage_failure("download", status, error)[0], "network")
+    return "sha256-" + base64.b64encode(bytes.fromhex(digest)).decode("ascii"), None
+
+
 def _resolve_nuget(runner, name, pin):
     url = "https://api.nuget.org/v3-flatcontainer/%s/index.json" % urllib.parse.quote(name.lower(), safe="")
     document, failure = _get(runner, url, "nuget")
@@ -838,14 +1021,18 @@ def _resolve_nuget(runner, name, pin):
     if not keyed:
         return _unresolved("unresolved", "no usable version")
     if pin is not None:
-        wanted = _version_key(pin)
-        match = [text for key, text in keyed if key == wanted]
+        # exactly the version that was asked for, in any letter case: 1.0.0 is not the same text with a fourth part, and not 1.0
+        match = [text for _, text in keyed if text.lower() == pin.lower()]
         if not match:
             return _unresolved("unresolved", "version not found")
-        return {"status": "resolved", "version": match[0], "integrity": None, "via": "nuget"}
-    releases = [item for item in keyed if item[0][1] == 1]
-    best = max(releases or keyed, key=lambda item: item[0])
-    return {"status": "resolved", "version": best[1], "integrity": None, "via": "nuget"}
+        version, listed = pin, match[0]
+    else:
+        releases = [item for item in keyed if item[0][1] == 1]
+        version = listed = max(releases or keyed, key=lambda item: item[0])[1]
+    integrity, failure = _nupkg_integrity(runner, name, listed)
+    if failure:
+        return _unresolved(failure[1], failure[0])
+    return {"status": "resolved", "version": version, "integrity": integrity, "via": "nuget"}
 
 
 _RESOLVERS = {"npm": _resolve_npm, "pypi": _resolve_pypi, "nuget": _resolve_nuget}
@@ -881,7 +1068,7 @@ def _is_link(path):
         return True
     if WINDOWS:
         try:
-            return getattr(os.lstat(path), "st_reparse_tag", 0) == getattr(stat, "IO_REPARSE_TAG_MOUNT_POINT", -1)
+            return _junction(os.lstat(path))
         except OSError:
             return False
     return False
@@ -941,6 +1128,14 @@ def _quarantined(quarantine, source, skill):
     return False
 
 
+def _named(code, text, name):
+    """A SourceError with a skill or folder name in it. A name that passes the name rules is public and is shown as it is (the cleaning
+    of a message would take a long name with a digit for a key); any other name is cleaned like all text."""
+    if _safe_skill_name(name):
+        return SourceError("%s: %s" % (code, (text + " " + name).strip()))
+    return _fail(code, "%s %s" % (text, name))
+
+
 def _pick(lock, selection, quarantine):
     sources = lock.get("skill_sources") if isinstance(lock, dict) else None
     if not isinstance(sources, dict):
@@ -954,24 +1149,58 @@ def _pick(lock, selection, quarantine):
         if not all(isinstance(part, str) for part in (source_id, plugin_name, skill)):
             raise _fail("unresolved", "bad selection")
         if _quarantined(quarantine, source_id, skill):
-            raise _fail("quarantined", skill)
+            raise _named("quarantined", "", skill)
         source = sources.get(source_id)
         plugin = (source.get("plugins") or {}).get(plugin_name) if isinstance(source, dict) else None
         entry = (plugin.get("skills") or {}).get(skill) if isinstance(plugin, dict) else None
         if not isinstance(entry, dict):
-            raise _fail("unresolved", "skill is not in the lock: " + skill)
+            raise _named("unresolved", "skill is not in the lock:", skill)
         if not _safe_skill_name(skill):
             raise _fail("unresolved", "unsafe skill name")
         path, digest = entry.get("path"), entry.get("digest")
         if not isinstance(path, str) or not _relative(path, "skill path") or not isinstance(digest, str) or not _DIGEST.fullmatch(digest):
-            raise _fail("unresolved", "the lock entry of %s is not usable" % skill)
+            raise _named("unresolved", "the lock entry is not usable:", skill)
         commit = _sha(source.get("commit"))
         if skill in picked:
             if picked[skill]["digest"] != digest:
-                raise _fail("conflict", skill)
+                raise _named("conflict", "", skill)
             continue
         picked[skill] = {"name": skill, "source": source_id, "plugin": plugin_name, "commit": commit, "repo": source.get("repo"),
                          "path": _relative(path, "skill path"), "digest": digest}
+    return picked
+
+
+def _pick_shared(lock, shared):
+    """{folder: info} for the shared folders that were asked for as (source id, folder), each checked against the lock."""
+    sources = lock.get("skill_sources") if isinstance(lock, dict) else None
+    if not isinstance(sources, dict):
+        raise _fail("unresolved", "the lock has no skill sources")
+    try:
+        items = list(shared or ())
+    except TypeError:
+        raise _fail("unresolved", "bad shared selection") from None
+    picked = {}
+    for item in items:
+        try:
+            source_id, folder = item
+        except (TypeError, ValueError):
+            raise _fail("unresolved", "bad shared selection") from None
+        if not isinstance(source_id, str) or not _shared_folder(folder):
+            raise _fail("unresolved", "bad shared selection")
+        if folder in picked:
+            raise _named("conflict", "shared folder named twice:", folder)
+        source = sources.get(source_id)
+        entry = (source.get("shared") or {}).get(folder) if isinstance(source, dict) and isinstance(source.get("shared") or {}, dict) else None
+        if not isinstance(entry, dict):
+            raise _named("unresolved", "shared folder is not in the lock:", folder)
+        plugin_name, digest = entry.get("plugin"), entry.get("digest")
+        plugins = source.get("plugins") if isinstance(source.get("plugins"), dict) else {}
+        plugin = plugins.get(plugin_name) if isinstance(plugin_name, str) else None
+        plugin_path = plugin.get("path") if isinstance(plugin, dict) else None
+        if not isinstance(plugin_path, str) or not _relative(plugin_path, "plugin path") or not isinstance(digest, str) or not _DIGEST.fullmatch(digest):
+            raise _named("unresolved", "the lock entry is not usable:", folder)
+        picked[folder] = {"name": folder, "source": source_id, "plugin": plugin_name, "commit": _sha(source.get("commit")), "repo": source.get("repo"),
+                          "path": _relative(plugin_path, "plugin path") + "/" + folder, "digest": digest}
     return picked
 
 
@@ -987,53 +1216,126 @@ def _stage(runner, cache, info, destination):
             raise _fail("unresolved", "cannot write a file") from None
     measured = digest_tree(destination)
     if measured["digest"] != info["digest"]:
-        raise _fail("digest mismatch", info["name"])
+        raise _named("digest mismatch", "", info["name"])
     return measured
 
 
-def vendor_skills(lock, selection, store, runner=None, quarantine=()):
-    """Write the selected skills of a lock into `store`/skills from the locked commits and verify every one against the lock.
+def _move(source, target):
+    os.replace(source, target)
 
-    All or nothing: the skills are staged and checked first, and only then does the store change. Returns the MANIFEST dict."""
+
+class _Swap:
+    """Changes to the folders of a store, all or nothing. A folder that is replaced or removed is first moved into `backup`, and
+    everything is moved back if one step fails."""
+
+    def __init__(self, backup):
+        self.backup = Path(backup)
+        self.undo = []
+        self.restored = True
+
+    def put(self, source, target):
+        """Make `target` hold the staged folder `source`, or be gone when `source` is None."""
+        saved = None
+        if os.path.lexists(target):
+            self.backup.mkdir(parents=True, exist_ok=True)
+            saved = self.backup / str(len(self.undo))
+            _move(target, saved)
+        self.undo.append((target, saved))
+        if source is not None:
+            Path(target).parent.mkdir(parents=True, exist_ok=True)
+            _move(source, target)
+
+    def rollback(self):
+        for target, saved in reversed(self.undo):
+            try:
+                if os.path.lexists(target):
+                    _remove(target)
+                if saved is not None:
+                    _move(saved, target)
+            except OSError:
+                self.restored = False
+        self.undo = []
+
+
+def _manifest_of(store):
+    try:
+        data = json.loads((Path(store) / "MANIFEST.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def _listed_shared(store):
+    """The shared folders that the MANIFEST of the store lists. Only names that pass the rules for a shared folder count."""
+    listed = (_manifest_of(store) or {}).get("shared")
+    return {name for name in listed if _shared_folder(name)} if isinstance(listed, dict) else set()
+
+
+def _entry_of(info, measured):
+    return {"source": info["source"], "plugin": info["plugin"], "commit": info["commit"], "digest": info["digest"],
+            "files": measured["files"], "bytes": measured["bytes"]}
+
+
+def vendor_skills(lock, selection, store, runner=None, quarantine=(), shared=()):
+    """Write the selected skills of a lock into `store`/skills and the shared folders into `store`/<folder>, from the locked commits,
+    and verify every one against the lock.
+
+    All or nothing: everything is staged and checked first, and only then does the store change, and the change is undone if a step
+    fails. `shared` is a list of (source id, folder). A shared folder that the previous MANIFEST lists and that is not asked for now
+    is removed. With nothing selected and nothing shared the store is left as it is. Returns the MANIFEST dict."""
     runner = runner or SystemRunner()
     store = Path(store)
     picked = _pick(lock, selection, quarantine)
+    wanted = _pick_shared(lock, shared)
+    if not picked and not wanted:
+        present = _manifest_of(store)
+        if isinstance(present, dict) and isinstance(present.get("skills"), dict):
+            return dict(present, shared=present["shared"] if isinstance(present.get("shared"), dict) else {})
+        return {"schema": 1, "lock_inputs_digest": lock.get("inputs_digest"), "skills": {}, "shared": {}}
+    store.mkdir(parents=True, exist_ok=True)
     skills_dir = store / "skills"
-    skills_dir.mkdir(parents=True, exist_ok=True)
+    leaving = _listed_shared(store) - set(wanted)
     measured, missing = {}, []
-    for name, info in picked.items():
-        target = skills_dir / name
-        if target.is_dir() and not _is_link(target):
-            current = digest_tree(target)
-            if current["digest"] == info["digest"]:
-                measured[name] = current
-                continue
-        missing.append(name)
-    staging = store / (".staging-%d" % os.getpid())
-    if missing:
+    for kind, group, where in (("skill", picked, skills_dir), ("shared", wanted, store)):
+        for name, info in group.items():
+            target = where / name
+            if target.is_dir() and not _is_link(target):
+                current = digest_tree(target)
+                if current["digest"] == info["digest"]:
+                    measured[(kind, name)] = current
+                    continue
+            missing.append((kind, name))
+    work = Path(tempfile.mkdtemp(prefix=".staging-", dir=str(store)))
+    swap = _Swap(work / "old")
+    try:
+        fetched = {}
+        for kind, name in missing:
+            info = (picked if kind == "skill" else wanted)[name]
+            if info["commit"] not in fetched:
+                fetched[info["commit"]] = fetch_git(info["repo"], info["commit"], store / ".cache" / info["commit"][:12], runner)
+            measured[(kind, name)] = _stage(runner, fetched[info["commit"]], info, work / "new" / kind / name)
+        manifest = {"schema": 1, "lock_inputs_digest": lock.get("inputs_digest"),
+                    "skills": {name: _entry_of(picked[name], measured[("skill", name)]) for name in sorted(picked)},
+                    "shared": {name: _entry_of(wanted[name], measured[("shared", name)]) for name in sorted(wanted)}}
+        with open(work / "MANIFEST.json", "w", encoding="utf-8", newline="\n") as handle:
+            handle.write(json.dumps(manifest, indent=2, ensure_ascii=False) + "\n")
         try:
-            _remove(staging)
-            staging.mkdir(parents=True)
-            fetched = {}
-            for name in missing:
-                info = picked[name]
-                if info["commit"] not in fetched:
-                    fetched[info["commit"]] = fetch_git(info["repo"], info["commit"], store / ".cache" / info["commit"][:12], runner)
-                measured[name] = _stage(runner, fetched[info["commit"]], info, staging / name)
-            for name in missing:
-                _remove(skills_dir / name)
-                os.replace(staging / name, skills_dir / name)
-        finally:
-            _remove(staging)
-    for child in list(skills_dir.iterdir()):
-        if child.name not in picked and (child.is_dir() or _is_link(child)):
-            _remove(child)
-    manifest = {"schema": 1, "lock_inputs_digest": lock.get("inputs_digest"), "skills": {
-        name: {"source": picked[name]["source"], "plugin": picked[name]["plugin"], "commit": picked[name]["commit"],
-               "digest": picked[name]["digest"], "files": measured[name]["files"], "bytes": measured[name]["bytes"]}
-        for name in sorted(picked)}}
-    temporary = store / "MANIFEST.json.tmp"
-    with open(temporary, "w", encoding="utf-8", newline="\n") as handle:
-        handle.write(json.dumps(manifest, indent=2, ensure_ascii=False) + "\n")
-    os.replace(temporary, store / "MANIFEST.json")
-    return manifest
+            for kind, name in missing:
+                swap.put(work / "new" / kind / name, (skills_dir if kind == "skill" else store) / name)
+            for child in (list(skills_dir.iterdir()) if skills_dir.is_dir() else []):
+                if child.name not in picked and (child.is_dir() or _is_link(child)):
+                    swap.put(None, child)
+            for name in sorted(leaving):
+                if os.path.lexists(store / name):
+                    swap.put(None, store / name)
+            _move(work / "MANIFEST.json", store / "MANIFEST.json")
+        except OSError:
+            swap.rollback()
+            raise _fail("unresolved", "cannot replace a folder") from None
+        except BaseException:
+            swap.rollback()
+            raise
+        return manifest
+    finally:
+        if swap.restored:
+            _remove(work)

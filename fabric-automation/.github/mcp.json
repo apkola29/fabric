@@ -69,6 +69,16 @@
         "*"
       ]
     },
+    "azure-arm-cost": {
+      "type": "http",
+      "url": "https://mcp.management.azure.com",
+      "headers": {
+        "x-mcp-toolset": "CostManagement"
+      },
+      "tools": [
+        "*"
+      ]
+    },
     "microsoft-learn": {
       "type": "http",
       "url": "https://learn.microsoft.com/api/mcp",

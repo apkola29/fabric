@@ -4,14 +4,25 @@
 # every Monday. The run fails only when a claim is wrong (FAIL); a newer value or a
 # changed page is shown as DRIFT in the run summary for a person to review.
 #
-# A second job does the same for the toolchain (the pinned skills and MCP servers):
-# it reports what changed upstream and what that would break, resolves a candidate
-# lock file with the tool contracts it can capture, and keeps that file as an
-# artifact. It changes nothing in the repository: a refresh is a pull request.
+# A second job does the same for the toolchain (the pinned skills and MCP servers).
+# Every run it reports what changed upstream and what that would break, by reading
+# registry and Git metadata only, and it launches only the server versions that the
+# committed lock pins (reviewed by a person) to check that their tool lists still
+# equal the lock. A run started by hand can also ask for a capture: then it launches
+# the NEWEST upstream versions, which nobody has reviewed, to record their tool
+# lists in a candidate lock file that it keeps as an artifact. The runner holds no
+# secret and no token beyond reading this repository, but the code that it runs is
+# the upstream's, so the capture is never part of the schedule. The workflow changes
+# nothing in the repository: a refresh is a pull request.
 name: fabric-automation facts
 
 on:
   workflow_dispatch:
+    inputs:
+      capture:
+        description: "Also launch the newest upstream versions of the MCP servers to capture their tool lists, and keep a candidate lock (this runs code that nobody has reviewed yet)"
+        type: boolean
+        default: false
   schedule:
     - cron: "17 6 * * 1"
 
@@ -48,26 +59,35 @@ jobs:
           persist-credentials: false
 
       # The runner image ships Node.js 22, the .NET 10 SDK (for dnx) and Python 3.12; uv is not
-      # on it. A missing uv only leaves the Real-Time Intelligence contract unavailable. The
+      # on it. A missing uv only leaves the Real-Time Intelligence contract unchecked. The
       # Power BI authoring server stays skipped: its license is accepted by a person, never here.
       - name: Install uv
         run: pipx install "uv==0.13.6" || echo "::warning::uv could not be installed, so the Real-Time Intelligence contract will be unavailable"
 
+      # Reads registry and Git metadata. No package of a new version is launched here.
       - name: Report what changed upstream
         working-directory: fabric-automation
         run: |
           rc=0
-          python3 scripts/toolchain.py update --check --contracts --summary-file "$RUNNER_TEMP/toolchain-update.md" || rc=$?
+          python3 scripts/toolchain.py update --check --summary-file "$RUNNER_TEMP/toolchain-update.md" || rc=$?
           if [ -f "$RUNNER_TEMP/toolchain-update.md" ]; then
             cat "$RUNNER_TEMP/toolchain-update.md" >> "$GITHUB_STEP_SUMMARY"
           fi
           exit "$rc"
 
-      - name: Resolve a lock candidate
+      # Launches only the versions that the committed lock pins, and fails when a tool list differs from it.
+      - name: Check the pinned servers against their locked contracts
+        working-directory: fabric-automation
+        run: python3 scripts/toolchain.py verify --contracts
+
+      # Only when a person asked for it: this launches the newest upstream versions.
+      - name: Capture the newest versions into a lock candidate
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.capture }}
         working-directory: fabric-automation
         run: python3 scripts/toolchain.py lock --contracts
 
       - name: Keep the candidate
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.capture }}
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: toolchain-lock-candidate

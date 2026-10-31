@@ -22,5 +22,7 @@ tmp*/
 # .mcp.json is the Claude Code file; Copilot CLI would also read it first, so it is never committed.
 .factory/
 .github/skills/
+.github/common/
 .claude/skills/
+.claude/common/
 /.mcp.json

@@ -10,6 +10,8 @@ error. Standard library only.
 
 from __future__ import annotations
 
+import functools
+import hashlib
 import http.client
 import ipaddress
 import os
@@ -26,6 +28,7 @@ import urllib.request
 from typing import NamedTuple
 
 MAX_BODY = 5 * 1024 * 1024
+MAX_HASHED = 200 * 1024 * 1024
 USER_AGENT = "fabric-automation-toolchain"
 WINDOWS = os.name == "nt"
 
@@ -49,6 +52,13 @@ class HttpResult(NamedTuple):
     error: str | None  # a short word such as "timeout" or "tls", never a URL or a host
 
 
+class HashResult(NamedTuple):
+    status: int  # 0 when the request never got an answer
+    sha256: str | None  # the hex digest of the whole body; None for any other outcome
+    size: int  # the bytes that were read
+    error: str | None  # a short word such as "too-large", "timeout" or "incomplete", never a URL or a host
+
+
 class LaunchError(Exception):
     """A command that could not be started. returncode is 127 (not found) or 126 (cannot execute)."""
 
@@ -58,21 +68,42 @@ class LaunchError(Exception):
         self.message = message
 
 
-_URL = re.compile(r"[A-Za-z][A-Za-z0-9+.-]*://\S*")
-_ADDRESS = re.compile(r"\S+@\S+")
-_PATH = re.compile(r"(?<![\w.-])(?:[A-Za-z]:)?[\\/]\S*|(?<![\w.-])~\S*")
-_HOST = re.compile(r"\b(?:[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?\.)+[A-Za-z]{2,}\b")
-_IPV4 = re.compile(r"\b\d{1,3}(?:\.\d{1,3}){3}\b")
+_GLUED = re.compile(r"[\\/@]|.:.|^~")  # a path, an address, a user:secret pair or a home reference: the whole word goes
+_NAME_RUN = re.compile(r"[A-Za-z0-9_.-]+")
+_IPV4 = re.compile(r"(?<![A-Za-z0-9])\d{1,3}(?:\.\d{1,3}){3}(?![A-Za-z0-9])")
+_IPV6_CHARS = frozenset("0123456789abcdefABCDEF:.")
+_TOKEN = re.compile(r"[A-Za-z0-9_=-]{24,}")
 _UNSAFE = re.compile(r"[^A-Za-z0-9 ._:=/-]")
 
 
+def _host_like(run):
+    """A run of name characters that has a dot between two labels and ends in a label that starts with two letters or more (a.b.example)."""
+    labels = [label for label in (part.strip("-") for part in run.split(".")) if label]
+    return len(labels) >= 2 and len(labels[-1]) >= 2 and labels[-1][0].isalpha()
+
+
+def _ipv6_like(word):
+    return word.count(":") >= 2 and set(word) <= _IPV6_CHARS
+
+
+def _token_like(word):
+    """A long word of letters, digits and _=- that mixes letters and digits: a key, a hash or a password rather than a word."""
+    return _TOKEN.fullmatch(word) is not None and any(char.isdigit() for char in word) and any(char.isalpha() for char in word)
+
+
 def safe_detail(text, limit=80):
-    """Text that may be stored in a lock or shown in a message: no URL, host, address or path, only [A-Za-z0-9 ._:=/-]."""
+    """Text that may be stored in a lock or shown in a message: no URL, host, address, path or token, only [A-Za-z0-9 ._:=/-].
+
+    A word that holds a slash, a backslash, an at sign, a colon between two characters or starts with a tilde is removed whole
+    (a URL, a path, an address, user:secret). The host and address rules run after the character filter, so that a letter
+    outside the safe set next to a name cannot hide it. A word of 24 characters or more that mixes letters and digits is removed."""
     text = "" if text is None else str(text)
-    for pattern in (_URL, _ADDRESS, _PATH, _HOST, _IPV4):
-        text = pattern.sub(" ", text)
-    text = _UNSAFE.sub(" ", text)
-    return " ".join(text.split())[:limit].rstrip()
+    words = [word for word in text.split() if not _GLUED.search(word)]
+    text = _UNSAFE.sub(" ", " ".join(words))
+    text = _NAME_RUN.sub(lambda match: " " if _host_like(match.group()) else match.group(), text)
+    text = _IPV4.sub(" ", text)
+    words = [word for word in text.split() if not _ipv6_like(word) and not _token_like(word)]
+    return " ".join(words)[:limit].rstrip()
 
 
 def classify_exception(exc):
@@ -155,9 +186,20 @@ def popen_tree(argv, *, cwd=None, env=None, stdin=None, stdout=None, stderr=None
         raise LaunchError(126, "cannot execute") from None
 
 
+def _system_taskkill():
+    """taskkill.exe of the system folder by absolute path, or None. The search path and the current folder are never consulted."""
+    for root in (os.environ.get("SystemRoot"), os.environ.get("windir"), "C:\\Windows"):
+        if root and os.path.isabs(root):
+            exe = os.path.join(root, "System32", "taskkill.exe")
+            if os.path.isfile(exe):
+                return exe
+    return None
+
+
 def _taskkill(pid):
-    root = os.environ.get("SystemRoot") or "C:/Windows"
-    exe = shutil.which("taskkill") or os.path.join(root, "System32", "taskkill.exe")
+    exe = _system_taskkill()
+    if exe is None:
+        return
     try:
         subprocess.run([exe, "/PID", str(pid), "/T", "/F"], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
                        stderr=subprocess.DEVNULL, timeout=20, check=False, creationflags=subprocess.CREATE_NO_WINDOW)
@@ -224,13 +266,30 @@ class _SameHostRedirect(urllib.request.HTTPRedirectHandler):
         return super().redirect_request(req, fp, code, msg, headers, newurl)
 
 
+_DEFAULT_PORTS = {"http": 80, "https": 443}
+
+
+def _effective_port(parts):
+    """The port of a URL, with the default of its scheme when none is written; None when the port is not a valid number."""
+    try:
+        port = parts.port
+    except ValueError:
+        return None
+    return port if port is not None else _DEFAULT_PORTS.get(parts.scheme.lower())
+
+
 def _redirect_allowed(old, new):
-    """Same host only, and never from https to http."""
+    """Same host and same port, and never from https to http. An upgrade between the default ports (80 to 443) is the one port change allowed."""
     if new.scheme.lower() not in ("http", "https"):
         return False
     if old.scheme.lower() == "https" and new.scheme.lower() != "https":
         return False
-    return (old.hostname or "").lower() == (new.hostname or "").lower()
+    if (old.hostname or "").lower() != (new.hostname or "").lower():
+        return False
+    old_port, new_port = _effective_port(old), _effective_port(new)
+    if old_port is None or new_port is None:
+        return False
+    return old_port == new_port or (old_port == _DEFAULT_PORTS.get(old.scheme.lower()) and new_port == _DEFAULT_PORTS.get(new.scheme.lower()))
 
 
 def _is_loopback(host):
@@ -243,11 +302,16 @@ def _is_loopback(host):
         return False
 
 
+def _read_some(stream, size):
+    """Up to `size` bytes, as soon as some have arrived: read() would wait for all of them and so hide a server that trickles."""
+    return getattr(stream, "read1", stream.read)(size)
+
+
 def _collect(status, headers, stream, deadline):
     chunks, total, error = [], 0, None
     try:
         while True:
-            chunk = stream.read(min(65536, MAX_BODY + 1 - total))
+            chunk = _read_some(stream, min(65536, MAX_BODY + 1 - total))
             if not chunk:
                 break
             chunks.append(chunk)
@@ -269,7 +333,39 @@ def _collect(status, headers, stream, deadline):
     return HttpResult(status, lowered, b"".join(chunks)[:MAX_BODY], error)
 
 
-def _http(method, url, headers, body, timeout):
+def _hash_body(status, headers, stream, deadline, max_bytes):
+    """Read a body in pieces and hash it without keeping it. Only a complete body of 200 gets a digest."""
+    try:
+        if status != 200:
+            return HashResult(status, None, 0, None)
+        declared = headers.get("Content-Length")
+        declared = int(declared) if declared and declared.strip().isdigit() else None
+        if declared is not None and declared > max_bytes:
+            return HashResult(status, None, 0, "too-large")
+        digest, total, error = hashlib.sha256(), 0, None
+        try:
+            while True:
+                chunk = _read_some(stream, min(65536, max_bytes + 1 - total))
+                if not chunk:
+                    break
+                total += len(chunk)
+                if total > max_bytes:
+                    error = "too-large"
+                    break
+                digest.update(chunk)
+                if time.monotonic() > deadline:
+                    error = "timeout"
+                    break
+        except (OSError, http.client.HTTPException) as exc:
+            error = classify_exception(exc)
+        if error is None and declared is not None and total != declared:
+            error = "incomplete"
+        return HashResult(status, digest.hexdigest() if error is None else None, total, error)
+    finally:
+        stream.close()
+
+
+def _http(method, url, headers, body, timeout, read=_collect, total=None):
     parts = urllib.parse.urlsplit(str(url))
     if parts.scheme.lower() not in ("http", "https"):
         return HttpResult(0, {}, b"", "unsupported-scheme")
@@ -284,12 +380,12 @@ def _http(method, url, headers, body, timeout):
             del sent[existing]
         sent[str(name)] = str(value)
     request = urllib.request.Request(str(url), data=body, method=method.upper(), headers=sent)
-    deadline = time.monotonic() + timeout
+    deadline = time.monotonic() + (timeout if total is None else total)
     try:
         response = urllib.request.build_opener(*handlers).open(request, timeout=timeout)
     except urllib.error.HTTPError as err:
-        return _collect(err.code, err.headers, err, deadline)
-    return _collect(response.status, response.headers, response, deadline)
+        return read(err.code, err.headers, err, deadline)
+    return read(response.status, response.headers, response, deadline)
 
 
 class SystemRunner:
@@ -329,3 +425,14 @@ class SystemRunner:
             return _http(str(method), url, headers, body, timeout)
         except Exception as exc:  # the contract is that a transport problem is a result, never an exception
             return HttpResult(0, {}, b"", classify_exception(exc))
+
+    def http_hash(self, url, *, headers=None, timeout=20, max_bytes=MAX_HASHED, total=300):
+        """GET a body that may be large and give its SHA-256 without keeping it. `timeout` is the wait for each read, `total` the
+        time for the whole body. A transport problem is a result, never an exception."""
+        try:
+            result = _http("GET", url, headers, None, timeout, read=functools.partial(_hash_body, max_bytes=max_bytes), total=total)
+        except Exception as exc:
+            return HashResult(0, None, 0, classify_exception(exc))
+        if isinstance(result, HttpResult):  # the request failed before there was an answer
+            return HashResult(result.status, None, 0, result.error)
+        return result

@@ -7,6 +7,7 @@ address. Nothing leaves the machine and the real home folder is never read. Run 
     python -m unittest scripts.test_toolchain_io -v
 """
 
+import hashlib
 import http.client
 import http.server
 import json
@@ -187,6 +188,42 @@ class ShimTests(unittest.TestCase):
             self.assertEqual("", result.stdout)
         self.assertFalse(marker.exists())
 
+    def test_each_shell_metacharacter_is_refused_on_its_own_in_any_argument_position(self):
+        characters = (("ampersand", "&"), ("pipe", "|"), ("less-than", "<"), ("greater-than", ">"), ("caret", "^"), ("double quote", '"'),
+                      ("percent", "%"), ("carriage return", "\r"), ("line feed", "\n"))
+        before = sorted(path.name for path in self.dir.iterdir())
+        for name, char in characters:
+            for argv in ([str(self.shim), "a" + char + "b"], [str(self.shim), "fine", "a" + char + "b"], [str(self.shim), "fine", "fine", char]):
+                result = self.runner.run(argv, cwd=str(self.dir))
+                self.assertEqual(126, result.returncode, "%s in %r" % (name, argv[1:]))
+                self.assertEqual("", result.stdout, name)
+        self.assertEqual(before, sorted(path.name for path in self.dir.iterdir()), "a redirect created a file")
+
+    def test_the_refusal_covers_bat_files_and_any_letter_case_of_the_ending(self):
+        bat = self.dir / "tc-echo-shim.bat"
+        bat.write_bytes(b"@echo off\r\necho first=%1\r\n")
+        upper = self.dir / "TC-UPPER-SHIM.CMD"
+        upper.write_bytes(b"@echo off\r\necho first=%1\r\n")
+        for path in (bat, upper):
+            ok = self.runner.run([str(path), "plain"])
+            self.assertEqual(0, ok.returncode, path.name)
+            self.assertIn("first=plain", ok.stdout)
+            for char in ("&", "|", "<", ">", "^", '"', "%", "\r", "\n"):
+                self.assertEqual(126, self.runner.run([str(path), "a" + char + "b"], cwd=str(self.dir)).returncode, "%r in %s" % (char, path.name))
+
+    def test_a_program_that_is_not_a_shim_gets_its_arguments_untouched(self):
+        payload = 'a&b|c<d>e^f"g%h'
+        result = self.runner.run([PY, "-c", "import sys; print(sys.argv[1])", payload], cwd=str(self.dir))
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertEqual(payload, result.stdout.strip())
+
+
+PAYLOAD_BLOCK = bytes(range(256)) * 256  # 64 KiB
+
+
+def payload(size):
+    return (PAYLOAD_BLOCK * (size // len(PAYLOAD_BLOCK) + 1))[:size]
+
 
 class _Handler(http.server.BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
@@ -219,6 +256,49 @@ class _Handler(http.server.BaseHTTPRequestHandler):
             self.reply(302, b"", [("Location", "/ok")])
         elif path == "/other":
             self.reply(302, b"", [("Location", "http://localhost:%d/ok" % port)])
+        elif path.startswith("/to-port/"):
+            self.reply(302, b"", [("Location", "http://127.0.0.1:%s/ok" % path.rsplit("/", 1)[1])])
+        elif path.startswith("/bytes/"):
+            size = int(path.rsplit("/", 1)[1])
+            self.send_response(200)
+            self.send_header("Content-Length", str(size))
+            self.end_headers()
+            try:
+                for start in range(0, size, len(PAYLOAD_BLOCK)):
+                    self.wfile.write(PAYLOAD_BLOCK[:min(len(PAYLOAD_BLOCK), size - start)])
+            except OSError:
+                pass
+        elif path == "/short":
+            self.send_response(200)
+            self.send_header("Content-Length", "100")
+            self.end_headers()
+            self.wfile.write(b"x" * 50)
+            self.wfile.flush()
+            self.close_connection = True
+        elif path.startswith("/stream/"):
+            size = int(path.rsplit("/", 1)[1])
+            self.send_response(200)
+            self.send_header("Connection", "close")
+            self.end_headers()
+            try:
+                for start in range(0, size, len(PAYLOAD_BLOCK)):
+                    self.wfile.write(PAYLOAD_BLOCK[:min(len(PAYLOAD_BLOCK), size - start)])
+            except OSError:
+                pass
+            self.close_connection = True
+        elif path == "/dribble":
+            self.send_response(200)
+            self.send_header("Content-Length", "100")
+            self.end_headers()
+            try:
+                for _ in range(100):
+                    self.wfile.write(b"x")
+                    self.wfile.flush()
+                    time.sleep(0.1)
+            except OSError:
+                pass
+        elif path.startswith("/to-bytes/"):
+            self.reply(302, b"", [("Location", "/bytes/" + path.rsplit("/", 1)[1])])
         elif path == "/loop":
             self.reply(302, b"", [("Location", "/loop")])
         elif path == "/big":
@@ -318,6 +398,94 @@ class HttpTests(unittest.TestCase):
         self.assertFalse(allowed(split("https://a.example/x"), split("https://b.example/y")))
         self.assertFalse(allowed(split("https://a.example/x"), split("ftp://a.example/y")))
 
+    def test_a_redirect_keeps_the_port(self):
+        allowed = toolchain_io._redirect_allowed
+        split = urllib.parse.urlsplit
+        for old, new in (("https://a.example/x", "https://a.example:443/y"), ("https://a.example:443/x", "https://a.example/y"),
+                         ("http://a.example:80/x", "http://a.example/y"), ("https://a.example:8443/x", "https://a.example:8443/y"),
+                         ("http://a.example/x", "https://a.example/y"), ("http://a.example:80/x", "https://a.example:443/y")):
+            self.assertTrue(allowed(split(old), split(new)), (old, new))
+        for old, new in (("https://a.example/x", "https://a.example:8443/y"), ("https://a.example:8443/x", "https://a.example/y"),
+                         ("https://a.example:8443/x", "https://a.example:9443/y"), ("http://a.example:8080/x", "https://a.example/y"),
+                         ("http://a.example/x", "http://a.example:8080/y"), ("https://a.example/x", "https://a.example:444/y"),
+                         ("https://a.example/x", "https://a.example:0/y"), ("https://a.example/x", "https://a.example:99999/y"),
+                         ("https://a.example/x", "https://a.example:port/y"), ("https://a.example:port/x", "https://a.example:port/y")):
+            self.assertFalse(allowed(split(old), split(new)), (old, new))
+
+    def test_a_redirect_to_another_port_of_the_same_host_is_not_followed(self):
+        other = _Server(("127.0.0.1", 0), _Handler)
+        thread = threading.Thread(target=other.serve_forever, daemon=True)
+        thread.start()
+
+        def stop():
+            other.shutdown()
+            other.server_close()
+        self.addCleanup(stop)
+        result = self.runner.http("GET", self.url("/to-port/%d" % other.server_address[1]))
+        self.assertEqual(302, result.status)
+        self.assertNotEqual(b'{"a": 1}', result.body)
+        result = self.runner.http("GET", self.url("/to-port/%d" % self.port))
+        self.assertEqual(200, result.status)
+
+    def test_http_hash_streams_a_body_that_is_larger_than_the_body_limit(self):
+        size = toolchain_io.MAX_BODY + 2 * 1024 * 1024 + 123
+        result = self.runner.http_hash(self.url("/bytes/%d" % size), timeout=20)
+        self.assertIsInstance(result, toolchain_io.HashResult)
+        self.assertEqual((200, hashlib.sha256(payload(size)).hexdigest(), size, None), tuple(result))
+
+    def test_http_hash_gives_no_hash_for_a_body_over_the_limit(self):
+        for path, read in (("/bytes/1001", 0), ("/bytes/6000000", 0), ("/stream/1001", 1001), ("/stream/6000000", 1001)):
+            result = self.runner.http_hash(self.url(path), max_bytes=1000)
+            self.assertEqual((200, None, "too-large"), (result.status, result.sha256, result.error), path)
+            self.assertEqual(read, result.size, path)
+
+    def test_http_hash_takes_a_body_of_exactly_the_limit(self):
+        for path in ("/bytes/1000", "/stream/1000"):
+            result = self.runner.http_hash(self.url(path), max_bytes=1000)
+            self.assertEqual((200, hashlib.sha256(payload(1000)).hexdigest(), 1000, None), tuple(result), path)
+
+    def test_http_hash_of_a_body_that_ends_early_is_incomplete_and_has_no_hash(self):
+        result = self.runner.http_hash(self.url("/short"))
+        self.assertEqual((200, None, "incomplete"), (result.status, result.sha256, result.error))
+
+    def test_http_hash_of_an_error_status_has_no_hash_and_no_error(self):
+        result = self.runner.http_hash(self.url("/missing"))
+        self.assertEqual((404, None, 0, None), tuple(result))
+
+    def test_http_hash_follows_a_redirect_to_the_same_host_only(self):
+        result = self.runner.http_hash(self.url("/to-bytes/10"))
+        self.assertEqual((200, hashlib.sha256(payload(10)).hexdigest(), 10, None), tuple(result))
+        result = self.runner.http_hash(self.url("/other"))
+        self.assertEqual((302, None, 0, None), tuple(result))
+
+    def test_http_hash_never_raises_and_its_errors_are_short_words(self):
+        probe = socket.socket()
+        probe.bind(("127.0.0.1", 0))
+        port = probe.getsockname()[1]
+        probe.close()
+        for url in ("http://127.0.0.1:%d/secret-path" % port, "file:///etc/hosts", "not a url", "http://"):
+            result = self.runner.http_hash(url, timeout=10)
+            self.assertEqual(0, result.status, url)
+            self.assertIsNone(result.sha256)
+            self.assertTrue(result.error and result.error.replace("-", "").isalpha(), url)
+            for forbidden in ("127.0.0.1", "secret-path", "://", "etc"):
+                self.assertNotIn(forbidden, result.error)
+
+    def test_http_hash_has_a_timeout_for_a_silent_server_and_a_total_time_for_a_slow_one(self):
+        result = self.runner.http_hash(self.url("/slow"), timeout=0.4)
+        self.assertEqual((0, None, "timeout"), (result.status, result.sha256, result.error))
+        started = time.monotonic()
+        result = self.runner.http_hash(self.url("/dribble"), timeout=5, total=0.6)
+        self.assertEqual((200, None, "timeout"), (result.status, result.sha256, result.error))
+        self.assertLess(time.monotonic() - started, 5)
+
+    def test_a_body_that_trickles_in_is_cut_at_the_deadline(self):
+        started = time.monotonic()
+        result = self.runner.http("GET", self.url("/dribble"), timeout=0.6)
+        self.assertEqual((200, "timeout"), (result.status, result.error))
+        self.assertLess(len(result.body), 100)
+        self.assertLess(time.monotonic() - started, 5)
+
     def test_a_body_over_the_limit_is_cut_and_reported(self):
         result = self.runner.http("GET", self.url("/big"), timeout=20)
         self.assertEqual(200, result.status)
@@ -411,6 +579,70 @@ class SafeDetailTests(unittest.TestCase):
         self.assertEqual(once, toolchain_io.safe_detail(once))
         self.assertIn("1.6.0", once)
 
+    def test_a_word_with_a_backslash_is_removed_whole(self):
+        for word in ("Us" + "ers\\alice\\secrets", "alice\\", "a\\b"):
+            self.assertEqual("cannot open now", toolchain_io.safe_detail("cannot open %s now" % word), word)
+
+    def test_a_word_with_a_slash_is_removed_whole(self):
+        for word in ("src/Us" + "ers/alice/secrets", "and/or", "a/b", "</script>"):
+            self.assertEqual("cannot open now", toolchain_io.safe_detail("cannot open %s now" % word), word)
+
+    def test_a_word_with_a_colon_between_text_is_removed_whole(self):
+        self.assertEqual("basic rejected", toolchain_io.safe_detail("basic alice:s3cret-token rejected"))
+        self.assertEqual("basic rejected", toolchain_io.safe_detail("basic key=alice:s3cret rejected"))
+        self.assertEqual("error: not found", toolchain_io.safe_detail("error: not found"))
+        self.assertEqual("HTTP 404: Not Found", toolchain_io.safe_detail("HTTP 404: Not Found"))
+        self.assertEqual("code: 5", toolchain_io.safe_detail("code: 5"))
+
+    def test_a_word_with_an_at_sign_is_removed_whole(self):
+        for word in ("@alice", "alice@", "alice" + "@" + "mail", "a@b.c"):
+            self.assertEqual("invited now", toolchain_io.safe_detail("invited %s now" % word), word)
+
+    def test_a_home_reference_is_removed(self):
+        for word in ("~alice", "~", "~/x"):
+            self.assertEqual("cannot read now", toolchain_io.safe_detail("cannot read %s now" % word), word)
+        self.assertEqual("a b stays", toolchain_io.safe_detail("a~b stays"))
+
+    def test_ipv6_addresses_are_removed(self):
+        for address in ("2001:db8:85a3::8a2e:370:7334", "fe80::1", "::1", "[::1]:8080", "(2001:db8::1)", "fe80::1%eth0", "::ffff:" + "192.0.2." + "1"):
+            self.assertEqual("connect to refused", toolchain_io.safe_detail("connect to %s refused" % address), address)
+
+    def test_a_bare_ipv6_wildcard_is_removed(self):
+        self.assertEqual("listening on now", toolchain_io.safe_detail("listening on :: now"))
+        self.assertEqual("listening on now", toolchain_io.safe_detail("listening on <::> now"))
+        self.assertEqual("listening on now", toolchain_io.safe_detail("listening on :ab: now"))
+        self.assertEqual("listening on :xyz: now", toolchain_io.safe_detail("listening on :xyz: now"))
+
+    def test_a_host_next_to_a_non_ascii_letter_or_an_underscore_is_removed_whole(self):
+        for text in ("\u00e9" + self.HOST, self.HOST + "\u00e9", "_" + self.HOST, self.HOST + "_x", "x_" + self.HOST, "-" + self.HOST,
+                     "feed.contoso.-" + "example", "\u00e9" + "example" + "." + "com"):
+            self.assertEqual("failed at now", toolchain_io.safe_detail("failed at %s now" % text), text)
+
+    def test_an_address_next_to_a_non_ascii_letter_or_an_underscore_is_removed_whole(self):
+        for text, expected in (("\u00e9" + self.ADDRESS, "failed at now"), (self.ADDRESS + "\u00e9", "failed at now"),
+                               ("_" + self.ADDRESS, "failed at _ now"), (self.ADDRESS + "_", "failed at _ now")):
+            self.assertEqual(expected, toolchain_io.safe_detail("failed at %s now" % text), text)
+
+    def test_a_long_run_of_name_characters_is_handled_in_linear_time(self):
+        started = time.monotonic()
+        for text in ("a." * 100000, "a-" * 100000, "1." * 100000, "ab-cd.ef-" * 50000):
+            toolchain_io.safe_detail(text)
+        self.assertLess(time.monotonic() - started, 10)
+
+    def test_versions_and_error_codes_survive(self):
+        for text in ("E404 not found for 1.6.0 and 1.16.10 and v2.0.0-rc.1", "12.34 after 3 tries code=ENOTFOUND e.g. now a.b"):
+            self.assertEqual(text, toolchain_io.safe_detail(text))
+
+    def test_a_token_shaped_word_is_removed(self):
+        secret = "gh" + "p_" + "A1b2C3d4E5f6G7h8I9j0K1l2M3n4"
+        for token in (secret, "AbCdEfGhIjKlMnOpQrStUv12", "AbCdEfGhIjKlMnOpQrStUvWx12==", "abc-def-ghi-jkl-mno-pqr-5", "a1" * 12):
+            self.assertEqual("saw now", toolchain_io.safe_detail("saw %s now" % token), token)
+
+    def test_a_long_word_that_is_not_token_shaped_stays(self):
+        for token in ("AbCdEfGhIjKlMnOpQrStU12", "AbCdEfGhIjKlMnOpQrStUvWxYz", "1234567890" * 3, "----____====123456789012345678",
+                      "AbCdEfGhIjKlMnOpQrStUvWx12.3"):
+            self.assertEqual("saw %s now" % token, toolchain_io.safe_detail("saw %s now" % token), token)
+
 
 class KillTreeTests(unittest.TestCase):
     def test_kill_tree_ends_a_child_and_its_grandchild(self):
@@ -445,6 +677,86 @@ class KillTreeTests(unittest.TestCase):
                 self.assertNotIn("TC_REMOVED", names)
                 self.assertEqual(expected_parent_visible, "TC_ONLY_IN_PARENT" in names, "inherit=%s" % inherit)
             self.assertEqual([], os.listdir(work))
+
+
+def real_taskkill(*pids):
+    exe = os.path.join(os.environ.get("SystemRoot", "C:\\Windows"), "System32", "taskkill.exe")
+    for pid in pids:
+        subprocess.run([exe, "/PID", str(pid), "/T", "/F"], capture_output=True, check=False, timeout=30)
+
+
+@unittest.skipUnless(WINDOWS, "taskkill is a Windows matter")
+class TaskkillTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.dir = Path(self.tmp.name)
+        self.marker = self.dir / "decoy-ran.txt"
+        (self.dir / "taskkill.cmd").write_bytes(('@echo off\r\necho ran> "%s"\r\n' % self.marker).encode("utf-8"))
+
+    def test_taskkill_is_run_by_absolute_path_and_never_found_through_the_path_or_the_current_folder(self):
+        pidfile = self.dir / "pids.txt"
+        proc = toolchain_io.popen_tree([PY, "-c", TREE_SCRIPT, str(pidfile)])
+        pids = read_pids(pidfile)
+        previous = os.getcwd()
+        try:
+            self.assertEqual(2, len(pids), "the child never wrote its process ids")
+            os.chdir(self.dir)  # on Windows the search for a command starts in the current folder
+            with mock.patch.dict(os.environ, {"PATH": str(self.dir) + os.pathsep + os.environ.get("PATH", "")}):
+                toolchain_io.kill_tree(proc)
+            for pid in pids:
+                self.assertTrue(wait_dead(pid), "process %d survived kill_tree" % pid)
+            self.assertFalse(self.marker.exists(), "a taskkill found on the search path or in the current folder was run")
+        finally:
+            os.chdir(previous)
+            real_taskkill(proc.pid, *pids)
+            toolchain_io.kill_tree(proc)
+
+    def test_without_a_taskkill_the_child_itself_is_still_killed(self):
+        proc = toolchain_io.popen_tree([PY, "-c", "import time; time.sleep(120)"])
+        try:
+            with mock.patch.object(toolchain_io, "_system_taskkill", return_value=None), mock.patch.object(toolchain_io.subprocess, "run") as run:
+                toolchain_io.kill_tree(proc)
+            run.assert_not_called()
+            self.assertTrue(wait_dead(proc.pid), "the child survived kill_tree")
+        finally:
+            real_taskkill(proc.pid)
+            toolchain_io.kill_tree(proc)
+
+    def test_the_executable_comes_from_the_system_folder_and_must_exist(self):
+        fake = self.dir / "FakeWindows"
+        (fake / "System32").mkdir(parents=True)
+        (fake / "System32" / "taskkill.exe").write_bytes(b"")
+        real = os.environ.get("SystemRoot") or os.environ.get("windir")
+        with mock.patch.dict(os.environ, {"SystemRoot": str(fake), "windir": str(self.dir / "nowhere")}):
+            self.assertEqual(str(fake / "System32" / "taskkill.exe").lower(), toolchain_io._system_taskkill().lower())
+        with mock.patch.dict(os.environ, {"SystemRoot": str(self.dir / "empty"), "windir": real}):
+            found = toolchain_io._system_taskkill()
+            self.assertTrue(found and os.path.isabs(found) and os.path.isfile(found), found)
+            self.assertEqual("taskkill.exe", os.path.basename(found).lower())
+            self.assertNotIn("empty", found)
+
+    def test_a_relative_system_root_is_not_trusted(self):
+        (self.dir / "System32").mkdir()
+        (self.dir / "System32" / "taskkill.exe").write_bytes(b"")
+        previous = os.getcwd()
+        try:
+            os.chdir(self.dir)
+            with mock.patch.dict(os.environ, {"SystemRoot": ".", "windir": "."}), mock.patch.object(toolchain_io.os.path, "isfile", return_value=True):
+                found = toolchain_io._system_taskkill()
+        finally:
+            os.chdir(previous)
+        self.assertTrue(os.path.isabs(found), found)
+
+    def test_the_usual_folder_is_the_last_resort_and_none_is_returned_when_nothing_exists(self):
+        usual = os.path.join("C:\\Windows", "System32", "taskkill.exe").lower()
+        with mock.patch.dict(os.environ):
+            os.environ.pop("SystemRoot", None)
+            os.environ.pop("windir", None)
+            with mock.patch.object(toolchain_io.os.path, "isfile", side_effect=lambda path: str(path).lower() == usual):
+                self.assertEqual(usual, toolchain_io._system_taskkill().lower())
+            with mock.patch.object(toolchain_io.os.path, "isfile", return_value=False):
+                self.assertIsNone(toolchain_io._system_taskkill())
 
 
 if __name__ == "__main__":

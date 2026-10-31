@@ -11,7 +11,7 @@ This folder holds the design of a Fabric code factory and the toolchain that its
 ## Rules
 
 1. This repository is public. Never write a tenant, workspace, item or capacity identifier, a person's name, a token or a local path into a file.
-2. Live work goes through the MCP tool that the owning skill names. If the tool is missing, say so and ask before using another route.
+2. Live work follows the owning skill: an MCP tool where the skill names one, the skill's own CLI or REST steps where it prescribes them (dev mode only, and a person approves anything that changes a tenant). Do not swap one for the other. If a tool is missing, say so and ask before using another route.
 3. Never accept a license agreement on anyone's behalf. The Power BI authoring server asks for one, and the operator accepts it once, on purpose.
 4. A tool that is missing, renamed or changed against the lock is a contract drift. Stop and report it.
 5. The full rules for every session and job are in `toolchain/instructions/factory-preamble.md`.

@@ -333,7 +333,8 @@ class SyncFlowTests(unittest.TestCase):
         self.assertEqual(0, code, out)
         self.assertFalse((self.clone / "fabric-automation" / "docs" / "private").exists())
 
-    GENERATED = (".factory/pack/.cache/abc/objects/pack/x.idx", ".github/skills/a-skill/SKILL.md", ".claude/skills/a-skill/SKILL.md", ".mcp.json")
+    GENERATED = (".factory/pack/.cache/abc/objects/pack/x.idx", ".github/skills/a-skill/SKILL.md", ".claude/skills/a-skill/SKILL.md",
+                 ".github/common/COMMON-CLI.md", ".claude/common/COMMON-CLI.md", ".mcp.json")
 
     def test_what_the_toolchain_generates_for_a_machine_is_not_mirrored_but_its_committed_mcp_files_are(self):
         for rel in self.GENERATED:
