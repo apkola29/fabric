@@ -16,6 +16,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
@@ -209,6 +210,75 @@ class CloneModeTests(unittest.TestCase):
                    {"path": "docs/link", "mode": "120000", "type": "blob", "sha": "4" * 40}]
         self.assertEqual({"a.md": ("100644", "1" * 40), "docs/sub": ("160000", "3" * 40), "docs/link": ("120000", "4" * 40)},
                          verify_remote.normalize_tree(listing))
+
+    def readme_pair(self):
+        return "README.md=%s" % (self.clone / "README.md")
+
+    def commit_readme(self, data):
+        write(self.clone / "README.md", data)
+        self.git(self.clone, "add", "README.md")
+        self.git(self.clone, "commit", "-q", "-m", "readme")
+
+    def test_an_extra_file_with_windows_line_endings_matches_the_bytes_that_were_committed(self):
+        self.commit_readme(b"# readme\r\nline\r\n")
+        code, out = self.check(more=[self.readme_pair()])
+        self.assertEqual(0, code, out)
+
+    def test_an_extra_file_matches_when_git_stored_it_with_unix_line_endings(self):
+        self.commit_readme(b"# readme\nline\n")
+        write(self.clone / "README.md", b"# readme\r\nline\r\n")
+        code, out = self.check(more=[self.readme_pair()])
+        self.assertEqual(0, code, out)
+
+    def test_an_extra_file_with_other_text_is_different_whatever_its_line_endings(self):
+        self.commit_readme(b"# readme\nline\n")
+        write(self.clone / "README.md", b"# readme\r\nanother line\r\n")
+        code, out = self.check(more=[self.readme_pair()])
+        self.assertEqual(1, code, out)
+        self.assertIn("DIFFERENT      README.md", out)
+
+    def test_ignore_rules_that_are_not_modelled_stop_the_check(self):
+        write(self.project / ".gitignore", "private/\n[ab]*.md\n")
+        with self.assertRaises(SystemExit) as stopped:
+            self.check()
+        self.assertIn("not modelled", str(stopped.exception))
+
+
+class GithubListingTests(unittest.TestCase):
+    """What the check does with the answers of the GitHub API: anything it cannot read stops it, and nothing is skipped."""
+    ROOT = {"tree": [{"path": "fabric-automation", "mode": "040000", "type": "tree", "sha": "1" * 40}]}
+    BLOB = {"path": "a.md", "mode": "100644", "type": "blob", "sha": "2" * 40}
+
+    def read(self, full):
+        def fake(*args):
+            return full if args[0].endswith("?recursive=1") else self.ROOT
+        with mock.patch.object(verify_remote, "gh_json", fake):
+            return verify_remote.remote_tree("o/r", "c" * 40, "fabric-automation")
+
+    def test_a_complete_listing_is_read(self):
+        self.assertEqual({"a.md": ("100644", "2" * 40)}, self.read({"truncated": False, "tree": [self.BLOB]}))
+
+    def test_a_truncated_listing_stops_the_check(self):
+        with self.assertRaises(SystemExit):
+            self.read({"truncated": True, "tree": [self.BLOB]})
+
+    def test_a_listing_that_does_not_say_whether_it_is_complete_stops_the_check(self):
+        for full in ({"tree": [self.BLOB]}, {"truncated": None, "tree": [self.BLOB]}, {"truncated": "false", "tree": [self.BLOB]}):
+            with self.subTest(full=full):
+                with self.assertRaises(SystemExit):
+                    self.read(full)
+
+    def test_an_entry_that_cannot_be_judged_stops_the_check_instead_of_being_skipped(self):
+        broken = [{"mode": "100644", "type": "blob", "sha": "2" * 40}, {"path": "a.md", "mode": "100644", "sha": "2" * 40},
+                  {"path": "a.md", "mode": "100644", "type": "blob"}, {"path": "a.md", "type": "blob", "sha": None}, "a.md", None]
+        for entry in broken:
+            with self.subTest(entry=entry):
+                with self.assertRaises(SystemExit):
+                    self.read({"truncated": False, "tree": [self.BLOB, entry]})
+
+    def test_an_entry_of_a_type_that_is_not_known_stops_the_check(self):
+        with self.assertRaises(SystemExit):
+            self.read({"truncated": False, "tree": [dict(self.BLOB, type="weird")]})
 
 
 if __name__ == "__main__":

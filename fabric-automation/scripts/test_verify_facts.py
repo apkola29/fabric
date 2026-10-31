@@ -46,7 +46,7 @@ def status_of(fact, routes, seen=None):
 
 def file_fact(**extra):
     fact = {"id": "f", "kind": "github-file", "repo": "o/r", "ref": "@latest-release", "path": "f.py",
-            "regex": "the_flag", "expect": "absent", "claim": "c", "cited_in": "d"}
+            "regex": "the_flag", "expect": "absent", "control": "marker", "claim": "c", "cited_in": "d"}
     fact.update(extra)
     return fact
 
@@ -59,21 +59,37 @@ def page_fact(**extra):
 
 class GithubFileTests(unittest.TestCase):
     def test_absent_at_the_latest_release_passes(self):
-        routes = {LATEST: (200, json.dumps({"tag_name": "v2.0.0"})), RAW + "v2.0.0/f.py": (200, "nothing here")}
+        routes = {LATEST: (200, json.dumps({"tag_name": "v2.0.0"})), RAW + "v2.0.0/f.py": (200, "marker nothing here")}
         self.assertEqual(verify_facts.PASS, status_of(file_fact(), routes))
+
+    def test_an_absence_is_not_believed_when_the_file_lacks_its_control_text(self):
+        for body in ("<html>Please sign in</html>", "nothing here", "Access denied by the proxy"):
+            with self.subTest(body=body):
+                routes = {LATEST: (200, json.dumps({"tag_name": "v2.0.0"})), RAW + "v2.0.0/f.py": (200, body)}
+                self.assertEqual(verify_facts.UNREACHABLE, status_of(file_fact(), routes))
+
+    def test_an_absence_claim_without_a_control_pattern_is_an_invalid_entry(self):
+        fact = file_fact()
+        del fact["control"]
+        self.assertEqual(verify_facts.FAIL, status_of(fact, {}))
+
+    def test_a_presence_claim_needs_no_control(self):
+        fact = file_fact(ref="main", expect="present")
+        del fact["control"]
+        self.assertEqual(verify_facts.PASS, status_of(fact, {RAW: (200, "has the_flag")}))
 
     def test_the_latest_release_is_looked_up_not_assumed(self):
         seen = []
-        routes = {LATEST: (200, json.dumps({"tag_name": "v7.1.0"})), RAW: (200, "nothing here")}
+        routes = {LATEST: (200, json.dumps({"tag_name": "v7.1.0"})), RAW: (200, "marker nothing here")}
         status_of(file_fact(), routes, seen)
         self.assertTrue(any("/v7.1.0/" in url for url in seen), seen)
 
     def test_a_flag_that_appears_is_drift_when_unstable(self):
-        routes = {LATEST: (200, json.dumps({"tag_name": "v3.0.0"})), RAW: (200, "has the_flag now")}
+        routes = {LATEST: (200, json.dumps({"tag_name": "v3.0.0"})), RAW: (200, "marker has the_flag now")}
         self.assertEqual(verify_facts.DRIFT, status_of(file_fact(stable=False), routes))
 
     def test_a_flag_that_appears_fails_when_stable(self):
-        routes = {LATEST: (200, json.dumps({"tag_name": "v3.0.0"})), RAW: (200, "has the_flag now")}
+        routes = {LATEST: (200, json.dumps({"tag_name": "v3.0.0"})), RAW: (200, "marker has the_flag now")}
         self.assertEqual(verify_facts.FAIL, status_of(file_fact(stable=True), routes))
 
     def test_a_pinned_ref_is_not_replaced_by_the_latest_release(self):
@@ -139,9 +155,10 @@ class ErrorStatusTests(unittest.TestCase):
 
 
 class FakeResponse:
-    def __init__(self, status, body):
+    def __init__(self, status, body, url):
         self.status = status
         self._body = body
+        self._url = url
 
     def __enter__(self):
         return self
@@ -151,6 +168,14 @@ class FakeResponse:
 
     def read(self):
         return self._body.encode("utf-8")
+
+    def geturl(self):
+        return self._url
+
+
+def serving(status, body, final_url=None):
+    """A stand-in for urlopen. The answer comes from the requested address unless a final address after a redirect is given."""
+    return lambda req, timeout=40: FakeResponse(status, body, final_url or req.full_url)
 
 
 class HttpGetTests(unittest.TestCase):
@@ -163,12 +188,23 @@ class HttpGetTests(unittest.TestCase):
     def test_an_empty_answer_is_unreachable(self):
         for body in ("", "  \n"):
             with self.subTest(body=body):
-                with mock.patch.object(verify_facts.urlrequest, "urlopen", lambda req, timeout=40: FakeResponse(200, body)):
+                with mock.patch.object(verify_facts.urlrequest, "urlopen", serving(200, body)):
                     with self.assertRaises(verify_facts.Unreachable):
                         verify_facts.http_get("https://example.test/x")
 
     def test_a_real_answer_is_returned(self):
-        with mock.patch.object(verify_facts.urlrequest, "urlopen", lambda req, timeout=40: FakeResponse(200, "text")):
+        with mock.patch.object(verify_facts.urlrequest, "urlopen", serving(200, "text")):
+            self.assertEqual((200, "text"), verify_facts.http_get("https://example.test/x"))
+
+    def test_an_answer_from_another_host_after_a_redirect_is_unreachable(self):
+        for final in ("https://elsewhere.test/login", "https://example.test.evil.test/x", "http://other.example.test/x"):
+            with self.subTest(final=final):
+                with mock.patch.object(verify_facts.urlrequest, "urlopen", serving(200, "Please sign in", final)):
+                    with self.assertRaises(verify_facts.Unreachable):
+                        verify_facts.http_get("https://example.test/x")
+
+    def test_a_redirect_within_the_same_host_is_followed(self):
+        with mock.patch.object(verify_facts.urlrequest, "urlopen", serving(200, "text", "https://EXAMPLE.test/moved/y")):
             self.assertEqual((200, "text"), verify_facts.http_get("https://example.test/x"))
 
     def test_server_errors_and_throttling_are_unreachable(self):
@@ -342,7 +378,7 @@ class UnusableAnswerTests(unittest.TestCase):
                 self.assertEqual(verify_facts.UNREACHABLE, status_of(fact, {prefix: (200, "{}")}))
 
     def test_an_empty_file_does_not_prove_a_pattern_absent(self):
-        with mock.patch.object(verify_facts.urlrequest, "urlopen", lambda req, timeout=40: FakeResponse(200, "")):
+        with mock.patch.object(verify_facts.urlrequest, "urlopen", serving(200, "")):
             results = verify_facts.run([file_fact(ref="main"), page_fact()], pause=0)
         self.assertEqual([verify_facts.UNREACHABLE, verify_facts.UNREACHABLE], [r[0] for r in results])
 
@@ -501,7 +537,7 @@ class FactsFileTests(unittest.TestCase):
 
     def test_regular_expressions_compile(self):
         for fact in self.facts:
-            patterns = list(fact.get("all", [])) + [p for p in [fact.get("regex"), fact.get("show")] if p]
+            patterns = list(fact.get("all", [])) + [p for p in [fact.get("regex"), fact.get("show"), fact.get("control")] if p]
             for pattern in patterns:
                 re.compile(pattern)
 
@@ -509,6 +545,142 @@ class FactsFileTests(unittest.TestCase):
         for fact in self.facts:
             for name in re.findall(r"(?:docs|ci)/[\w./-]+\.(?:md|yml)", fact["cited_in"]):
                 self.assertTrue((PROJECT / name).exists(), "%s cites %s, which does not exist" % (fact["id"], name))
+
+    def test_a_claim_says_what_its_check_proves_and_gives_no_reason(self):
+        reasoning = re.compile(r"\b(so|therefore|hence|thus|which means|which does not|which is why)\b", re.IGNORECASE)
+        for fact in self.facts:
+            self.assertIsNone(reasoning.search(fact["claim"]), "%s: the claim gives a reason, and no check can prove a reason" % fact["id"])
+
+
+def real_fact(fact_id):
+    facts = json.loads((HERE / "facts.json").read_text(encoding="utf-8"))["facts"]
+    return next(fact for fact in facts if fact["id"] == fact_id)
+
+
+def routes_for(fact, body):
+    if fact["kind"] == "page":
+        return {fact["url"]: (200, body)}
+    return {"https://raw.githubusercontent.com/%s/%s/%s" % (fact["repo"], fact["ref"], fact["path"]): (200, body)}
+
+
+class ClaimPrecisionTests(unittest.TestCase):
+    """Each test removes the one text that a real entry stands for and expects the check to stop passing.
+
+    Every case below is a check that stayed green after that text was removed.
+    """
+
+    def assert_needs(self, fact_id, good, removed, replacement=""):
+        fact = real_fact(fact_id)
+        self.assertEqual(verify_facts.PASS, status_of(fact, routes_for(fact, good)), "the sample must pass before it is changed")
+        mutated = good.replace(removed, replacement)
+        self.assertNotEqual(good, mutated, "the mutation changed nothing")
+        self.assertNotEqual(verify_facts.PASS, status_of(fact, routes_for(fact, mutated)))
+
+    PERMISSION = 'To subscribe to this event, a GitHub App must have at least read-level access for the "Members" organization permission. '
+
+    def test_the_membership_permission_needs_its_own_sentence_not_the_word_members(self):
+        good = ("Action type : added An organization member was added to a team. This event occurs when there is activity relating to team membership. "
+                'For more information about the APIs to manage team memberships, see "Team members" in the REST API documentation. '
+                + self.PERMISSION + "Availability for membership")
+        self.assert_needs("page-webhook-membership", good, self.PERMISSION)
+
+    def test_the_team_permission_needs_its_own_sentence(self):
+        good = ('A team was granted access to a repository. This event occurs when there is activity relating to teams in an organization. '
+                'For more information, see "About teams." ' + self.PERMISSION + "Availability for team")
+        self.assert_needs("page-webhook-team", good, self.PERMISSION)
+
+    GIT_ITEMS = ("Data Agents Data Factory items: Copy Job Ontology (preview) Plan (preview) "
+                 "Report (except reports connected to semantic models hosted in Azure Analysis Services , SQL Server Analysis Services , "
+                 "or reports exported by Power BI Desktop that depend on semantic models hosted in MyWorkspace ) (preview) "
+                 "Semantic model (except push datasets, live connections to Analysis Services, model v1) (preview) Database items: SQL database")
+
+    def test_the_semantic_model_bullet_needs_its_own_preview_tag(self):
+        self.assert_needs("page-git-supported-items", self.GIT_ITEMS, "model v1) (preview)", "model v1)")
+
+    def test_the_report_bullet_needs_its_own_preview_tag(self):
+        self.assert_needs("page-git-supported-items", self.GIT_ITEMS, "MyWorkspace ) (preview)", "MyWorkspace )")
+
+    def test_a_data_agent_with_a_preview_tag_is_not_what_the_page_claims(self):
+        self.assert_needs("page-git-supported-items", self.GIT_ITEMS, "Data Agents Data", "Data Agents (preview) Data")
+
+    def test_the_entra_page_check_does_not_read_the_wildcard_negation_as_support(self):
+        good = ("A maximum of 20 federated identity credentials can be added to an application or user-assigned managed identity. "
+                "The subject setting values must exactly match the configuration on the GitHub workflow configuration. "
+                "Wildcard characters aren't supported in any federated identity credential property value.")
+        self.assert_needs("page-entra-federated-credential-limits", good, "aren't supported", "are supported")
+
+    def test_the_bot_signature_check_needs_the_conditions_not_only_the_heading(self):
+        good = ("Signature verification for bots will only work if the request is verified and authenticated as the GitHub App or bot "
+                "and contains no custom author information, custom committer information, and no custom signature information.")
+        self.assert_needs("page-github-bot-signatures", good,
+                          " and contains no custom author information, custom committer information, and no custom signature information")
+
+    def test_only_the_admin_column_may_permanently_delete_a_recoverable_item(self):
+        good = ("You can change the retention period (from 7 to 90 days) by using the Define workspace retention period setting in OneLake catalog. "
+                "Action Workspace Viewer Workspace Contributor Workspace Member Workspace Admin Recover a deleted item No Yes Yes Yes "
+                "Permanently delete a recoverable item No No No Yes Note")
+        self.assert_needs("page-retention-recovery", good, "recoverable item No No No Yes", "recoverable item No No Yes Yes")
+
+    def test_the_organization_budget_alert_sentence_must_sit_in_the_organization_paragraph(self):
+        good = ('Organization budget An organization\'s metered charges From first metered use Per organization Only if "Stop usage when budget limit is reached" is enabled '
+                "The user-level budget (ULB) caps how many AI credits a single user can consume in a billing cycle, whether usage is metered or drawn from an included pool. ULBs always enforce a hard stop. "
+                "Organization budget An organization budget limits metered charges for users whose Copilot seats are billed to that organization. "
+                "If Stop usage when budget limit is reached is not enabled, the budget only sends alerts and app spending continues after the limit is reached. "
+                "For information about managing app access, see the page.")
+        self.assert_needs("page-copilot-budget-stop-setting", good, "the budget only sends alerts", "the budget enforces a limit")
+
+    def test_every_webhook_action_must_be_in_the_openapi_description(self):
+        operations = ("membership/added", "membership/removed", "team/edited", "team/added-to-repository", "team/removed-from-repository")
+        good = "".join('"operationId": "%s", ' % name for name in operations)
+        for name in operations:
+            self.assert_needs("webhook-actions-in-github-openapi", good, '"operationId": "%s", ' % name)
+
+    MATRIX = ("Item type Workspace private links Customer managed keys Outbound access protection Data Engineering "
+              "Lakehouse \u2713 \u2713 \u2713 Lakehouse SQL analytics endpoint \u2713 \u2713 \u2713 Notebook \u2713 \u2713 \u2713 Spark Job Definition \u2713 \u2713 \u2713 "
+              "Data Factory Default Semantic Model \u2713 - \u2713 Pipeline \u2713 \u2713 \u2713 Dataflow Gen1 - - - "
+              "Data Science Experiment \u2713 \u2713 \u2713 Data Agent \u2713 - Preview Power BI Power BI Report - - Preview Dashboard - - - "
+              "Semantic Model - - Preview Streaming dataflow - - - Fabric IQ Graph model - - \u2713 Ontology - - - Operations agent")
+
+    def test_the_matrix_cells_must_keep_their_marks(self):
+        for removed, replacement in (("Notebook \u2713 \u2713 \u2713", "Notebook \u2713 \u2713 Preview"), ("Pipeline \u2713 \u2713 \u2713", "Pipeline \u2713 \u2713 -"),
+                                     ("Report - - Preview", "Report - - \u2713"), ("Ontology - - -", "Ontology - - Preview")):
+            self.assert_needs("page-oap-availability-matrix", self.MATRIX, removed, replacement)
+
+    ENCLAVE = ("invocations.set(claims.invocationId, state);\n    }\n"
+               "    if (state.maxRequests !== null && state.requests >= state.maxRequests) {\n"
+               "      return { allowed: false, reason: 'request_limit' };\n    }\n"
+               "    if (state.maxTokens !== null) {\n"
+               "      if (state.exhausted || state.tokens >= state.maxTokens) {\n"
+               "        return { allowed: false, reason: 'token_limit', tokenFailure: 'budget_exhausted' };\n      }\n")
+
+    def test_the_request_ceiling_must_refuse_the_request(self):
+        self.assert_needs("awf-enclave-budget-refusals", self.ENCLAVE, "reason: 'request_limit'", "reason: 'ok'")
+
+    def test_the_token_ceiling_must_refuse_the_request(self):
+        self.assert_needs("awf-enclave-budget-refusals", self.ENCLAVE, "reason: 'token_limit'", "reason: 'ok'")
+
+    BLOCK_STATE = ("function getAiCreditsBlockState() {\n  const config = getAiCreditsConfig();\n"
+                   "  const roundedTotalAiCredits = roundCredits(aiCreditsState.totalAiCredits);\n\n"
+                   "  // Hard cap always applies, regardless of config\n"
+                   "  if (roundedTotalAiCredits >= HARD_CAP_AI_CREDITS) {\n    return {\n      maxAiCredits: HARD_CAP_AI_CREDITS,\n"
+                   "      totalAiCredits: roundedTotalAiCredits,\n      maxExceeded: true,\n      hardCap: true,\n    };\n  }\n\n"
+                   "  if (!config.max) return null;\n  return {\n    maxAiCredits: config.max,\n"
+                   "    totalAiCredits: roundedTotalAiCredits,\n    maxExceeded: roundedTotalAiCredits >= config.max,\n  };\n}\n")
+
+    def test_the_hard_cap_branch_must_be_in_the_block_state(self):
+        branch = ("  if (roundedTotalAiCredits >= HARD_CAP_AI_CREDITS) {\n    return {\n      maxAiCredits: HARD_CAP_AI_CREDITS,\n"
+                  "      totalAiCredits: roundedTotalAiCredits,\n      maxExceeded: true,\n      hardCap: true,\n    };\n  }\n")
+        self.assert_needs("awf-ai-credits-block-state", self.BLOCK_STATE, branch)
+
+    def test_the_configured_maximum_must_decide_the_block_state(self):
+        self.assert_needs("awf-ai-credits-block-state", self.BLOCK_STATE, "roundedTotalAiCredits >= config.max", "false")
+
+    REFUSAL = ("      block: getAiCreditsBlockState(),\n      isBlocked: block => block && block.maxExceeded,\n"
+               "      // Terminal hard cap, non-retryable.\n      statusCode: 403,\n      eventName: 'ai_credits_limit_exceeded',\n"
+               "      buildError: buildAiCreditsLimitError,\n")
+
+    def test_a_request_must_be_refused_when_the_cap_is_exceeded(self):
+        self.assert_needs("awf-ai-credits-refusal", self.REFUSAL, "block && block.maxExceeded", "false")
 
 
 if __name__ == "__main__":

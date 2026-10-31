@@ -4,7 +4,10 @@
 Compares the Git blob hash of every file that would be published (line endings
 normalised to LF, as Git stores them) with the blob hash held at the same path,
 and reports missing, extra and different files, and any entry that is not a
-regular file (a symbolic link or a gitlink). By default the other side is
+regular file (a symbolic link or a gitlink). A file kept outside the folder
+(--extra) is accepted as it is or with CRLF turned into LF. A listing that
+GitHub does not mark as complete, or with an entry that cannot be judged, stops
+the check. By default the other side is
 the repository on GitHub, which needs the GitHub CLI (gh) signed in to an
 account that can read it. With --clone and --commit the other side is that
 commit in a local clone, so the publish script can prove that a commit holds
@@ -23,7 +26,7 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from validate_docs import publishable_files  # noqa: E402
+from validate_docs import UnsupportedIgnore, publishable_files  # noqa: E402
 
 
 def gh_json(*args):
@@ -47,15 +50,37 @@ def blob_sha(data):
     return hashlib.sha1(b"blob %d\x00" % len(data) + data).hexdigest()
 
 
+def blob_hashes(data):
+    """The hashes Git may hold for a file outside the project folder: as it is, or with CRLF turned into LF.
+
+    The project's .gitattributes covers only the project folder, so a file kept outside it (the repository README)
+    is stored as it is unless the repository has its own rules. Either way the text is the same."""
+    return {hashlib.sha1(b"blob %d\x00" % len(data) + data).hexdigest(), blob_sha(data)}
+
+
 def local_files(folder):
     """{path: blob hash} of every file the validator has to read and the publish script would copy."""
     folder = Path(folder)
-    return {rel: blob_sha((folder / rel).read_bytes()) for rel in publishable_files(folder)}
+    try:
+        listed = publishable_files(folder)
+    except UnsupportedIgnore as exc:
+        raise SystemExit("cannot tell which files would be published, because the ignore rules are not modelled: %s" % exc)
+    return {rel: blob_sha((folder / rel).read_bytes()) for rel in listed}
 
 
 def normalize_tree(entries):
-    """{path: (mode, hash)} for the files and gitlinks of a tree listing. Folders are only containers."""
-    return {entry["path"]: (entry.get("mode", ""), entry["sha"]) for entry in entries if entry.get("type") in ("blob", "commit")}
+    """{path: (mode, hash)} for the files and gitlinks of a tree listing. Folders are only containers.
+
+    An entry that has no path, type or hash cannot be judged, so it stops the check instead of being skipped."""
+    out = {}
+    for entry in entries:
+        if not isinstance(entry, dict) or not all(isinstance(entry.get(key), str) and entry[key] for key in ("path", "type", "sha")):
+            raise SystemExit("GitHub listed a tree entry without a path, a type or a hash; cannot verify")
+        if entry["type"] in ("blob", "commit"):
+            out[entry["path"]] = (entry.get("mode", ""), entry["sha"])
+        elif entry["type"] != "tree":
+            raise SystemExit("GitHub listed a tree entry of the unknown type %s; cannot verify" % entry["type"][:20])
+    return out
 
 
 def remote_tree(repo, commit, remote_path):
@@ -67,8 +92,10 @@ def remote_tree(repo, commit, remote_path):
             return None
         sha = match["sha"]
     full = gh_json("repos/%s/git/trees/%s?recursive=1" % (repo, sha))
-    if full.get("truncated"):
-        raise SystemExit("GitHub truncated the tree listing; cannot verify")
+    if full.get("truncated") is not False:
+        raise SystemExit("GitHub did not say that the tree listing is complete; cannot verify")
+    if not isinstance(full.get("tree"), list):
+        raise SystemExit("GitHub answered without a tree listing; cannot verify")
     return normalize_tree(full["tree"])
 
 
@@ -180,7 +207,7 @@ def main(argv=None):
         elif remote_mode not in REGULAR_MODES:
             print("UNEXPECTED-MODE %s %s" % (remote_rel, remote_mode))
             problems += 1
-        elif remote_sha != blob_sha(local_file.read_bytes()):
+        elif remote_sha not in blob_hashes(local_file.read_bytes()):
             print("DIFFERENT      %s" % remote_rel)
             problems += 1
         else:

@@ -24,6 +24,7 @@ import time
 from pathlib import Path
 from urllib import error as urlerror
 from urllib import request as urlrequest
+from urllib.parse import urlsplit
 
 PASS, DRIFT, FAIL, UNREACHABLE = "PASS", "DRIFT", "FAIL", "UNREACHABLE"
 
@@ -40,6 +41,10 @@ def http_get(url, timeout=40):
     req = urlrequest.Request(url, headers={"User-Agent": "fabric-automation-verify-facts", "Accept": "*/*"})
     try:
         with urlrequest.urlopen(req, timeout=timeout) as resp:
+            # A redirect to another host (a sign-in page, a captive portal) is not the source that was meant.
+            final = urlsplit(resp.geturl()).netloc.lower()
+            if final != urlsplit(url).netloc.lower():
+                raise Unreachable("%s answered from another host (%s)" % (urlsplit(url).netloc, final[:60]))
             body = resp.read().decode("utf-8", "replace")
             if resp.status == 200 and not body.strip():
                 # An empty answer would make every "pattern absent" claim pass.
@@ -153,6 +158,9 @@ def check_github_file(fact):
     found = bool(re.search(fact["regex"], body))
     changed = FAIL if fact.get("stable", True) else DRIFT
     if fact.get("expect") == "absent":
+        # A pattern is only absent from the file that was meant, so that file must hold its control text.
+        if not re.search(fact["control"], body):
+            raise Unreachable("the answer lacks its control text, so it may not be the file that was meant")
         if not found:
             return PASS, "pattern absent at %s" % ref
         return changed, "pattern is now present at %s" % ref
@@ -293,7 +301,7 @@ REQUIRED_KEYS = {
     "arxiv": ("id_list", "title_contains"), "page": ("url",),
 }
 STRING_KEYS = ("id", "claim", "cited_in", "url", "repo", "ref", "path", "package", "version", "tag", "sha", "ghsa", "cve",
-               "contains", "id_list", "title_contains", "regex", "show")
+               "contains", "id_list", "title_contains", "regex", "show", "control")
 BOOLEAN_KEYS = ("stable", "raw")
 LIST_KEYS = ("all", "present", "absent")
 
@@ -324,6 +332,8 @@ def validate_definition(fact):
             raise InvalidFact("%s must be true or false" % key)
     if fact.get("expect", "present") not in ("present", "absent"):
         raise InvalidFact("expect must be present or absent")
+    if fact.get("expect") == "absent" and "control" not in fact:
+        raise InvalidFact("a claim that a pattern is absent needs a control pattern that the same file must contain")
     for key in LIST_KEYS:
         if key in fact:
             strings_only(fact[key], key)
@@ -336,7 +346,7 @@ def validate_definition(fact):
                 strings_only(segment[key], "segment " + key)
     if kind == "page" and not (fact.get("all") or segment):
         raise InvalidFact("a page fact checks nothing without 'all' or 'segment'")
-    patterns = list(fact.get("all", [])) + [p for p in (fact.get("regex"), fact.get("show")) if p]
+    patterns = list(fact.get("all", [])) + [p for p in (fact.get("regex"), fact.get("show"), fact.get("control")) if p]
     for pattern in patterns:
         try:
             re.compile(pattern)

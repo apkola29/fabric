@@ -5,8 +5,8 @@ Checks file hygiene, Markdown tables and fences, section numbering, the
 definition and use of every identifier (FR-nn, D-nn, HR-n, S-n and so on),
 requirement and decision coverage, the review disposition log and its counts,
 links and paths, Mermaid diagrams, repeated numbers, leaks of local paths,
-addresses and secrets, and that every file that would be published is of a type
-the leak scan reads.
+addresses and secrets, characters that could hide text from the leak scan, and
+that every file that would be published is of a type the leak scan reads.
 
 Exit status is 1 when an ERROR is found (or a WARN with --strict).
 """
@@ -14,12 +14,12 @@ Exit status is 1 when an ERROR is found (or a WARN with --strict).
 from __future__ import annotations
 
 import argparse
-import fnmatch
 import os
 import re
 import stat
 import sys
 import time
+import unicodedata
 from collections import Counter
 from pathlib import Path
 from urllib import error as urlerror
@@ -31,30 +31,59 @@ TEXT_SUFFIXES = {".md", ".py", ".ps1", ".yml", ".yaml", ".json", ".txt"}
 TEXT_NAMES = {".gitignore", ".gitattributes"}
 
 
+class UnsupportedIgnore(ValueError):
+    """An ignore rule, or a layout of ignore files, that this validator does not model.
+
+    It stops the run instead of guessing, because a guess could make the list of publishable files differ from what Git adds.
+    """
+
+
 def ignore_rules(folder):
-    """The rules of the folder's .gitignore. Negated rules are skipped, which can only make this list ignore more than Git does."""
+    """The rules of the project's .gitignore, read like Git reads them for the syntax this project may use.
+
+    That is: names, * and ? (which never cross a slash), a leading or inner slash (the rule is anchored to the project
+    folder), a trailing slash (folders only), and a leading ! (re-include). Trailing spaces are dropped and leading ones
+    count, as in Git. Anything else raises UnsupportedIgnore, as does an ignore file in a subfolder. The tests compare
+    this reading with Git itself.
+    """
+    folder = Path(folder)
+    for nested in sorted(folder.rglob(".gitignore")):
+        rel = nested.relative_to(folder).as_posix()
+        if rel != ".gitignore" and not any(part in SKIP_DIRS for part in rel.split("/")[:-1]):
+            raise UnsupportedIgnore("%s: only the .gitignore at the top of the project is modelled" % rel)
     rules = []
-    path = Path(folder) / ".gitignore"
+    path = folder / ".gitignore"
     if path.exists():
-        for line in path.read_text(encoding="utf-8").splitlines():
-            line = line.strip()
-            if line and not line.startswith("#") and not line.startswith("!"):
-                rules.append(line)
+        for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+            text = line.rstrip(" ")
+            if not text or text.startswith("#"):
+                continue
+            negated = text.startswith("!")
+            if negated:
+                text = text[1:]
+            if re.search(r"[\[\]\\]|\*\*", text) or not text.strip("/"):
+                raise UnsupportedIgnore(".gitignore line %d (%s) uses syntax that is not modelled" % (number, line.strip()[:40]))
+            directory_only = text.endswith("/")
+            body = text.rstrip("/")
+            anchored = "/" in body
+            regex = "".join("[^/]*" if c == "*" else "[^/]" if c == "?" else re.escape(c) for c in body.lstrip("/"))
+            rules.append((negated, re.compile("^" + ("" if anchored else "(?:.*/)?") + regex + "$"), directory_only))
     return rules
 
 
 def is_ignored(rel, rules):
-    """Names, wildcards and folder rules of a .gitignore, enough for this project."""
+    """Whether Git would ignore this file. Each folder on the way down is tried first, because a file cannot be re-included once a folder above it is excluded."""
     parts = rel.split("/")
-    for rule in rules:
-        if rule.endswith("/"):
-            name = rule.rstrip("/")
-            if "/" in name:
-                if rel == name or rel.startswith(name + "/"):
-                    return True
-            elif any(fnmatch.fnmatch(part, name) for part in parts[:-1]):
-                return True
-        elif fnmatch.fnmatch(parts[-1], rule) or fnmatch.fnmatch(rel, rule):
+    for depth in range(1, len(parts) + 1):
+        path = "/".join(parts[:depth])
+        is_dir = depth < len(parts)
+        decision = False
+        for negated, regex, directory_only in rules:
+            if directory_only and not is_dir:
+                continue
+            if regex.match(path):
+                decision = not negated
+        if decision:
             return True
     return False
 
@@ -182,8 +211,8 @@ def email_allowed(value):
 # Patterns are assembled from pieces so that this file does not match its own scan.
 LEAK_PATTERNS = [
     ("user-path", re.compile(
-        r"(?:[A-Za-z]:" + r"\\" + r"Users" + r"\\[^\\\s]+|/Users/[A-Za-z][^/\s]*/|/home/[A-Za-z][^/\s]*/|"
-        + r"\\" + r"AppData" + r"\\|" + "OneDrive" + r" - )")),
+        r"(?i:[a-z]:[\\/]" + "users" + r"[\\/][^\\/\s]+|[\\/]" + "appdata" + r"[\\/]|" + "onedrive" + r" - )"
+        r"|/Users/[A-Za-z][^/\s]*/|/home/[A-Za-z][^/\s]*/")),
     ("email", re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+")),
     ("guid", re.compile(r"\b[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\b")),
     ("jwt", re.compile(r"\bey" + r"J[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}")),
@@ -200,6 +229,33 @@ LEAK_PATTERNS = [
 MOJIBAKE = re.compile("\u00e2\u20ac|\u00c3[\u0080-\u00bf]|\u00c2[\u0080-\u00bf]|\ufffd")
 # Control characters that Git counts as non-printable (backspace, tab, form feed and escape are printable to it).
 CONTROL_CHARS = re.compile("[\x01-\x07\x0b\x0e-\x1a\x1c-\x1f\x7f]")
+NON_ASCII = re.compile(r"[^\x00-\x7f]")
+
+
+def hidden_character(ch):
+    """Why this character could hide text from the leak scan, or None.
+
+    The scan matches ASCII text, so invisible characters and letters of other scripts that look like Latin ones are
+    refused instead of being folded.
+    """
+    category = unicodedata.category(ch)
+    if category == "Cf" or "\x80" <= ch <= "\x9f":
+        return "an invisible character"
+    if category.startswith("L") and not unicodedata.name(ch, "").startswith("LATIN"):
+        return "a letter that is not Latin"
+    return None
+
+
+def hidden_in(lines):
+    """The first hidden character in these lines as (line number, message), or None. A leading byte-order mark is reported elsewhere."""
+    for number, line in enumerate(lines, 1):
+        for m in NON_ASCII.finditer(line):
+            if number == 1 and m.start() == 0 and m.group() == "\ufeff":
+                continue
+            why = hidden_character(m.group())
+            if why:
+                return number, "%s (U+%04X) can hide text from the leak scan" % (why, ord(m.group()))
+    return None
 PLACEHOLDER = re.compile(r"\b(?:TODO|TBD|FIXME|XXX)\b|<<<<<<<|>>>>>>>")
 
 
@@ -439,6 +495,9 @@ def check_hygiene(ctx):
             if not control_reported and CONTROL_CHARS.search(line):
                 ctx.report.error("hygiene", doc.rel, i, "control character (Git could treat the file as binary and store it unchanged)")
                 control_reported = True
+        hidden = hidden_in(doc.lines)
+        if hidden:
+            ctx.report.error("hygiene", doc.rel, hidden[0], hidden[1])
     ctx.report.note("hygiene", "%d text files, %d with CRLF endings (git stores them as LF)" % (len(ctx.docs), crlf_only))
 
 
@@ -1060,19 +1119,51 @@ def check_leaks(ctx, extra_files=()):
             if term.lower() in doc.rel.lower():
                 ctx.report.error("leak-denylist", doc.rel, 0, "a private denylist term appears in the file name")
     for path in extra_files:
-        label = "%s (outside the project)" % Path(path).name
-        try:
-            text = Path(path).read_text(encoding="utf-8", errors="replace")
-        except OSError as exc:
-            ctx.report.error("leak", label, 0, "cannot read the file (%s)" % type(exc).__name__)
-            continue
-        hits += scan_lines(ctx, label, text.splitlines(), deny)
+        hits += check_extra_file(ctx, path, "%s (outside the project)" % Path(path).name, deny)
     ctx.report.note("leaks", "%d hit(s), %d private term(s) checked, %d extra file(s)" % (hits, len(deny), len(list(extra_files))))
+
+
+def check_extra_file(ctx, path, label, deny):
+    """Scan a file given with --scan-file. It gets the checks of a project file, because a file that the scan cannot read is a file that was not scanned."""
+    path = Path(path)
+    if is_link(path):
+        ctx.report.error("link", label, 0, "a symbolic link or junction cannot be published (use the real file)")
+        return 0
+    try:
+        raw = path.read_bytes()
+    except OSError as exc:
+        ctx.report.error("leak", label, 0, "cannot read the file (%s)" % type(exc).__name__)
+        return 0
+    if raw.startswith(b"\xef\xbb\xbf"):
+        ctx.report.warn("hygiene", label, 1, "file starts with a byte-order mark")
+    if b"\x00" in raw:
+        ctx.report.error("hygiene", label, 0, "file contains NUL bytes (UTF-16?), so the leak scan cannot read it")
+        return 0
+    try:
+        text = raw.decode("utf-8")
+    except UnicodeDecodeError:
+        ctx.report.error("hygiene", label, 0, "file is not valid UTF-8, so the leak scan cannot read it")
+        return 0
+    lines = text.splitlines()
+    for number, line in enumerate(lines, 1):
+        if CONTROL_CHARS.search(line):
+            ctx.report.error("hygiene", label, number, "control character (Git could treat the file as binary and store it unchanged)")
+            break
+    hidden = hidden_in(lines)
+    if hidden:
+        ctx.report.error("hygiene", label, hidden[0], hidden[1])
+    return scan_lines(ctx, label, lines, deny)
 
 
 def check_unscanned(ctx):
     """A file the leak scan does not read could carry a private term unseen, so it must not be published."""
-    unscanned = [rel for rel in publishable_files(ctx.root) if rel not in ctx.docs]
+    try:
+        listed = publishable_files(ctx.root)
+    except UnsupportedIgnore as exc:
+        ctx.report.error("gitignore", ".gitignore", 0, str(exc))
+        ctx.report.note("unscanned-file", "not checked, because the ignore rules are not modelled")
+        return
+    unscanned = [rel for rel in listed if rel not in ctx.docs]
     for rel in unscanned:
         ctx.report.error("unscanned-file", rel, 0,
                          "the leak scan does not read this type of file, so it must not be published (remove it, or ignore it in .gitignore)")
@@ -1145,8 +1236,11 @@ def check_urls(ctx, include_raw=False):
 
 
 def run(root, denylist=None, check_urls_flag=False, include_raw=False, require_denylist=False, extra_files=()):
-    root = Path(root).resolve()
+    given = Path(root)
+    root = given.resolve()
     report = Report()
+    if is_link(given):
+        report.error("link", given.name or ".", 0, "the project folder itself is a symbolic link or junction, so what it holds cannot be told from what it points to")
     terms = []
     unreadable = False
     if denylist:

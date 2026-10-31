@@ -39,8 +39,12 @@ def state():
     except Exception:
         return {}
 env = os.environ
+if env.get("SYNC_STDERR_NOISE"):
+    sys.stderr.write("warning: noise on stderr that is not an answer\n")
 if tool == "git":
     if args[:1] == ["-C"]:
+        args = args[2:]
+    while args[:1] == ["-c"]:
         args = args[2:]
     cmd = args[0] if args else ""
     if cmd == "remote" and args[1] == "get-url":
@@ -51,11 +55,11 @@ if tool == "git":
     elif cmd == "rev-parse":
         print("%(head)s")
     elif cmd == "rev-list" and "--merges" in args:
-        print("0")
+        print(env.get("SYNC_MERGES", "0"))
     elif cmd == "rev-list":
-        print("1" if args[-1].startswith("origin/") and state().get("committed") else "0")
+        print("1" if args[-1].startswith("origin/") and (state().get("committed") or env.get("SYNC_AHEAD")) else "0")
     elif cmd == "log":
-        print("fabric-automation/README.md")
+        print(env.get("SYNC_LOG_PATHS", "fabric-automation/README.md").replace(";", "\n"))
     elif cmd == "diff" and "--name-status" in args:
         print("M\tfabric-automation/README.md")
     elif cmd == "diff" and "--shortstat" in args:
@@ -71,6 +75,18 @@ if tool == "gh":
     sys.exit(0)
 joined = " ".join(args)
 if "validate_docs.py" in joined:
+    if "--root" in args:
+        # The real validator skips these, so only a stand-in that looks at the disk can tell when they were removed.
+        root = args[args.index("--root") + 1]
+        found = []
+        for folder, names, files in os.walk(root):
+            found += [os.path.join(folder, n) for n in names if n in ("private", "__pycache__", ".pytest_cache")]
+            found += [os.path.join(folder, n) for n in files if n.endswith(".pyc")]
+        if os.path.exists(os.path.join(root, "docs", "research", "local")):
+            found.append(os.path.join(root, "docs", "research", "local"))
+        if found:
+            print("leftovers were still there when the mirror was scanned: " + found[0])
+            sys.exit(1)
     sys.exit(int(env.get("SYNC_MIRROR_SCAN_EXIT" if "--root" in args else "SYNC_SOURCE_SCAN_EXIT", "0")))
 if "unittest" in joined:
     sys.exit(int(env.get("SYNC_TESTS_EXIT", "0")))
@@ -109,6 +125,10 @@ class SyncFlowTests(unittest.TestCase):
         root = Path(self.tmp.name)
         self.clone = root / "clone"
         shutil.copytree(Path(self.base.name) / "template", self.clone)
+        # The script publishes a copy of the project, so a test can change the source and a mutated copy of the
+        # script (SYNC_SCRIPT_UNDER_TEST) can live anywhere.
+        self.project = root / "project"
+        shutil.copytree(Path(self.base.name) / "template" / "fabric-automation", self.project)
         self.bin = root / "bin"
         self.bin.mkdir()
         (self.bin / "shim.py").write_text(SHIM, encoding="utf-8")
@@ -121,11 +141,16 @@ class SyncFlowTests(unittest.TestCase):
     def tearDown(self):
         self.tmp.cleanup()
 
-    def publish(self, *extra, **env):
+    def publish(self, *extra, deny=True, **env):
         full = dict(os.environ, PATH=str(self.bin) + os.pathsep + os.environ["PATH"], **env)
-        proc = subprocess.run([powershell(), "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", str(SCRIPT),
-                               "-CloneDir", str(self.clone), "-DenyList", str(self.deny), "-Message", "test"] + list(extra),
-                              capture_output=True, text=True, env=full)
+        full.pop("FABRIC_AUTOMATION_DENYLIST", None)
+        for name in ("calls.log", "state.json"):
+            (self.bin / name).unlink(missing_ok=True)
+        command = [powershell(), "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", str(SCRIPT),
+                   "-CloneDir", str(self.clone), "-ProjectDir", str(self.project), "-Message", "test"]
+        if deny:
+            command += ["-DenyList", str(self.deny)]
+        proc = subprocess.run(command + list(extra), capture_output=True, text=True, env=full)
         log = self.bin / "calls.log"
         calls = log.read_text(encoding="utf-8").splitlines() if log.exists() else []
         return proc.returncode, proc.stdout + proc.stderr, calls
@@ -228,16 +253,26 @@ class SyncFlowTests(unittest.TestCase):
         for pattern in (self.TREE_CHECK, self.REMOTE_CHECK):
             self.assertTrue(any("--extra README.md=" in calls[i] for i in self.find(calls, pattern)), calls)
 
-    def test_excluded_leftovers_in_the_clone_are_removed_before_the_mirror_is_scanned(self):
+    def test_every_kind_of_leftover_is_gone_before_the_mirror_is_scanned(self):
         mirror = self.clone / "fabric-automation"
-        (mirror / "scripts" / "__pycache__").mkdir(parents=True, exist_ok=True)
-        (mirror / "scripts" / "__pycache__" / "x.pyc").write_bytes(b"\x00\x01")
-        (mirror / "private").mkdir(exist_ok=True)
-        (mirror / "private" / "leak.txt").write_text("private\n", encoding="utf-8")
+        leftovers = [mirror / "private" / "leak.txt", mirror / "docs" / "research" / "local" / "survey.md",
+                     mirror / "scripts" / "__pycache__" / "x.pyc", mirror / ".pytest_cache" / "v" / "cache.txt",
+                     mirror / "scripts" / "stray.pyc", mirror / "docs" / "private" / "nested.md"]
+        for path in leftovers:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(b"x\n")
         code, out, calls = self.publish("-NoPush")
         self.assertEqual(0, code, out)
-        self.assertFalse((mirror / "scripts" / "__pycache__").exists())
-        self.assertFalse((mirror / "private").exists())
+        for path in leftovers:
+            self.assertFalse(path.exists(), path)
+
+    def test_a_private_folder_at_any_depth_of_the_project_is_not_mirrored(self):
+        nested = self.project / "docs" / "private"
+        nested.mkdir()
+        (nested / "note.txt").write_text("never published\n", encoding="utf-8")
+        code, out, calls = self.publish("-NoPush")
+        self.assertEqual(0, code, out)
+        self.assertFalse((self.clone / "fabric-automation" / "docs" / "private").exists())
 
     def test_a_junction_in_the_clone_stops_the_run_and_nothing_behind_it_is_deleted(self):
         # robocopy /MIR, even with /XJ, deletes what a destination junction points to. The script must refuse instead.
@@ -256,6 +291,196 @@ class SyncFlowTests(unittest.TestCase):
         self.assertTrue((outside / "note.txt").exists(), "the script deleted through the junction")
         for pattern in (self.STAGE, self.COMMIT, self.PUSH):
             self.assert_never(calls, pattern)
+
+    def junction(self, link, target):
+        made = subprocess.run(["cmd", "/c", "mklink", "/J", str(link), str(target)], capture_output=True, text=True)
+        if made.returncode != 0:
+            self.skipTest("could not create a junction: " + made.stdout.strip()[:80])
+
+    def outside_folder(self):
+        outside = Path(self.tmp.name) / "outside"
+        (outside / "__pycache__").mkdir(parents=True)
+        (outside / "__pycache__" / "keep.pyc").write_bytes(b"\x00")
+        (outside / "precious.txt").write_text("keep me\n", encoding="utf-8")
+        return outside
+
+    def assert_untouched(self, outside):
+        self.assertEqual("keep me\n", (outside / "precious.txt").read_text(encoding="utf-8"), "the script changed what a link points to")
+        self.assertTrue((outside / "__pycache__" / "keep.pyc").exists(), "the script deleted through a link")
+        self.assertEqual([], sorted(p.name for p in outside.rglob("*.yml")), "the script wrote through a link")
+
+    def assert_a_link_stops_the_run(self, link, outside):
+        code, out, calls = self.publish("-NoPush")
+        self.assertNotEqual(0, code, out)
+        self.assertIn("is a link", out)
+        self.assert_untouched(outside)
+        for pattern in (self.STAGE, self.COMMIT, self.PUSH):
+            self.assert_never(calls, pattern)
+
+    def test_the_mirror_folder_itself_being_a_junction_stops_the_run_and_nothing_behind_it_is_deleted(self):
+        outside = self.outside_folder()
+        shutil.rmtree(self.clone / "fabric-automation")
+        self.junction(self.clone / "fabric-automation", outside)
+        self.assert_a_link_stops_the_run(self.clone / "fabric-automation", outside)
+
+    def test_the_github_folder_being_a_junction_stops_the_run_before_anything_is_written(self):
+        outside = self.outside_folder()
+        self.junction(self.clone / ".github", outside)
+        self.assert_a_link_stops_the_run(self.clone / ".github", outside)
+
+    def test_the_workflow_folder_being_a_junction_stops_the_run_before_anything_is_written(self):
+        outside = self.outside_folder()
+        (self.clone / ".github").mkdir()
+        self.junction(self.clone / ".github" / "workflows", outside)
+        self.assert_a_link_stops_the_run(self.clone / ".github" / "workflows", outside)
+
+    def test_a_workflow_file_that_is_a_symbolic_link_stops_the_run(self):
+        workflows = self.clone / ".github" / "workflows"
+        workflows.mkdir(parents=True)
+        target = Path(self.tmp.name) / "elsewhere.yml"
+        target.write_text("keep me\n", encoding="utf-8")
+        try:
+            os.symlink(target, workflows / "fabric-automation-validate.yml")
+        except (OSError, NotImplementedError):
+            self.skipTest("this account cannot create symbolic links")
+        code, out, calls = self.publish("-NoPush")
+        self.assertNotEqual(0, code, out)
+        self.assertIn("is a link", out)
+        self.assertEqual("keep me\n", target.read_text(encoding="utf-8"))
+
+    def test_the_private_list_is_required_and_given_to_both_scans(self):
+        code, out, calls = self.publish()
+        self.assertEqual(0, code, out)
+        for pattern in (self.SOURCE_SCAN, self.MIRROR_SCAN):
+            scan = calls[self.find(calls, pattern)[0]]
+            self.assertIn("--denylist %s --require-denylist" % self.deny, scan)
+
+    def test_without_a_private_list_the_run_stops_before_it_touches_anything(self):
+        code, out, calls = self.publish(deny=False)
+        self.assertNotEqual(0, code, out)
+        self.assertIn("no private denylist found", out)
+        for pattern in (r"^git .*\bfetch\b", self.SOURCE_SCAN, self.MIRROR_SCAN, self.STAGE, self.COMMIT, self.PUSH):
+            self.assert_never(calls, pattern)
+
+    def test_a_run_skips_the_private_list_only_when_asked_and_says_so(self):
+        code, out, calls = self.publish("-NoDenylist", deny=False)
+        self.assertEqual(0, code, out)
+        self.assertIn("without the private term check", out)
+        self.assertNotIn("--denylist", calls[self.find(calls, self.SOURCE_SCAN)[0]])
+
+    MANAGED = (r"-- fabric-automation \.github/workflows/fabric-automation-validate\.yml "
+               r"\.github/workflows/fabric-automation-facts\.yml")
+
+    def test_only_the_managed_paths_are_staged_and_committed(self):
+        code, out, calls = self.publish()
+        self.assertEqual(0, code, out)
+        self.assertRegex(calls[self.find(calls, self.STAGE)[0]], self.MANAGED + "$")
+        self.assertRegex(calls[self.find(calls, self.COMMIT)[0]], self.MANAGED + "$")
+
+    def test_the_repository_readme_joins_the_managed_paths_only_when_asked(self):
+        code, out, calls = self.publish("-IncludeReadme")
+        self.assertEqual(0, code, out)
+        self.assertRegex(calls[self.find(calls, self.STAGE)[0]], self.MANAGED + r" README\.md$")
+        self.assertRegex(calls[self.find(calls, self.COMMIT)[0]], self.MANAGED + r" README\.md$")
+
+    def test_a_commit_that_touches_a_path_outside_the_managed_set_is_never_pushed(self):
+        for paths in ("somewhere/else.txt", "fabric-automation/README.md;other/file.md", "Fabric-Automation/secret.txt",
+                      ".GITHUB/workflows/fabric-automation-validate.yml", "fabric-automationx/file.md"):
+            with self.subTest(paths=paths):
+                code, out, calls = self.publish(SYNC_LOG_PATHS=paths)
+                self.assertNotEqual(0, code, out)
+                self.assertIn("outside the managed set", out)
+                self.assert_never(calls, self.PUSH)
+
+    def test_the_readme_is_managed_only_with_its_exact_name(self):
+        code, out, calls = self.publish("-IncludeReadme", SYNC_LOG_PATHS="readme.md")
+        self.assertNotEqual(0, code, out)
+        self.assertIn("outside the managed set", out)
+        self.assert_never(calls, self.PUSH)
+
+    def test_a_merge_commit_is_never_pushed(self):
+        code, out, calls = self.publish(SYNC_MERGES="1")
+        self.assertNotEqual(0, code, out)
+        self.assertIn("merge commit", out)
+        self.assert_never(calls, self.PUSH)
+
+    def test_the_commit_log_is_read_with_settings_that_keep_path_parsing_stable(self):
+        code, out, calls = self.publish()
+        self.assertEqual(0, code, out)
+        log = calls[self.find(calls, r"^git .* log ")[0]]
+        self.assertIn("core.quotePath=false", log)
+        self.assertIn("--no-show-signature", log)
+
+    def test_a_failed_check_of_what_github_holds_is_a_failed_run(self):
+        code, out, calls = self.publish(SYNC_REMOTE_EXIT="1")
+        self.assertNotEqual(0, code, out)
+        self.assertIn("GitHub does not match", out)
+        self.assertNotIn("Done.", out)
+
+    def test_the_workflow_files_are_copied_from_the_mirror_with_unix_line_endings(self):
+        code, out, calls = self.publish("-NoPush")
+        self.assertEqual(0, code, out)
+        for name in ("fabric-automation-validate.yml", "fabric-automation-facts.yml"):
+            copy = (self.clone / ".github" / "workflows" / name).read_bytes()
+            self.assertEqual((self.project / "ci" / name).read_bytes().replace(b"\r\n", b"\n"), copy)
+            self.assertNotIn(b"\r", copy)
+
+    def test_earlier_local_commits_are_folded_after_the_mirror_scan_without_keeping_their_index(self):
+        code, out, calls = self.publish(SYNC_AHEAD="1")
+        self.assertEqual(0, code, out)
+        reset = self.find(calls, r"^git .*\breset\b")
+        self.assertEqual(1, len(reset), calls)
+        self.assertIn("reset --mixed origin/master", calls[reset[0]])
+        self.assertGreater(reset[0], self.find(calls, self.MIRROR_SCAN)[0], "the fold came before the mirror scan")
+        self.assertLess(reset[0], self.find(calls, self.STAGE)[0], "the fold came after staging")
+
+    def test_a_failed_scan_leaves_earlier_local_commits_where_they_are(self):
+        code, out, calls = self.publish(SYNC_AHEAD="1", SYNC_MIRROR_SCAN_EXIT="1")
+        self.assertNotEqual(0, code, out)
+        self.assert_never(calls, r"^git .*\breset\b")
+
+    def test_noise_on_stderr_of_a_successful_command_is_not_taken_for_its_answer(self):
+        code, out, calls = self.publish(SYNC_STDERR_NOISE="1")
+        self.assertEqual(0, code, out)
+        self.assertIn("%s:refs/heads/master" % HEAD, calls[self.find(calls, self.PUSH)[0]])
+
+
+@unittest.skipUnless(shutil.which("git"), "git is not installed")
+class FoldSemanticsTests(unittest.TestCase):
+    """Why the script folds earlier local commits with a mixed reset.
+
+    A soft reset keeps the index of those commits, including a file that was force-added although .gitignore keeps
+    it out, so the next run would commit it again and the pre-push check would refuse it on every run.
+    """
+    GIT = ["git", "-c", "core.autocrlf=false", "-c", "user.email=test" + "@example.invalid", "-c", "user.name=test", "-c", "commit.gpgsign=false"]
+
+    def git(self, cwd, *args):
+        proc = subprocess.run(self.GIT + list(args), cwd=cwd, capture_output=True, text=True)
+        self.assertEqual(0, proc.returncode, proc.stderr)
+        return proc.stdout
+
+    def staged_after_fold(self, mode):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            self.git(repo, "init", "-q")
+            (repo / "fabric-automation").mkdir()
+            (repo / "fabric-automation" / ".gitignore").write_text("*.tmp\n", encoding="utf-8")
+            (repo / "fabric-automation" / "a.md").write_text("a\n", encoding="utf-8")
+            self.git(repo, "add", "-A")
+            self.git(repo, "commit", "-q", "-m", "origin")
+            self.git(repo, "branch", "origin-master")
+            (repo / "fabric-automation" / "scratch.tmp").write_text("x\n", encoding="utf-8")
+            self.git(repo, "add", "-f", "fabric-automation/scratch.tmp")
+            self.git(repo, "commit", "-q", "-m", "earlier local commit")
+            self.git(repo, "reset", mode, "origin-master")
+            self.git(repo, "add", "-A", "--", "fabric-automation")
+            return self.git(repo, "diff", "--cached", "--name-only").split()
+
+    def test_a_soft_reset_keeps_a_force_added_ignored_file_in_the_next_commit(self):
+        self.assertEqual(["fabric-automation/scratch.tmp"], self.staged_after_fold("--soft"))
+
+    def test_a_mixed_reset_lets_the_ignore_rules_decide_again(self):
+        self.assertEqual([], self.staged_after_fold("--mixed"))
 
 
 if __name__ == "__main__":

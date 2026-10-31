@@ -18,6 +18,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 HERE = Path(__file__).resolve().parent
 PROJECT = HERE.parent
@@ -355,6 +356,142 @@ class ValidatorTests(unittest.TestCase):
     def test_required_file_missing(self):
         os.remove(self.root / "README.md")
         self.assert_flagged(self.validate(), "required-file")
+
+    LOCAL_PATHS = [
+        ("lower-case users folder", "C:" + "\\" + "users" + "\\" + "someone" + "\\" + "secret.txt"),
+        ("forward slashes and lower case", "C:" + "/users/someone/other.txt"),
+        ("mixed slashes", "C:" + "\\" + "Users/someone/x"),
+        ("upper case", "D:" + "\\" + "USERS" + "\\" + "someone" + "\\" + "x"),
+        ("lower-case app data folder", "in " + "\\" + "appdata" + "\\" + "local" + "\\" + "temp"),
+        ("app data folder with forward slashes", "in /" + "AppData" + "/Roaming/x"),
+        ("lower-case OneDrive tenant folder", "the folder onedrive" + " - contoso"),
+    ]
+
+    def test_a_local_path_is_found_in_any_case_and_with_either_slash(self):
+        for label, value in self.LOCAL_PATHS:
+            with self.subTest(label):
+                self.assertEqual(1, sum(1 for f in self._leaks_of(value) if f[1] == "leak"), value)
+
+    def test_an_api_url_with_a_users_segment_is_not_a_local_path(self):
+        self.assertEqual([], [f for f in self._leaks_of("https://api.github.com/users/octocat/repos") if f[1] == "leak"])
+
+    HIDDEN = [
+        ("a zero-width space", "se\u200bcret"),
+        ("a soft hyphen", "se\u00adcret"),
+        ("a right-to-left override", "\u202etext"),
+        ("a C1 control character", "next\u0085line"),
+        ("a Cyrillic letter inside a Latin word", "Us\u0435rs"),
+        ("a Greek letter", "\u03b1lpha"),
+        ("a full-width Latin letter", "\uff21BC"),
+    ]
+
+    def test_characters_that_hide_text_from_the_scan_are_refused(self):
+        for label, value in self.HIDDEN:
+            with self.subTest(label):
+                self.assertTrue(any(f[1] == "hygiene" for f in self._leaks_of(value)), label)
+
+    def test_typographic_punctuation_and_accented_latin_letters_are_fine(self):
+        self.assertEqual([], [f for f in self._leaks_of("an em dash \u2014, an arrow \u2192, a middle dot \u00b7, a caf\u00e8 and a check \u2714\ufe0f") if f[1] == "hygiene"])
+
+    def test_a_nul_byte_in_a_text_file_is_flagged(self):
+        path = self.root / "README.md"
+        path.write_bytes(path.read_bytes() + b"a line with a NUL \x00 byte\r\n")
+        self.assertTrue(any(f[1] == "hygiene" and "NUL" in f[4] for f in self.validate().findings))
+
+    def extra(self, name, data):
+        path = Path(self.tmp.name) / name
+        path.write_bytes(data)
+        return path
+
+    def test_scan_file_refuses_what_the_leak_scan_cannot_read(self):
+        cases = {
+            "utf16.md": "a private term\n".encode("utf-16"),
+            "nul.md": b"a line\x00with a NUL\n",
+            "invalid.md": b"invalid \xc3\x28 bytes\n",
+            "control.md": b"a stray \x01 control character\n",
+            "hidden.md": "se\u200bcret\n".encode("utf-8"),
+        }
+        for name, data in cases.items():
+            with self.subTest(name):
+                report = validate_docs.run(self.root, extra_files=[self.extra(name, data)])
+                self.assertTrue(report.has("ERROR", "hygiene"), report.render(quiet=True))
+
+    def test_scan_file_still_finds_a_private_term_in_a_utf8_file(self):
+        deny = self.write_list("deny.txt", (self.TERM + "\n").encode("utf-8"))
+        report = validate_docs.run(self.root, denylist=deny, extra_files=[self.extra("term.md", ("a line with " + self.TERM + "\n").encode("utf-8"))])
+        self.assert_flagged(report, "leak-denylist")
+
+    def test_scan_file_refuses_a_symbolic_link(self):
+        real = self.extra("real.md", b"A clean line.\n")
+        link = Path(self.tmp.name) / "link.md"
+        self.make_link(link, real)
+        self.assert_flagged(validate_docs.run(self.root, extra_files=[link]), "link")
+
+    def test_scan_file_refuses_a_link_even_where_links_cannot_be_made(self):
+        outside = self.extra("real.md", b"A clean line.\n")
+        with mock.patch.object(validate_docs, "is_link", lambda path: Path(path) == outside):
+            self.assert_flagged(validate_docs.run(self.root, extra_files=[outside]), "link")
+
+    def test_a_project_folder_that_is_a_symbolic_link_is_refused(self):
+        link = Path(self.tmp.name) / "symlink-root"
+        self.make_link(link, self.root, directory=True)
+        self.assert_flagged(validate_docs.run(link), "link")
+
+    @unittest.skipUnless(sys.platform == "win32", "junctions exist only on Windows")
+    def test_a_project_folder_that_is_a_junction_is_refused(self):
+        link = Path(self.tmp.name) / "junction-root"
+        made = subprocess.run(["cmd", "/c", "mklink", "/J", str(link), str(self.root)], capture_output=True, text=True)
+        if made.returncode != 0:
+            self.skipTest("could not create a junction: " + made.stdout.strip()[:80])
+        self.assert_flagged(validate_docs.run(link), "link")
+
+    def test_a_nested_ignore_file_is_refused_because_it_is_not_modelled(self):
+        (self.root / "docs" / ".gitignore").write_text("*.md\n", encoding="utf-8")
+        self.assert_flagged(self.validate(), "gitignore")
+
+    def test_ignore_syntax_that_is_not_modelled_is_refused(self):
+        for rule in ("[ab]*.md", "docs/**/x.md", "\\#literal", "**/x.md"):
+            with self.subTest(rule):
+                self.append(".gitignore", rule + "\n")
+                self.assert_flagged(self.validate(), "gitignore")
+                self.edit(".gitignore", lambda t: t.replace(rule + "\n", ""))
+
+
+@unittest.skipUnless(shutil.which("git"), "git is not installed")
+class IgnoreRuleTests(unittest.TestCase):
+    """The rule engine against Git itself: what Git would add must be what publishable_files lists."""
+
+    FILES = ["a.md", "b.tmp", "tmp1/x.md", "tmpdir/y.md", "docs/a.md", "docs/b.tmp", "docs/keep.bin", "docs/sub/c.md", "docs/sub/d.tmp",
+             "a/b", "axb", "a/c/b", ".env", "docs/.env", "src/x.pyc", "build/out/z.bin", "foo.txt", "dir/foo.txt", "dir/deep/foo.txt",
+             "nested/private/secret.md", "private/secret.md", "docs/q?.md", "docs/qa.md"]
+    RULESETS = [
+        ["*.tmp"], ["tmp*/"], ["/b.tmp"], ["docs/*.tmp"], ["a*b"], ["*.tmp", "!docs/b.tmp"], ["private/"], ["docs/", "!docs/keep.bin"],
+        [".env", "*.pyc"], ["build"], ["/build/"], ["docs/sub"], ["docs/q?.md"], ["foo.txt", "!dir/foo.txt"], ["dir/", "!dir/foo.txt", "*.md"],
+        ["# a comment", "", "  *.tmp  "], ["a/"], ["/a"], ["*", "!*.md"], ["docs/*"], ["/docs/sub/"],
+    ]
+
+    def git(self, root, *args):
+        env = dict(os.environ, GIT_CONFIG_GLOBAL=os.devnull, GIT_CONFIG_NOSYSTEM="1")
+        return subprocess.run(["git", "-C", str(root), *args], capture_output=True, text=True, env=env)
+
+    def test_every_rule_set_selects_the_files_that_git_would_add(self):
+        for rules in self.RULESETS:
+            with self.subTest(rules=rules), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                self.assertEqual(0, self.git(root, "init", "-q").returncode)
+                (root / ".gitignore").write_text("\n".join(rules) + "\n", encoding="utf-8")
+                for rel in self.FILES:
+                    if "?" in rel and sys.platform == "win32":
+                        continue
+                    path = root / rel
+                    path.parent.mkdir(parents=True, exist_ok=True)
+                    path.write_text("x\n", encoding="utf-8")
+                listed = self.git(root, "ls-files", "--others", "--exclude-standard", "-z")
+                self.assertEqual(0, listed.returncode, listed.stderr)
+                by_git = {p for p in listed.stdout.split("\0") if p and p != ".gitignore"}
+                parsed = validate_docs.ignore_rules(root)
+                mine = {rel for rel in self.FILES if (root / rel).exists() and not validate_docs.is_ignored(rel, parsed)}
+                self.assertEqual(sorted(by_git), sorted(mine), "rules %r" % (rules,))
 
 
 if __name__ == "__main__":
