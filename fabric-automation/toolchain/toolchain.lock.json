@@ -623,7 +623,7 @@
     "nuget:Azure.Bicep.McpServer": {
       "status": "resolved",
       "version": "0.48.1",
-      "integrity": null,
+      "integrity": "sha256-nTbIAHlggwHOGoCbKiXcdbtK3ePgKhlkE7Nz5YYqsIE=",
       "via": "nuget"
     },
     "pypi:microsoft-fabric-rti-mcp": {
@@ -641,14 +641,12 @@
   },
   "contracts": {
     "azure-arm-cost/default": {
-      "status": "skipped",
-      "reason": "skipped",
-      "detail": "contracts not captured"
+      "status": "needs-sign-in"
     },
     "azure-mcp/read": {
       "status": "captured",
-      "era": "legacy",
-      "protocol": "2025-11-25",
+      "era": "modern",
+      "protocol": "2026-07-28",
       "server": {
         "name": "Azure MCP Server",
         "version": "4.0.0-beta.4"
@@ -1090,8 +1088,8 @@
     },
     "fabric-local/docs": {
       "status": "captured",
-      "era": "legacy",
-      "protocol": "2025-11-25",
+      "era": "modern",
+      "protocol": "2026-07-28",
       "server": {
         "name": "Fabric MCP Server",
         "version": "1.6.0"
@@ -1138,8 +1136,8 @@
     },
     "fabric-local/full": {
       "status": "captured",
-      "era": "legacy",
-      "protocol": "2025-11-25",
+      "era": "modern",
+      "protocol": "2026-07-28",
       "server": {
         "name": "Fabric MCP Server",
         "version": "1.6.0"
@@ -1522,8 +1520,8 @@
     },
     "fabric-local/read": {
       "status": "captured",
-      "era": "legacy",
-      "protocol": "2025-11-25",
+      "era": "modern",
+      "protocol": "2026-07-28",
       "server": {
         "name": "Fabric MCP Server",
         "version": "1.6.0"

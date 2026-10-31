@@ -4205,6 +4205,31 @@ class DoctorTests(Base):
         self.assertNotIn("[WARN] sign-in", out)
         self.assertNotIn("skipped offline", out)
 
+    def test_a_gh_that_does_not_know_the_flag_is_asked_without_it(self):
+        # gh before 2.103.0 has no --no-refresh, and before that version no token refresh either, so a plain call is the same check.
+        runner = self.machine(answers={("gh", "auth", "status", "--no-refresh"): (1, "", "unknown flag: --no-refresh\n"),
+                                       ("gh", "auth", "status"): (0, "", "")})
+        code, out, err = self.doctor(runner=runner)
+        self.assertEqual((0, ""), (code, err), out)
+        self.assertIn("[PASS] sign-in gh: signed in", out)
+        self.assertEqual([["/opt/fake/bin/gh", "auth", "status", "--no-refresh"], ["/opt/fake/bin/gh", "auth", "status"]],
+                         [call for call in runner.calls if call[1:3] == ["auth", "status"]])
+
+    def test_an_old_gh_that_is_not_signed_in_is_reported_as_not_signed_in(self):
+        runner = self.machine(answers={("gh", "auth", "status", "--no-refresh"): (1, "", "unknown flag: --no-refresh\n"),
+                                       ("gh", "auth", "status"): (1, "", "You are not logged in to any GitHub hosts\n")})
+        self.assertIn("[WARN] sign-in gh: not signed in", self.doctor(runner=runner)[1])
+
+    def test_a_gh_that_is_not_signed_in_is_not_asked_again_without_the_flag(self):
+        runner = self.machine(answers={("gh", "auth", "status", "--no-refresh"): (1, "", "You are not logged in to any GitHub hosts\n")})
+        self.assertIn("[WARN] sign-in gh: not signed in", self.doctor(runner=runner)[1])
+        self.assertNotIn(["/opt/fake/bin/gh", "auth", "status"], runner.calls, "a plain gh auth status may refresh a token")
+
+    def test_only_gh_gets_the_second_call(self):
+        runner = self.machine(answers={("az", "account", "show"): (1, "", "unknown flag: --x\n")})
+        self.assertIn("[WARN] sign-in az: not signed in", self.doctor(runner=runner)[1])
+        self.assertEqual([["/opt/fake/bin/az", "account", "show"]], [call for call in runner.calls if call[0].endswith("/az") and call[1] != "--version"])
+
     def test_offline_runs_no_sign_in_check_at_all_and_says_so(self):
         runner = self.machine(answers={("gh", "auth", "status", "--no-refresh"): (1, "", ""), ("az", "account", "show"): (1, "", "")})
         code, out, err = self.doctor("--offline", runner=runner)

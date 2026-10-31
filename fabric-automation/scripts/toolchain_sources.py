@@ -45,7 +45,9 @@ NPM_TIMEOUT = 90
 HTTP_TIMEOUT = 20
 SKILL_DESCRIPTION_LIMIT = 1024
 SKILL_NAME_LIMIT = 64
-
+# The Windows values written out: the `stat` module of a Python that is not Windows does not define the reparse tags.
+FILE_ATTRIBUTE_REPARSE_POINT = 0x400
+IO_REPARSE_TAG_MOUNT_POINT = 0xA0000003  # the tag of a junction
 
 class SourceError(Exception):
     """The message is "<reason code>: <short detail>". The code is what a lock may store."""
@@ -86,8 +88,8 @@ def _combine(entries):
 def _junction(info):
     """True for the stat result of a Windows junction (a mount point). Other reparse points, such as a cloud file that is not
     downloaded yet, are ordinary files and folders."""
-    return (bool(getattr(info, "st_file_attributes", 0) & stat.FILE_ATTRIBUTE_REPARSE_POINT)
-            and getattr(info, "st_reparse_tag", 0) == stat.IO_REPARSE_TAG_MOUNT_POINT)
+    return (bool(getattr(info, "st_file_attributes", 0) & FILE_ATTRIBUTE_REPARSE_POINT)
+            and getattr(info, "st_reparse_tag", 0) == IO_REPARSE_TAG_MOUNT_POINT)
 
 
 def _entry_is_link(entry):

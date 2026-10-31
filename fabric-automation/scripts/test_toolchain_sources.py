@@ -408,7 +408,10 @@ class WalkTests(unittest.TestCase):
         def scandir(path):
             calls.append(path)
             return _FakeScan(entries if len(calls) == 1 else [])
-        with mock.patch.object(ts.os, "scandir", side_effect=scandir), mock.patch.object(ts, "WINDOWS", windows):
+        # A Python that is not Windows (the hosted Linux runner) has no reparse constants in `stat`, so the junction rule must not need them.
+        with mock.patch.object(ts.os, "scandir", side_effect=scandir), mock.patch.object(ts, "WINDOWS", windows), mock.patch.dict(vars(ts.stat)):
+            for name in ("IO_REPARSE_TAG_MOUNT_POINT", "IO_REPARSE_TAG_SYMLINK", "IO_REPARSE_TAG_APPEXECLINK", "FILE_ATTRIBUTE_REPARSE_POINT"):
+                vars(ts.stat).pop(name, None)
             return list(ts._walk("fake-folder")), calls
 
     def test_a_symbolic_link_to_a_folder_is_a_link_entry_and_is_not_followed(self):

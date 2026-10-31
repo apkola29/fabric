@@ -3111,7 +3111,11 @@ def cmd_doctor(args, deps, root):
         for tool, argv in (("gh", ["auth", "status", "--no-refresh"]), ("az", ["account", "show"])):
             path = deps.runner.which(tool)
             if path:
-                signed_in = deps.runner.run([path] + argv, timeout=30).returncode == 0
+                result = deps.runner.run([path] + argv, timeout=30)
+                if tool == "gh" and result.returncode != 0 and "unknown flag" in (result.stdout + result.stderr).lower():
+                    # gh before 2.103.0 has no --no-refresh and, before that version, no token refresh either: a plain call is the same check.
+                    result = deps.runner.run([path, "auth", "status"], timeout=30)
+                signed_in = result.returncode == 0
                 f.add("PASS" if signed_in else "WARN", "sign-in %s" % tool, "signed in" if signed_in else "not signed in")
     lock = _doctor_lock(project, manifest, profiles, name, f)
     resolved = None
