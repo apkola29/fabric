@@ -17,3 +17,10 @@ __pycache__/
 .pytest_cache/
 tmp*/
 *.tmp
+
+# The toolchain's local pack and what it copies or generates for a host (rebuilt from the lock).
+# .mcp.json is the Claude Code file; Copilot CLI would also read it first, so it is never committed.
+.factory/
+.github/skills/
+.claude/skills/
+/.mcp.json

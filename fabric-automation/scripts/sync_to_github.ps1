@@ -271,7 +271,10 @@ Assert-NotALink $workflowDir 'the workflow folder of the clone'
 foreach ($name in $Workflows) { Assert-NotALink (Join-Path $workflowDir $name) "the workflow file $name" }
 if ($IncludeReadme) { Assert-NotALink $ReadmeLive 'the README of the clone' }
 # A bare name excludes folders of that name at any depth, like the validator, which skips private folders anywhere.
-$exclude = @('private', (Join-Path $Project 'docs\research\local'), '__pycache__', '.pytest_cache')
+# The folders that the toolchain generates for a machine (its pack, and the skills it copies for a host) are ignored by
+# Git and are rebuilt from the lock, so they are not mirrored either; the MCP files in .github and .vscode are.
+$exclude = @('private', '.factory', (Join-Path $Project 'docs\research\local'), (Join-Path $Project '.github\skills'),
+             (Join-Path $Project '.claude\skills'), '__pycache__', '.pytest_cache')
 if (Test-Path -LiteralPath $destination) {
     $links = @(Find-Links $destination)
     if ($links.Count -gt 0) { throw "the mirror holds a link ($($links[0])); robocopy /MIR could delete what it points to. Remove the link by hand and run again" }
@@ -281,7 +284,7 @@ if (Test-Path -LiteralPath $destination) {
     if (Test-Path -LiteralPath $localResearch) { Remove-Item -LiteralPath $localResearch -Recurse -Force }
     Remove-Leftovers $destination
 }
-$null = robocopy $Project $destination /MIR /XD @exclude /XF '*.pyc' /XJ /NFL /NDL /NJH /NJS /NP
+$null = robocopy $Project $destination /MIR /XD @exclude /XF '*.pyc' '.mcp.json' /XJ /NFL /NDL /NJH /NJS /NP
 if ($LASTEXITCODE -ge 8) { throw "robocopy failed with exit code $LASTEXITCODE" }
 New-Item -ItemType Directory -Force -Path $workflowDir | Out-Null
 foreach ($name in $Workflows) {

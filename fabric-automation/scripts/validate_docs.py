@@ -251,7 +251,9 @@ LEAK_PATTERNS = [
         + r"|(?:/mnt|(?<![\w.-]))/[a-z]/+" + "users" + "/+" + _NAME
         + "|" + "onedrive" + r" - )"
         + r"|/Users" + _SLASHES + r"[A-Za-z_][^/\s]*|/home" + _SLASHES + r"[A-Za-z_][^/\s]*")),
-    ("email", re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+")),
+    # The last label of the domain has to be a top-level domain (letters only, or a punycode one). A package name with a
+    # version, such as name@1.6.0 or tool@0.24.0-beta, is not an address.
+    ("email", re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*\.(?:[A-Za-z]{2,}|xn--[A-Za-z0-9-]+)(?![A-Za-z0-9-])")),
     ("guid", re.compile(r"\b[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\b")),
     ("jwt", re.compile(r"\bey" + r"J[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}")),
     ("token", re.compile(r"\b(?:gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|AK" + r"IA[0-9A-Z]{16})\b")),

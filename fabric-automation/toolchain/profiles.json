@@ -1,0 +1,206 @@
+{
+  "schema": 1,
+  "about": "Job profiles. A profile names the mode, the skills and the MCP server variants that one kind of job or session may load. Nothing else is loaded. `verify` refuses a profile that breaks the rules of its mode (toolchain.json, modes).",
+  "profiles": {
+    "agent-intake": {
+      "mode": "agent",
+      "title": "Intake parser",
+      "design": "3.4",
+      "summary": "Turns the scanned issue text into a schema-valid spec. It has no tools and sees no repository, so this profile is empty on purpose and the loader must hand it nothing.",
+      "skills": [],
+      "mcp": [],
+      "instructions": ["instructions/factory-preamble.md"]
+    },
+    "agent-planner": {
+      "mode": "agent",
+      "title": "Planner",
+      "design": "3.4",
+      "summary": "Plans the change from the spec and a read-only clone, with offline Fabric documentation.",
+      "skills": [
+        {"source": "skills-for-fabric", "plugin": "powerbi-authoring", "names": ["semantic-model-authoring", "powerbi-report-cli"]}
+      ],
+      "mcp": [
+        {"server": "fabric-local", "variant": "docs"}
+      ],
+      "instructions": ["instructions/factory-preamble.md"]
+    },
+    "agent-test-author": {
+      "mode": "agent",
+      "title": "Test author",
+      "design": "3.4",
+      "summary": "Writes the declarative oracle tests from the spec before anything is implemented. It never sees the implementation.",
+      "skills": [
+        {"source": "skills-for-fabric", "plugin": "powerbi-authoring", "names": ["semantic-model-authoring", "powerbi-report-cli"]}
+      ],
+      "mcp": [
+        {"server": "fabric-local", "variant": "docs"}
+      ],
+      "instructions": ["instructions/factory-preamble.md"]
+    },
+    "agent-implementer": {
+      "mode": "agent",
+      "title": "Implementer",
+      "design": "3.4",
+      "summary": "Changes item definitions inside its own clone and runs the static gates locally. It cannot push, call Fabric or see the hidden checks.",
+      "skills": [
+        {"source": "skills-for-fabric", "plugin": "powerbi-authoring", "names": ["semantic-model-authoring", "powerbi-report-cli"]}
+      ],
+      "mcp": [
+        {"server": "fabric-local", "variant": "docs"},
+        {"server": "powerbi-authoring-local", "variant": "offline-readonly"}
+      ],
+      "instructions": ["instructions/factory-preamble.md"]
+    },
+    "agent-verifier": {
+      "mode": "agent",
+      "title": "Verifier",
+      "design": "3.4",
+      "summary": "Judges the diff against the spec and the sanitized evidence. Tool-less and read-only, so this profile is empty on purpose.",
+      "skills": [],
+      "mcp": [],
+      "instructions": ["instructions/factory-preamble.md"]
+    },
+    "executor-static-gates": {
+      "mode": "executor",
+      "title": "Static gate runner",
+      "design": "3.10",
+      "summary": "Runs the static gates (K6) without a Fabric credential. It validates local model files with the read-only authoring server and reads the offline documentation.",
+      "skills": [],
+      "mcp": [
+        {"server": "powerbi-authoring-local", "variant": "offline-readonly"},
+        {"server": "fabric-local", "variant": "docs"}
+      ],
+      "instructions": ["instructions/factory-preamble.md"]
+    },
+    "executor-sandbox-read": {
+      "mode": "executor",
+      "title": "Sandbox reader",
+      "design": "3.9",
+      "summary": "Reads the sandbox workspace for read-back checks and reconciliation (K7, K10) with a workload identity. Every write is a typed executor operation, not an MCP call.",
+      "skills": [],
+      "mcp": [
+        {"server": "fabric-local", "variant": "read"},
+        {"server": "powerbi-authoring-local", "variant": "service-readonly"}
+      ],
+      "instructions": ["instructions/factory-preamble.md"]
+    },
+    "dev-docs": {
+      "mode": "dev",
+      "title": "Documentation only",
+      "design": "3.13",
+      "summary": "The smallest useful start: offline Fabric documentation and Microsoft Learn, with no skill and no sign-in.",
+      "skills": [],
+      "mcp": [
+        {"server": "fabric-local", "variant": "docs"},
+        {"server": "microsoft-learn", "variant": "default"}
+      ],
+      "instructions": ["instructions/factory-preamble.md"]
+    },
+    "dev-fabric": {
+      "mode": "dev",
+      "title": "Fabric development",
+      "design": "3.13",
+      "summary": "All Fabric and Power BI skills and the Fabric MCP servers, signed in as yourself, for a sandbox workspace.",
+      "skills": [
+        {"source": "skills-for-fabric", "plugin": "fabric-skills", "names": "*"},
+        {"source": "skills-for-fabric", "plugin": "powerbi-authoring", "names": "*"}
+      ],
+      "mcp": [
+        {"server": "fabric-local", "variant": "full"},
+        {"server": "fabric-core", "variant": "default"},
+        {"server": "fabric-iq", "variant": "default"},
+        {"server": "powerbi-authoring-local", "variant": "interactive"},
+        {"server": "fabric-sql", "variant": "default"},
+        {"server": "microsoft-learn", "variant": "default"}
+      ],
+      "instructions": ["instructions/factory-preamble.md"]
+    },
+    "dev-powerbi": {
+      "mode": "dev",
+      "title": "Power BI authoring (local server)",
+      "design": "3.10",
+      "summary": "Semantic models and reports, with the local authoring server and Fabric IQ for questions over what is deployed.",
+      "skills": [
+        {"source": "skills-for-fabric", "plugin": "fabric-skills", "names": ["fabriciq", "semantic-model-authoring"]},
+        {"source": "skills-for-fabric", "plugin": "powerbi-authoring", "names": ["powerbi-report-cli"]}
+      ],
+      "mcp": [
+        {"server": "powerbi-authoring-local", "variant": "interactive"},
+        {"server": "fabric-iq", "variant": "default"},
+        {"server": "fabric-local", "variant": "docs"},
+        {"server": "microsoft-learn", "variant": "default"}
+      ],
+      "instructions": ["instructions/factory-preamble.md"]
+    },
+    "dev-powerbi-hosted": {
+      "mode": "dev",
+      "title": "Power BI authoring (hosted server)",
+      "design": "3.10",
+      "summary": "The same work with the hosted authoring server in place of the local one. Use one or the other, not both.",
+      "skills": [
+        {"source": "skills-for-fabric", "plugin": "fabric-skills", "names": ["fabriciq", "semantic-model-authoring"]},
+        {"source": "skills-for-fabric", "plugin": "powerbi-authoring", "names": ["powerbi-report-cli"]}
+      ],
+      "mcp": [
+        {"server": "powerbi-authoring-remote", "variant": "default"},
+        {"server": "fabric-iq", "variant": "default"},
+        {"server": "fabric-local", "variant": "docs"},
+        {"server": "microsoft-learn", "variant": "default"}
+      ],
+      "instructions": ["instructions/factory-preamble.md"]
+    },
+    "dev-realtime": {
+      "mode": "dev",
+      "title": "Real-Time Intelligence",
+      "design": "3.13",
+      "summary": "Eventhouse, Eventstreams, event schemas and Activator.",
+      "skills": [
+        {"source": "skills-for-fabric", "plugin": "fabric-skills", "names": ["eventhouse-cli", "eventstream-cli", "eventschemaset-cli", "activator-cli", "azmon-mirroredcatalogs-operations-cli"]}
+      ],
+      "mcp": [
+        {"server": "fabric-rti-local", "variant": "default"},
+        {"server": "fabric-local", "variant": "read"},
+        {"server": "microsoft-learn", "variant": "default"}
+      ],
+      "instructions": ["instructions/factory-preamble.md"]
+    },
+    "dev-azure": {
+      "mode": "dev",
+      "title": "Azure infrastructure",
+      "design": "3.5",
+      "summary": "The Azure skills with the Azure and Bicep MCP servers, read-only until you choose otherwise.",
+      "skills": [
+        {"source": "azure-skills", "plugin": "azure", "names": "*"},
+        {"source": "azure-skills", "plugin": "azure-cost", "names": "*"}
+      ],
+      "mcp": [
+        {"server": "azure-mcp", "variant": "read"},
+        {"server": "bicep-mcp", "variant": "default"},
+        {"server": "microsoft-learn", "variant": "default"}
+      ],
+      "instructions": ["instructions/factory-preamble.md"]
+    },
+    "dev-factory": {
+      "mode": "dev",
+      "title": "Working on the factory itself",
+      "design": "3.13",
+      "summary": "Everything a person needs to build and review the factory: all Fabric, Power BI and Azure skills, the Fabric servers, the Azure server in read-only form, and Learn. The project-level MCP files of this repository are rendered from this profile.",
+      "skills": [
+        {"source": "skills-for-fabric", "plugin": "fabric-skills", "names": "*"},
+        {"source": "skills-for-fabric", "plugin": "powerbi-authoring", "names": "*"},
+        {"source": "azure-skills", "plugin": "azure", "names": "*"},
+        {"source": "azure-skills", "plugin": "azure-cost", "names": "*"}
+      ],
+      "mcp": [
+        {"server": "fabric-local", "variant": "read"},
+        {"server": "fabric-core", "variant": "default"},
+        {"server": "fabric-iq", "variant": "default"},
+        {"server": "powerbi-authoring-local", "variant": "interactive"},
+        {"server": "fabric-sql", "variant": "default"},
+        {"server": "azure-mcp", "variant": "read"},
+        {"server": "microsoft-learn", "variant": "default"}
+      ],
+      "instructions": ["instructions/factory-preamble.md"]
+    }
+  }
+}

@@ -38,7 +38,14 @@ class ValidatorTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.root = Path(self.tmp.name) / "project"
-        shutil.copytree(PROJECT, self.root, ignore=shutil.ignore_patterns("__pycache__", "private", ".pytest_cache"))
+
+        def skip(folder, names):
+            # What the toolchain generates for a machine (all ignored by Git) is not part of the project that these tests copy.
+            skipped = {n for n in names if n in ("__pycache__", "private", ".pytest_cache", ".factory", ".claude", ".mcp.json")}
+            if Path(folder) == PROJECT / ".github":
+                skipped.add("skills")
+            return skipped
+        shutil.copytree(PROJECT, self.root, ignore=skip)
 
     def tearDown(self):
         self.tmp.cleanup()
@@ -161,6 +168,21 @@ class ValidatorTests(unittest.TestCase):
     def test_email_leak(self):
         self.append("README.md", "someone" + "@" + "example.org\n")
         self.assert_flagged(self.validate(), "leak")
+
+    def test_a_package_name_with_a_version_is_not_an_email(self):
+        values = ["name" + "@" + "1.6.0", "@scope/name" + "@" + "1.6.10", "Package.Id" + "@" + "3.0.0-beta.3",
+                  "tool" + "@" + "0.24.0-beta", "pkg" + "@" + "2.0.0-rc.12", "pkg" + "@" + "1.0", "pkg" + "@" + "1.0.0.rc1",
+                  "pkg" + "@" + "2.1.a"]
+        for value in values:
+            with self.subTest(value=value):
+                self.assertEqual([], [f for f in self._leaks_of(value) if f[1] == "leak"])
+
+    def test_real_addresses_are_still_emails(self):
+        values = ["someone" + "@" + "example.org", "first.last+tag" + "@" + "sub.example.co.uk", "a" + "@" + "b.cc",
+                  "x" + "@" + "example.xn--p1ai", "me" + "@" + "1.example.org"]
+        for value in values:
+            with self.subTest(value=value):
+                self.assertEqual(1, sum(1 for f in self._leaks_of(value) if f[1] == "leak"))
 
     def test_internal_host_leak(self):
         self.append("README.md", "https://team." + "share" + "point.com/site\n")

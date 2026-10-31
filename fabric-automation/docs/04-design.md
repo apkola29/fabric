@@ -456,18 +456,21 @@ The tier is computed by deterministic rules over the plan's operations, and then
 | Part | Contents |
 |---|---|
 | Official plugins, pinned | `fabric-skills` and `powerbi-authoring` at a tagged release (installed v0.3.19, upstream v0.3.20 at the time of writing), vendored by digest, update check disabled. Never auto-update |
+| Azure skills, pinned | The `azure` and `azure-cost` plugins of `azure-skills`, for infrastructure work (identity, capacity, Bicep). Same rules: a tagged release, vendored by digest, never auto-updated |
 | Factory plugin `factory-*` | `factory-intake-spec`, `factory-plan`, `factory-oracle-tests`, `factory-dataagent-pack`, `factory-ontology-pack`, `factory-validation-harness`, `factory-evidence`, `factory-review`, `factory-redteam` |
 | Templates | Issue form, PR template, spec schema, item templates, fixture-generator profiles |
 | Conventions | A map of about 100 lines (AGENTS.md style) plus modular docs. No document over about 10k tokens |
 | Golden examples | Curated, approved factory PRs per pack |
 | Policy (separate protected repo) | Allow and deny lists, tier rules, parse rules, capability matrix, gate thresholds, the data-class to model matrix, target profiles |
 | Quarantine list | Skills that are never loaded: `fabriciq-ontology-cli` (authors the retiring format), and any skill step that installs a package at run time |
-| Lock file | `knowledge.lock` with versions, SHAs and digests of every source, and the quarantine list |
+| MCP servers, pinned | Defined in the toolchain manifest, one named variant per use. The agent plane gets only local, offline, read-only servers (the Fabric documentation namespace, and the Power BI authoring server in read-only mode on local files). The executor plane gets read-only servers that a workload identity can use. The hosted servers act as the signed-in person, so they are for people only. Each stdio variant has its tool list and schema digests recorded, and a changed contract stops the job (HR-12) |
+| Toolchain kit | `toolchain/` and `scripts/toolchain.py`: the manifest, the profiles per role, the lock, and the commands that check, install, verify and update them (`../toolchain/README.md`). A job's profile is loaded and verified before the job starts |
+| Lock file | `knowledge.lock` with versions, SHAs and digests of every source, and the quarantine list. The toolchain kit implements it as `toolchain/toolchain.lock.json`, which also pins the MCP servers and their tool contracts |
 
 Lifecycle:
 
 - Changes arrive as PRs. CI lints the pack (description length, with the Agent Skills specification capping it at 1,024 characters, trigger overlap, and size), runs the prompt-security and secret scans, and runs the golden regression suite. A human approves (two approvers for policy). A tag is cut and the loader pins it.
-- A weekly job watches upstream releases and opens a refresh PR with a gap analysis. It never auto-merges.
+- A weekly job watches upstream releases and proposes a refresh with a gap analysis (today the `toolchain` job of the weekly workflow reports it and keeps a lock candidate, and a pull request makes the change). It never auto-merges.
 - Roll back by reverting the tag.
 - Upstream skills assume an interactive confirmation that an unattended run lacks. The pack therefore carries a rule: any step that asks for approval means escalate, and destructive operations are blocked by the executor regardless. Skill text cannot authorize a package install. The image has no package network at run time (HR-9).
 - Public skill registries carry real flaws (a vendor study found 36.8% of about 4,000 had one), so nothing outside the pinned bundle is loaded.

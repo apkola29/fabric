@@ -1,0 +1,329 @@
+{
+  "schema": 1,
+  "name": "fabric-automation-toolchain",
+  "about": "What the factory loads into every session and every job: agent skills, MCP servers and command-line tools, and the rules that decide which of them each mode may use. Design 3.13 and HR-9. Edit this file by hand and run `python scripts/toolchain.py lock` to resolve it into toolchain.lock.json.",
+  "default_profile": "dev-factory",
+  "store": ".factory/pack",
+  "modes": {
+    "dev": {
+      "summary": "A person at a keyboard, signed in as themselves, working against a sandbox workspace.",
+      "allow": {
+        "network": ["none", "microsoft-cloud", "internet"],
+        "credentials": ["none", "azure-identity", "entra-delegated", "github"],
+        "access": ["read", "read-write"],
+        "unattended": "any"
+      }
+    },
+    "agent": {
+      "summary": "The untrusted agent plane (design K4). No credential, no network. Skills come from the pinned pack and MCP servers are local, offline and read-only (HR-3, HR-9).",
+      "allow": {
+        "network": ["none"],
+        "credentials": ["none"],
+        "access": ["read"],
+        "unattended": "required"
+      }
+    },
+    "executor": {
+      "summary": "The trusted plane (K6, K7, K10). Identities come from workload identity, never from a person. MCP servers are read-only here, and every write is a typed executor operation (HR-2, HR-8).",
+      "allow": {
+        "network": ["none", "microsoft-cloud"],
+        "credentials": ["none", "azure-identity"],
+        "access": ["read"],
+        "unattended": "required"
+      }
+    }
+  },
+  "hosts": {
+    "copilot-cli": {
+      "title": "GitHub Copilot CLI",
+      "binary": "copilot",
+      "mcp_project": ".github/mcp.json",
+      "mcp_user": "$HOME/.copilot/mcp-config.json",
+      "skills_project": ".github/skills",
+      "skills_user": "$HOME/.copilot/skills",
+      "docs": [
+        "https://docs.github.com/en/copilot/how-tos/copilot-cli/customize-copilot/add-mcp-servers",
+        "https://docs.github.com/en/copilot/reference/copilot-cli-reference/cli-config-dir-reference"
+      ]
+    },
+    "vscode": {
+      "title": "Visual Studio Code with GitHub Copilot",
+      "binary": "code",
+      "mcp_project": ".vscode/mcp.json",
+      "mcp_user": null,
+      "skills_project": ".github/skills",
+      "skills_user": "$HOME/.copilot/skills",
+      "docs": [
+        "https://code.visualstudio.com/docs/agents/reference/mcp-configuration",
+        "https://code.visualstudio.com/docs/agent-customization/agent-skills"
+      ]
+    },
+    "claude-code": {
+      "title": "Claude Code",
+      "binary": "claude",
+      "mcp_project": ".mcp.json",
+      "mcp_user": null,
+      "skills_project": ".claude/skills",
+      "skills_user": "$HOME/.claude/skills",
+      "docs": [
+        "https://code.claude.com/docs/en/mcp",
+        "https://code.claude.com/docs/en/settings-reference"
+      ]
+    }
+  },
+  "tools": [
+    {"id": "git", "command": "git", "version_args": ["--version"], "min": "2.30", "needed_for": "everything", "required": true},
+    {"id": "python", "command": "python", "alternatives": ["python3", "py"], "version_args": ["--version"], "min": "3.10", "needed_for": "this kit and its checks", "required": true},
+    {"id": "node", "command": "node", "version_args": ["--version"], "min": "22", "needed_for": "MCP servers that are npm packages (the Fabric server's README asks for Node.js 22 or later)", "required": true},
+    {"id": "npx", "command": "npx", "version_args": ["--version"], "min": "10", "needed_for": "launching npm MCP servers", "required": true},
+    {"id": "gh", "command": "gh", "version_args": ["--version"], "min": "2.40", "needed_for": "publishing and the GitHub checks", "required": false},
+    {"id": "az", "command": "az", "version_args": ["--version"], "min": "2.60", "needed_for": "sign-in for the azure-identity variants", "required": false},
+    {"id": "dotnet", "command": "dotnet", "version_args": ["--version"], "min": "10", "needed_for": "the Bicep MCP server (dnx)", "required": false},
+    {"id": "uv", "command": "uv", "version_args": ["--version"], "min": "0.4", "needed_for": "the Real-Time Intelligence MCP server (uvx)", "required": false},
+    {"id": "fab", "command": "fab", "version_args": ["--version"], "min": "1.0", "needed_for": "the Fabric CLI that many Fabric skills call", "required": false, "package": {"ecosystem": "pypi", "name": "ms-fabric-cli", "track": "latest"}}
+  ],
+  "skill_sources": [
+    {
+      "id": "skills-for-fabric",
+      "title": "Microsoft Skills for Fabric",
+      "repo": "https://github.com/microsoft/skills-for-fabric.git",
+      "track": {"kind": "tag", "pattern": "v*"},
+      "marketplace": "fabric-collection",
+      "license": "MIT",
+      "plugins": [
+        {"name": "fabric-skills", "path": "plugins/fabric-skills"},
+        {"name": "powerbi-authoring", "path": "plugins/powerbi-authoring"}
+      ],
+      "notes": "The plugins also bundle MCP servers (unpinned, and with a name that both plugins use for different servers). The kit takes the skills only and defines its own MCP servers below."
+    },
+    {
+      "id": "azure-skills",
+      "title": "Microsoft Azure Skills",
+      "repo": "https://github.com/microsoft/azure-skills.git",
+      "track": {"kind": "tag", "pattern": "v*"},
+      "marketplace": "azure-skills",
+      "license": "MIT",
+      "plugins": [
+        {"name": "azure", "path": ".github/plugins/azure-skills"},
+        {"name": "azure-cost", "path": ".github/plugins/azure-cost"}
+      ],
+      "notes": "The azure plugin bundles the Azure MCP server at an unpinned version. The kit takes the skills only."
+    }
+  ],
+  "quarantine": [
+    {
+      "source": "skills-for-fabric",
+      "skill": "fabriciq-ontology-cli",
+      "reason": "It authors the ontology entity-JSON format that retires on 2027-01-31 (design 3.10, 3.13).",
+      "design": "3.13"
+    }
+  ],
+  "mcp_servers": [
+    {
+      "id": "fabric-local",
+      "title": "Fabric MCP Server (local)",
+      "transport": "stdio",
+      "status": "public-preview",
+      "summary": "Offline Fabric documentation, API specifications and item definitions, plus OneLake, core and Data Factory operations that need a sign-in.",
+      "docs": ["https://learn.microsoft.com/en-us/rest/api/fabric/articles/mcp-servers/pro-dev-local/get-started-local"],
+      "package": {"ecosystem": "npm", "name": "@microsoft/fabric-mcp", "track": "latest"},
+      "launch": {"command": "npx", "args": ["-y", "{package}"]},
+      "variants": {
+        "docs": {
+          "summary": "The documentation tools only, offline.",
+          "args": ["server", "start", "--mode", "all", "--namespace", "docs"],
+          "credentials": "none", "network": "none", "access": "read", "unattended": true,
+          "tools_read_only": true
+        },
+        "read": {
+          "summary": "Every read-only tool: documentation, core, OneLake and Data Factory.",
+          "args": ["server", "start", "--mode", "all", "--read-only"],
+          "credentials": "azure-identity", "network": "microsoft-cloud", "access": "read", "unattended": true,
+          "tools_read_only": true
+        },
+        "full": {
+          "summary": "Every tool, including create, update and delete.",
+          "args": ["server", "start", "--mode", "all"],
+          "credentials": "azure-identity", "network": "microsoft-cloud", "access": "read-write", "unattended": true
+        }
+      }
+    },
+    {
+      "id": "fabric-core",
+      "title": "Fabric core MCP (hosted)",
+      "transport": "http",
+      "url": "https://api.fabric.microsoft.com/v1/mcp/core",
+      "status": "unverified",
+      "summary": "Workspace, folder, item, role and capacity management as the signed-in user.",
+      "docs": ["https://learn.microsoft.com/en-us/rest/api/fabric/articles/mcp-servers/core-remote/get-started-core"],
+      "variants": {
+        "default": {
+          "summary": "All tools of the hosted server. A person signs in through the browser.",
+          "credentials": "entra-delegated", "network": "microsoft-cloud", "access": "read-write", "unattended": false
+        }
+      }
+    },
+    {
+      "id": "fabric-iq",
+      "title": "Fabric IQ MCP (hosted)",
+      "transport": "http",
+      "url": "https://fabriciq.svc.cloud.microsoft/v1/mcp/fabriciq",
+      "headers": {"X-VARIANTS": "Fabric.Routing.FabricIQ.V1"},
+      "status": "ga",
+      "summary": "Read-only questions over Power BI reports and semantic models. The header pins the contract (the URL version does not).",
+      "docs": ["https://learn.microsoft.com/en-us/fabric/iq/connectors/fabric-iq-mcp"],
+      "variants": {
+        "default": {
+          "summary": "Consumption tools. Delegated sign-in only: service principals are not supported.",
+          "credentials": "entra-delegated", "network": "microsoft-cloud", "access": "read", "unattended": false
+        }
+      }
+    },
+    {
+      "id": "powerbi-authoring-local",
+      "title": "Power BI Authoring MCP (local)",
+      "transport": "stdio",
+      "status": "ga",
+      "summary": "Semantic model authoring and validation on local PBIP and TMDL files, or on a model in the service.",
+      "docs": [
+        "https://learn.microsoft.com/en-us/power-bi/developer/mcp/power-bi-authoring-mcp",
+        "https://github.com/microsoft/powerbi-modeling-mcp"
+      ],
+      "package": {"ecosystem": "npm", "name": "@microsoft/powerbi-modeling-mcp", "track": "latest"},
+      "launch": {"command": "npx", "args": ["-y", "{package}"]},
+      "eula": {
+        "url": "https://github.com/microsoft/powerbi-modeling-mcp/blob/main/EULA.txt",
+        "accept": "operator",
+        "env": "PBI_MODELING_MCP_ACCEPT_EULA"
+      },
+      "env": {
+        "PBI_MODELING_MCP_ACCEPT_EULA": {"from_env": "PBI_MODELING_MCP_ACCEPT_EULA", "default": "false"}
+      },
+      "variants": {
+        "offline-readonly": {
+          "summary": "Read-only validation of local model files. No sign-in and no network.",
+          "args": ["--start", "--readonly"],
+          "credentials": "none", "network": "none", "access": "read", "unattended": true
+        },
+        "service-readonly": {
+          "summary": "Read-only access to a model in the service as a service principal.",
+          "args": ["--start", "--readonly", "--authmode=serviceprincipal"],
+          "env": {
+            "AZURE_CLIENT_ID": {"from_env": "AZURE_CLIENT_ID"},
+            "AZURE_TENANT_ID": {"from_env": "AZURE_TENANT_ID"},
+            "AZURE_CLIENT_SECRET": {"from_env": "AZURE_CLIENT_SECRET"}
+          },
+          "credentials": "azure-identity", "network": "microsoft-cloud", "access": "read", "unattended": true
+        },
+        "interactive": {
+          "summary": "Read and write, with a browser sign-in and a confirmation before each model edit.",
+          "args": ["--start"],
+          "credentials": "entra-delegated", "network": "microsoft-cloud", "access": "read-write", "unattended": false
+        }
+      }
+    },
+    {
+      "id": "powerbi-authoring-remote",
+      "title": "Power BI Authoring MCP (hosted)",
+      "transport": "http",
+      "url": "https://api.fabric.microsoft.com/v1/mcp/powerbi/authoring",
+      "status": "preview",
+      "summary": "The hosted twin of the local server, for models in the service.",
+      "docs": ["https://learn.microsoft.com/en-us/power-bi/developer/mcp/power-bi-authoring-mcp"],
+      "variants": {
+        "default": {
+          "summary": "Read and write semantic models as the signed-in user.",
+          "credentials": "entra-delegated", "network": "microsoft-cloud", "access": "read-write", "unattended": false
+        }
+      }
+    },
+    {
+      "id": "fabric-sql",
+      "title": "Fabric SQL endpoint MCP (hosted)",
+      "transport": "http",
+      "url": "https://api.fabric.microsoft.com/v1/mcp/dataPlane/sqlEndpoint",
+      "status": "unverified",
+      "summary": "T-SQL against a warehouse or a lakehouse SQL endpoint. The tool is named executeSQL on the Learn page and execute_query in the tool list of the skills repository's .github/plugin/marketplace.json, so its name is pinned by the contract check, not by this file. The id is not fabric-sqlendpoint on purpose: the Fabric plugin bundles a server of that name, and a host lets the plugin's server replace a project one of the same name.",
+      "docs": ["https://learn.microsoft.com/en-us/fabric/data-warehouse/data-warehouse-mcp-server"],
+      "variants": {
+        "default": {
+          "summary": "T-SQL statements as the signed-in user. The Learn page does not classify the tool as read-only, so it is treated as able to write.",
+          "credentials": "entra-delegated", "network": "microsoft-cloud", "access": "read-write", "unattended": false
+        }
+      }
+    },
+    {
+      "id": "fabric-rti-local",
+      "title": "Real-Time Intelligence MCP (local)",
+      "transport": "stdio",
+      "status": "public-preview",
+      "summary": "KQL, Eventhouse, Eventstreams and Activator.",
+      "docs": ["https://github.com/microsoft/fabric-rti-mcp"],
+      "package": {"ecosystem": "pypi", "name": "microsoft-fabric-rti-mcp", "track": "latest"},
+      "launch": {"command": "uvx", "args": ["{package}"]},
+      "variants": {
+        "default": {
+          "summary": "All tools, with the default Azure credential chain.",
+          "credentials": "azure-identity", "network": "microsoft-cloud", "access": "read-write", "unattended": "unverified"
+        }
+      }
+    },
+    {
+      "id": "azure-mcp",
+      "title": "Azure MCP Server",
+      "transport": "stdio",
+      "status": "beta",
+      "summary": "Azure resource tools by service namespace.",
+      "docs": ["https://github.com/microsoft/mcp/tree/main/servers/Azure.Mcp.Server"],
+      "package": {"ecosystem": "npm", "name": "@azure/mcp", "track": "latest"},
+      "launch": {"command": "npx", "args": ["-y", "{package}"]},
+      "variants": {
+        "read": {
+          "summary": "Read-only tools.",
+          "args": ["server", "start", "--read-only"],
+          "credentials": "azure-identity", "network": "microsoft-cloud", "access": "read", "unattended": true
+        },
+        "full": {
+          "summary": "All tools, including the ones that change resources.",
+          "args": ["server", "start"],
+          "credentials": "azure-identity", "network": "microsoft-cloud", "access": "read-write", "unattended": true
+        }
+      }
+    },
+    {
+      "id": "bicep-mcp",
+      "title": "Bicep MCP Server",
+      "transport": "stdio",
+      "status": "unverified",
+      "summary": "Bicep authoring help: resource type schemas, formatting, build and best practices.",
+      "docs": ["https://github.com/Azure/bicep/blob/main/docs/mcp-tools.md"],
+      "package": {"ecosystem": "nuget", "name": "Azure.Bicep.McpServer", "track": "latest"},
+      "launch": {"command": "dnx", "args": ["{package}", "--yes"]},
+      "variants": {
+        "default": {
+          "summary": "All tools. Its offline behaviour is not verified, so its network class is internet.",
+          "credentials": "none", "network": "internet", "access": "read", "unattended": true
+        }
+      }
+    },
+    {
+      "id": "microsoft-learn",
+      "title": "Microsoft Learn MCP (hosted)",
+      "transport": "http",
+      "url": "https://learn.microsoft.com/api/mcp",
+      "status": "ga",
+      "summary": "Search and fetch Microsoft Learn pages and code samples. No sign-in.",
+      "docs": ["https://github.com/MicrosoftDocs/mcp"],
+      "variants": {
+        "default": {
+          "summary": "Documentation search, fetch and code samples.",
+          "credentials": "none", "network": "internet", "access": "read", "unattended": true
+        }
+      }
+    }
+  ],
+  "update": {
+    "policy": "A refresh is a pull request, never an automatic change. `update --check` reports what changed upstream and what that breaks; `update --write` rewrites the lock only when the profiles still verify.",
+    "weekly_check": true
+  }
+}

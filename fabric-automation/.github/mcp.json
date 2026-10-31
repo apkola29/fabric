@@ -1,0 +1,80 @@
+{
+  "mcpServers": {
+    "fabric-local": {
+      "type": "local",
+      "command": "npx",
+      "args": [
+        "-y",
+        "@microsoft/fabric-mcp@1.6.0",
+        "server",
+        "start",
+        "--mode",
+        "all",
+        "--read-only"
+      ],
+      "tools": [
+        "*"
+      ]
+    },
+    "fabric-core": {
+      "type": "http",
+      "url": "https://api.fabric.microsoft.com/v1/mcp/core",
+      "tools": [
+        "*"
+      ]
+    },
+    "fabric-iq": {
+      "type": "http",
+      "url": "https://fabriciq.svc.cloud.microsoft/v1/mcp/fabriciq",
+      "headers": {
+        "X-VARIANTS": "Fabric.Routing.FabricIQ.V1"
+      },
+      "tools": [
+        "*"
+      ]
+    },
+    "powerbi-authoring-local": {
+      "type": "local",
+      "command": "npx",
+      "args": [
+        "-y",
+        "@microsoft/powerbi-modeling-mcp@1.0.0",
+        "--start"
+      ],
+      "env": {
+        "PBI_MODELING_MCP_ACCEPT_EULA": "${PBI_MODELING_MCP_ACCEPT_EULA:-false}"
+      },
+      "tools": [
+        "*"
+      ]
+    },
+    "fabric-sql": {
+      "type": "http",
+      "url": "https://api.fabric.microsoft.com/v1/mcp/dataPlane/sqlEndpoint",
+      "tools": [
+        "*"
+      ]
+    },
+    "azure-mcp": {
+      "type": "local",
+      "command": "npx",
+      "args": [
+        "-y",
+        "@azure/mcp@4.0.0-beta.4",
+        "server",
+        "start",
+        "--read-only"
+      ],
+      "tools": [
+        "*"
+      ]
+    },
+    "microsoft-learn": {
+      "type": "http",
+      "url": "https://learn.microsoft.com/api/mcp",
+      "tools": [
+        "*"
+      ]
+    }
+  }
+}

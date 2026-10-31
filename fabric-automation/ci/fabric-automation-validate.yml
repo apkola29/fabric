@@ -1,5 +1,5 @@
 # Validates the fabric-automation documents on every change to them.
-# Runs the validator's own mutation tests first, then the validator in strict mode.
+# Runs the tests first (the validator's mutation tests, the fact checker's and the toolchain's), then the validator in strict mode, then the toolchain check.
 name: fabric-automation validate
 
 on:
@@ -43,3 +43,7 @@ jobs:
       - name: Validate the documents
         working-directory: fabric-automation
         run: python3 scripts/validate_docs.py --strict
+
+      - name: Verify the toolchain (manifest, profiles, lock and generated host files)
+        working-directory: fabric-automation
+        run: python3 scripts/toolchain.py verify

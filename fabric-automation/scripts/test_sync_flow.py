@@ -134,7 +134,9 @@ class SyncFlowTests(unittest.TestCase):
         local = (PROJECT / "docs" / "research" / "local").resolve()
 
         def skip(folder, names):
-            skipped = {n for n in names if n in ("__pycache__", "private", ".pytest_cache")}
+            skipped = {n for n in names if n in ("__pycache__", "private", ".pytest_cache", ".factory", ".claude", ".mcp.json")}
+            if Path(folder) == PROJECT / ".github":
+                skipped.add("skills")
             return skipped | {n for n in names if (Path(folder) / n).resolve() == local}
         # A mirror that is already in place keeps each script run short: robocopy then has nothing to copy.
         shutil.copytree(PROJECT, template / "fabric-automation", ignore=skip)
@@ -330,6 +332,22 @@ class SyncFlowTests(unittest.TestCase):
         code, out, calls = self.publish("-NoPush")
         self.assertEqual(0, code, out)
         self.assertFalse((self.clone / "fabric-automation" / "docs" / "private").exists())
+
+    GENERATED = (".factory/pack/.cache/abc/objects/pack/x.idx", ".github/skills/a-skill/SKILL.md", ".claude/skills/a-skill/SKILL.md", ".mcp.json")
+
+    def test_what_the_toolchain_generates_for_a_machine_is_not_mirrored_but_its_committed_mcp_files_are(self):
+        for rel in self.GENERATED:
+            path = self.project / rel
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(b"x\n")
+        (self.project / ".github" / "mcp.json").write_text("{}\n", encoding="utf-8")
+        code, out, calls = self.publish("-NoPush")
+        self.assertEqual(0, code, out)
+        mirror = self.clone / "fabric-automation"
+        for rel in self.GENERATED:
+            self.assertFalse((mirror / rel).exists(), rel)
+        self.assertFalse((mirror / ".factory").exists())
+        self.assertEqual("{}\n", (mirror / ".github" / "mcp.json").read_text(encoding="utf-8"))
 
     def test_a_junction_in_the_clone_stops_the_run_and_nothing_behind_it_is_deleted(self):
         # robocopy /MIR, even with /XJ, deletes what a destination junction points to. The script must refuse instead.

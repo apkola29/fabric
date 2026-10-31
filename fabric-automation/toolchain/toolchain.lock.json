@@ -1,0 +1,699 @@
+{
+  "schema": 1,
+  "generated": "2026-10-31",
+  "inputs_digest": "sha256:36eb5de6933f1d4608ad9105a21ba3f61390f1339198bc6b9341ecb81fdda4f6",
+  "skill_sources": {
+    "azure-skills": {
+      "repo": "https://github.com/microsoft/azure-skills.git",
+      "tag": "v1.2.109",
+      "commit": "fbda857c484a85c7ce644f56809b7f204471fb69",
+      "plugins": {
+        "azure": {
+          "path": ".github/plugins/azure-skills",
+          "version": "1.2.109",
+          "skills": {
+            "airunway-aks-setup": {
+              "path": ".github/plugins/azure-skills/skills/airunway-aks-setup",
+              "digest": "sha256:22bc946935a4bb8a9282f234e4c41d1ded417df81dce376dec453b11d6388e91",
+              "files": 12,
+              "bytes": 26147,
+              "description_chars": 408,
+              "install_hints": 0,
+              "findings": []
+            },
+            "appinsights-instrumentation": {
+              "path": ".github/plugins/azure-skills/skills/appinsights-instrumentation",
+              "digest": "sha256:c38032776b0e4dfa787472f5fb25e58154940a085198ad9afe55e5775a111f04",
+              "files": 13,
+              "bytes": 24456,
+              "description_chars": 303,
+              "install_hints": 6,
+              "findings": []
+            },
+            "azure-ai": {
+              "path": ".github/plugins/azure-skills/skills/azure-ai",
+              "digest": "sha256:0b72ca09a1e8e91c69cecb5d4f94c3ff9f3900c066564c8ac98cada4efa7b190",
+              "files": 16,
+              "bytes": 28924,
+              "description_chars": 308,
+              "install_hints": 9,
+              "findings": []
+            },
+            "azure-aigateway": {
+              "path": ".github/plugins/azure-skills/skills/azure-aigateway",
+              "digest": "sha256:2be1a2f1d926293c8801fdd5b64d05c6016e65f778f86f83e22116cbd1cc23e0",
+              "files": 9,
+              "bytes": 40390,
+              "description_chars": 395,
+              "install_hints": 3,
+              "findings": []
+            },
+            "azure-app-onboard": {
+              "path": ".github/plugins/azure-skills/skills/azure-app-onboard",
+              "digest": "sha256:00c31b6bd8a9b82920e46f28bf123efc8cb525f23209ff6f6d604a35e95abdd1",
+              "files": 68,
+              "bytes": 382357,
+              "description_chars": 901,
+              "install_hints": 13,
+              "findings": []
+            },
+            "azure-app-onboard-prereq": {
+              "path": ".github/plugins/azure-skills/skills/azure-app-onboard-prereq",
+              "digest": "sha256:465c7961b50fb6e567cdb97f414fb765656ed362942db86760b68901472837a7",
+              "files": 16,
+              "bytes": 78204,
+              "description_chars": 930,
+              "install_hints": 14,
+              "findings": []
+            },
+            "azure-cloud-migrate": {
+              "path": ".github/plugins/azure-skills/skills/azure-cloud-migrate",
+              "digest": "sha256:970693a72467efc663150725e1e7dbec7c1398653afc3db375e9e2e71b6845bc",
+              "files": 31,
+              "bytes": 181875,
+              "description_chars": 445,
+              "install_hints": 0,
+              "findings": []
+            },
+            "azure-compliance": {
+              "path": ".github/plugins/azure-skills/skills/azure-compliance",
+              "digest": "sha256:33ede2ff80c2458ad160a4d0c73edc44665d9f732d3b8f74720922c05e4af312",
+              "files": 16,
+              "bytes": 47734,
+              "description_chars": 408,
+              "install_hints": 4,
+              "findings": []
+            },
+            "azure-compute": {
+              "path": ".github/plugins/azure-skills/skills/azure-compute",
+              "digest": "sha256:d587a2ae53ce8052bc11e845a2324ee3ec8f056059fe0df22102b56653bab115",
+              "files": 41,
+              "bytes": 134709,
+              "description_chars": 651,
+              "install_hints": 2,
+              "findings": []
+            },
+            "azure-deploy": {
+              "path": ".github/plugins/azure-skills/skills/azure-deploy",
+              "digest": "sha256:605730305145e4c6684f6d28c22a40a3320235231777cc54d3f4821ba5167414",
+              "files": 41,
+              "bytes": 131946,
+              "description_chars": 808,
+              "install_hints": 13,
+              "findings": []
+            },
+            "azure-diagnostics": {
+              "path": ".github/plugins/azure-skills/skills/azure-diagnostics",
+              "digest": "sha256:d2d43be46aa0cd1768641beec5bf269ffca60d6c564a5d9964104a32f45f7846",
+              "files": 54,
+              "bytes": 230901,
+              "description_chars": 983,
+              "install_hints": 1,
+              "findings": []
+            },
+            "azure-enterprise-infra-planner": {
+              "path": ".github/plugins/azure-skills/skills/azure-enterprise-infra-planner",
+              "digest": "sha256:730b84a23e89271e0cbc6ae296bc6e12421ce945abc5b293c776a0507f130ab9",
+              "files": 41,
+              "bytes": 145017,
+              "description_chars": 574,
+              "install_hints": 0,
+              "findings": []
+            },
+            "azure-kubernetes": {
+              "path": ".github/plugins/azure-skills/skills/azure-kubernetes",
+              "digest": "sha256:8b1c0385c45122e6e65d8dd08aa20d686e99750c00808aec2202f0048d3879dc",
+              "files": 56,
+              "bytes": 243192,
+              "description_chars": 621,
+              "install_hints": 5,
+              "findings": []
+            },
+            "azure-kusto": {
+              "path": ".github/plugins/azure-skills/skills/azure-kusto",
+              "digest": "sha256:3785dd0d85c839d52f89a35096622969ce31e433ea27371b0f287ae6e3c51719",
+              "files": 1,
+              "bytes": 8555,
+              "description_chars": 268,
+              "install_hints": 0,
+              "findings": []
+            },
+            "azure-messaging": {
+              "path": ".github/plugins/azure-skills/skills/azure-messaging",
+              "digest": "sha256:342c7315ad2147ed6364cdf1e23ef7a8c3bb7e143cf83f2e5d718ba356deb48f",
+              "files": 1,
+              "bytes": 3282,
+              "description_chars": 917,
+              "install_hints": 0,
+              "findings": []
+            },
+            "azure-prepare": {
+              "path": ".github/plugins/azure-skills/skills/azure-prepare",
+              "digest": "sha256:7b29cdefb795ab3ae6a0ccb6d3ff5c1aee9865d0203c4bafc11ce584f2176202",
+              "files": 166,
+              "bytes": 567575,
+              "description_chars": 723,
+              "install_hints": 34,
+              "findings": []
+            },
+            "azure-quotas": {
+              "path": ".github/plugins/azure-skills/skills/azure-quotas",
+              "digest": "sha256:64ee8d9ebff89edd36eb6e301e08f1996b78d42cd25bbd07646e87ab824cf038",
+              "files": 5,
+              "bytes": 31082,
+              "description_chars": 348,
+              "install_hints": 6,
+              "findings": []
+            },
+            "azure-reliability": {
+              "path": ".github/plugins/azure-skills/skills/azure-reliability",
+              "digest": "sha256:23771d1d7398ad3d34db6a9019d692474a986464cbfdab4b24d3a70a4b95f396",
+              "files": 13,
+              "bytes": 99989,
+              "description_chars": 529,
+              "install_hints": 2,
+              "findings": []
+            },
+            "azure-resource-lookup": {
+              "path": ".github/plugins/azure-skills/skills/azure-resource-lookup",
+              "digest": "sha256:8361a6e65ca5c13bf2d4000913ae72ceea49e1df9d8e72384d32c3aef3e0e3e3",
+              "files": 2,
+              "bytes": 10617,
+              "description_chars": 770,
+              "install_hints": 2,
+              "findings": []
+            },
+            "azure-resource-visualizer": {
+              "path": ".github/plugins/azure-skills/skills/azure-resource-visualizer",
+              "digest": "sha256:d6fa7065544de469ab25d7c5d08c9929a23d15d84137abf861f4ea53d92757d6",
+              "files": 4,
+              "bytes": 13666,
+              "description_chars": 373,
+              "install_hints": 1,
+              "findings": []
+            },
+            "azure-storage": {
+              "path": ".github/plugins/azure-skills/skills/azure-storage",
+              "digest": "sha256:63be1b2b3c0c167a19e7761a747414b97b398d67568a64430ec2b238fe143c3a",
+              "files": 14,
+              "bytes": 28831,
+              "description_chars": 753,
+              "install_hints": 10,
+              "findings": []
+            },
+            "azure-upgrade": {
+              "path": ".github/plugins/azure-skills/skills/azure-upgrade",
+              "digest": "sha256:86154b692bc44bbecaedac0e93a3af155bf53996401648db6104131df9dc1dde",
+              "files": 50,
+              "bytes": 338693,
+              "description_chars": 412,
+              "install_hints": 7,
+              "findings": []
+            },
+            "azure-validate": {
+              "path": ".github/plugins/azure-skills/skills/azure-validate",
+              "digest": "sha256:90681a84cefa32f02095ccd78b08777941e0567de6d16404314297e120b2c7d9",
+              "files": 27,
+              "bytes": 92346,
+              "description_chars": 634,
+              "install_hints": 4,
+              "findings": []
+            },
+            "discover-azure-skills": {
+              "path": ".github/plugins/azure-skills/skills/discover-azure-skills",
+              "digest": "sha256:2fb74dfc19132ae0c2c392a111477e09572dfd2a71c0afc443bc8177a8115f35",
+              "files": 4,
+              "bytes": 3316,
+              "description_chars": 316,
+              "install_hints": 1,
+              "findings": []
+            },
+            "entra-agent-id": {
+              "path": ".github/plugins/azure-skills/skills/entra-agent-id",
+              "digest": "sha256:198acc731cc4c6428df9ece203fbbaa82ae18688fec08b81b10f92354c362a4c",
+              "files": 7,
+              "bytes": 48661,
+              "description_chars": 595,
+              "install_hints": 2,
+              "findings": []
+            },
+            "entra-app-registration": {
+              "path": ".github/plugins/azure-skills/skills/entra-app-registration",
+              "digest": "sha256:713fd6ea75a5e9c0f6089c30422cbb2f0ecf2226dc74ee8addf039018822205e",
+              "files": 17,
+              "bytes": 83347,
+              "description_chars": 425,
+              "install_hints": 6,
+              "findings": []
+            },
+            "microsoft-foundry": {
+              "path": ".github/plugins/azure-skills/skills/microsoft-foundry",
+              "digest": "sha256:1e583bfcf055eae278adb97f85a54c864b1e97d8f7c3d5fc4506a5e040daac2e",
+              "files": 221,
+              "bytes": 1305011,
+              "description_chars": 952,
+              "install_hints": 12,
+              "findings": []
+            },
+            "python-appservice-deploy": {
+              "path": ".github/plugins/azure-skills/skills/python-appservice-deploy",
+              "digest": "sha256:84534e14e062f5820382f2e6af273f67ede48bda3c5762edcb6daa9ab55ac309",
+              "files": 13,
+              "bytes": 42748,
+              "description_chars": 281,
+              "install_hints": 3,
+              "findings": []
+            }
+          },
+          "agents": [],
+          "bundled_mcp": [
+            "azure"
+          ]
+        },
+        "azure-cost": {
+          "path": ".github/plugins/azure-cost",
+          "version": "1.0.17",
+          "skills": {
+            "cost-analysis": {
+              "path": ".github/plugins/azure-cost/skills/cost-analysis",
+              "digest": "sha256:f199b6c8f25020cc92a77303545845511c7a334d976e590bb9aaf8099fdebdf0",
+              "files": 13,
+              "bytes": 27326,
+              "description_chars": 398,
+              "install_hints": 0,
+              "findings": []
+            },
+            "cost-estimation": {
+              "path": ".github/plugins/azure-cost/skills/cost-estimation",
+              "digest": "sha256:162e81ad47a27c337166ebfef009922fe5d680b2340df16b3503cd81efaec704",
+              "files": 8,
+              "bytes": 11032,
+              "description_chars": 428,
+              "install_hints": 0,
+              "findings": []
+            },
+            "cost-governance": {
+              "path": ".github/plugins/azure-cost/skills/cost-governance",
+              "digest": "sha256:8eccfcbf206bc2c50428fe5e22d3bb47d3868afa606e71e26654db25097a3f24",
+              "files": 5,
+              "bytes": 9549,
+              "description_chars": 430,
+              "install_hints": 0,
+              "findings": []
+            },
+            "cost-optimization": {
+              "path": ".github/plugins/azure-cost/skills/cost-optimization",
+              "digest": "sha256:60d3866d9e5b835d95160b8c18628220132b7108f114e211f5e972ecd765dd45",
+              "files": 9,
+              "bytes": 22386,
+              "description_chars": 452,
+              "install_hints": 0,
+              "findings": []
+            }
+          },
+          "agents": [],
+          "bundled_mcp": [
+            "azure-resource-manager-mcp"
+          ]
+        }
+      }
+    },
+    "skills-for-fabric": {
+      "repo": "https://github.com/microsoft/skills-for-fabric.git",
+      "tag": "v0.3.20",
+      "commit": "4c3986d2e5b498ce2d6e6025533b94b5e5bb2ccd",
+      "plugins": {
+        "fabric-skills": {
+          "path": "plugins/fabric-skills",
+          "version": "0.3.20",
+          "skills": {
+            "activator-cli": {
+              "path": "plugins/fabric-skills/skills/activator-cli",
+              "digest": "sha256:99a8d206046d6b018f68df31a4fd4506fdc90645d9a82ad13d5f25a8c1c47639",
+              "files": 11,
+              "bytes": 159589,
+              "description_chars": 339,
+              "install_hints": 3,
+              "findings": []
+            },
+            "azmon-mirroredcatalogs-operations-cli": {
+              "path": "plugins/fabric-skills/skills/azmon-mirroredcatalogs-operations-cli",
+              "digest": "sha256:06e85c2bb4820e217e7fbaa8ebf6d6401f3422bb84ba5fd9b44827870dc4abc8",
+              "files": 12,
+              "bytes": 149761,
+              "description_chars": 309,
+              "install_hints": 0,
+              "findings": []
+            },
+            "databricks-migration": {
+              "path": "plugins/fabric-skills/skills/databricks-migration",
+              "digest": "sha256:97385ef584b4aa717a6e7cf24120ea33022de46f823987edb6a1b6ac72bd9760",
+              "files": 7,
+              "bytes": 97923,
+              "description_chars": 415,
+              "install_hints": 11,
+              "findings": []
+            },
+            "dataflows-cli": {
+              "path": "plugins/fabric-skills/skills/dataflows-cli",
+              "digest": "sha256:32f1b7ed97eeaa3e392542ff6ed489687851df239309288065270dbfc61951bb",
+              "files": 21,
+              "bytes": 427793,
+              "description_chars": 394,
+              "install_hints": 10,
+              "findings": []
+            },
+            "deployment-pipelines-authoring-cli": {
+              "path": "plugins/fabric-skills/skills/deployment-pipelines-authoring-cli",
+              "digest": "sha256:d9c70cbbdab30c5bfe9b9e8a290ea961426cd706efdbfba27dd6870fa73056fe",
+              "files": 3,
+              "bytes": 45412,
+              "description_chars": 332,
+              "install_hints": 0,
+              "findings": []
+            },
+            "e2e-fabric-cost-estimation": {
+              "path": "plugins/fabric-skills/skills/e2e-fabric-cost-estimation",
+              "digest": "sha256:81f51e70a0a55de346b0b167cc409d5e2a96311a729513ac304623d9a546b6e5",
+              "files": 3,
+              "bytes": 65738,
+              "description_chars": 298,
+              "install_hints": 0,
+              "findings": []
+            },
+            "e2e-medallion-architecture": {
+              "path": "plugins/fabric-skills/skills/e2e-medallion-architecture",
+              "digest": "sha256:43ef9c5c466921fd0944b74403dfe5b04cb5e661320a941480eb11f9473bccbd",
+              "files": 1,
+              "bytes": 26700,
+              "description_chars": 419,
+              "install_hints": 0,
+              "findings": []
+            },
+            "eventhouse-cli": {
+              "path": "plugins/fabric-skills/skills/eventhouse-cli",
+              "digest": "sha256:15faecf13669600ade6fa9b3f493325353fcf7115a10b585ff7294b7f5c7586d",
+              "files": 13,
+              "bytes": 69651,
+              "description_chars": 338,
+              "install_hints": 7,
+              "findings": []
+            },
+            "eventschemaset-cli": {
+              "path": "plugins/fabric-skills/skills/eventschemaset-cli",
+              "digest": "sha256:ed8ef6b12f4d3dc23a1f6525b84ff3ebaec406723ee91ba3999483d17e838f9d",
+              "files": 3,
+              "bytes": 50565,
+              "description_chars": 281,
+              "install_hints": 0,
+              "findings": []
+            },
+            "eventstream-cli": {
+              "path": "plugins/fabric-skills/skills/eventstream-cli",
+              "digest": "sha256:25351846a44b2a0ba1aa3b1c56a0a46cc65cac03a3ae3cce70b56b7c8700b7cb",
+              "files": 3,
+              "bytes": 63133,
+              "description_chars": 288,
+              "install_hints": 0,
+              "findings": []
+            },
+            "fabriciq": {
+              "path": "plugins/fabric-skills/skills/fabriciq",
+              "digest": "sha256:4ad1a4d23bc527958b618ee82468a6f9c31ba37086829ec87e08fc2a955b83ca",
+              "files": 1,
+              "bytes": 27302,
+              "description_chars": 409,
+              "install_hints": 0,
+              "findings": []
+            },
+            "fabriciq-ontology-cli": {
+              "path": "plugins/fabric-skills/skills/fabriciq-ontology-cli",
+              "digest": "sha256:dabab0fc26a315d5d2052b4abbb64bd3c0fcbdaf158dff8f4db74ebc29e4435d",
+              "files": 13,
+              "bytes": 215851,
+              "description_chars": 284,
+              "install_hints": 0,
+              "findings": []
+            },
+            "git-integration-operations-cli": {
+              "path": "plugins/fabric-skills/skills/git-integration-operations-cli",
+              "digest": "sha256:08d0d6607e93f1bd1310959b406907811d471d05cec6cca3f736e21622b90ce4",
+              "files": 3,
+              "bytes": 54568,
+              "description_chars": 435,
+              "install_hints": 1,
+              "findings": []
+            },
+            "hdinsight-migration": {
+              "path": "plugins/fabric-skills/skills/hdinsight-migration",
+              "digest": "sha256:079883d7c34354fb2d408765bd21c47fc9f13cef99bfe8ffeaaacec047af5994",
+              "files": 4,
+              "bytes": 31873,
+              "description_chars": 306,
+              "install_hints": 1,
+              "findings": []
+            },
+            "onelake-catalog-cli": {
+              "path": "plugins/fabric-skills/skills/onelake-catalog-cli",
+              "digest": "sha256:41ca8863eb731f7fdb19a7d74de86e720de0c3a1dab60af12462e93ee22d6c67",
+              "files": 32,
+              "bytes": 317823,
+              "description_chars": 448,
+              "install_hints": 0,
+              "findings": []
+            },
+            "pipeline-migration": {
+              "path": "plugins/fabric-skills/skills/pipeline-migration",
+              "digest": "sha256:8eec047dd88ba045af7ebaf824a4c117262217aa8edb1416906e197a24984d82",
+              "files": 11,
+              "bytes": 259941,
+              "description_chars": 325,
+              "install_hints": 0,
+              "findings": []
+            },
+            "project-osmos": {
+              "path": "plugins/fabric-skills/skills/project-osmos",
+              "digest": "sha256:8e6f7bbc2b301493bacb57abb01fd9460edcd7cababf972fb4456c7956d892c8",
+              "files": 27,
+              "bytes": 119330,
+              "description_chars": 450,
+              "install_hints": 0,
+              "findings": []
+            },
+            "search-consumption-cli": {
+              "path": "plugins/fabric-skills/skills/search-consumption-cli",
+              "digest": "sha256:01a8ec5e8bcb9c01813a936f0dca71bdaac9c917e4ea5d57870d6548c14554f3",
+              "files": 1,
+              "bytes": 8802,
+              "description_chars": 415,
+              "install_hints": 0,
+              "findings": []
+            },
+            "semantic-model-authoring": {
+              "path": "plugins/fabric-skills/skills/semantic-model-authoring",
+              "digest": "sha256:9c04dec3bcde87413ed55ade27d49f4643d9a4cac4672a5cc5b15ee0ee0afda1",
+              "files": 14,
+              "bytes": 225505,
+              "description_chars": 429,
+              "install_hints": 0,
+              "findings": []
+            },
+            "spark-cli": {
+              "path": "plugins/fabric-skills/skills/spark-cli",
+              "digest": "sha256:74ac155869b59541ad02ae1465baacb6488c12bdd5bac7bfc7c01f6029c11d57",
+              "files": 19,
+              "bytes": 301750,
+              "description_chars": 409,
+              "install_hints": 6,
+              "findings": []
+            },
+            "sqldb-cli": {
+              "path": "plugins/fabric-skills/skills/sqldb-cli",
+              "digest": "sha256:f0f6ca704d40dc0db7c05571aea98cad70215d37c11ee852ea104900f8f07ed6",
+              "files": 7,
+              "bytes": 89296,
+              "description_chars": 394,
+              "install_hints": 0,
+              "findings": []
+            },
+            "sqldw-cli": {
+              "path": "plugins/fabric-skills/skills/sqldw-cli",
+              "digest": "sha256:cce6dc2d3b17d8d3c4ab2da5a49e7e0a72be4e80d09e4f52e3ad0bbac6cfd0b4",
+              "files": 16,
+              "bytes": 182712,
+              "description_chars": 432,
+              "install_hints": 4,
+              "findings": []
+            },
+            "synapse-migration": {
+              "path": "plugins/fabric-skills/skills/synapse-migration",
+              "digest": "sha256:953bf6cc015c0447c46eb4b06ce51502dc3b0220154d6db344b82d284a471ad2",
+              "files": 38,
+              "bytes": 768612,
+              "description_chars": 441,
+              "install_hints": 8,
+              "findings": []
+            },
+            "variable-library-cli": {
+              "path": "plugins/fabric-skills/skills/variable-library-cli",
+              "digest": "sha256:fe5e8c27bd9bb8e9632c7bf2db8a4aadccd14c79fef88ea05d6dcdac737202ab",
+              "files": 4,
+              "bytes": 35501,
+              "description_chars": 380,
+              "install_hints": 0,
+              "findings": []
+            }
+          },
+          "agents": [
+            "FabricAdmin.agent.md",
+            "FabricAppDev.agent.md",
+            "FabricDataEngineer.agent.md",
+            "FabricIQ.agent.md"
+          ],
+          "bundled_mcp": [
+            "FabricIQ",
+            "fabric-sqlendpoint",
+            "powerbi-modeling-mcp"
+          ]
+        },
+        "powerbi-authoring": {
+          "path": "plugins/powerbi-authoring",
+          "version": "0.3.20",
+          "skills": {
+            "powerbi-report-cli": {
+              "path": "plugins/powerbi-authoring/skills/powerbi-report-cli",
+              "digest": "sha256:29e4844a5f29a3239568dc8ad02500320efb0f01dae3a17538351b81ca31b446",
+              "files": 87,
+              "bytes": 1053385,
+              "description_chars": 413,
+              "install_hints": 6,
+              "findings": []
+            },
+            "semantic-model-authoring": {
+              "path": "plugins/powerbi-authoring/skills/semantic-model-authoring",
+              "digest": "sha256:9c04dec3bcde87413ed55ade27d49f4643d9a4cac4672a5cc5b15ee0ee0afda1",
+              "files": 14,
+              "bytes": 225505,
+              "description_chars": 429,
+              "install_hints": 0,
+              "findings": []
+            }
+          },
+          "agents": [],
+          "bundled_mcp": [
+            "powerbi-modeling-mcp"
+          ]
+        }
+      }
+    }
+  },
+  "packages": {
+    "npm:@azure/mcp": {
+      "status": "resolved",
+      "version": "4.0.0-beta.4",
+      "integrity": "sha512-mnhn+1ZtvPsRsNOYtCAYoJq729x9p9aRgPAW5YdmWXbBRHE8Xr/D9wf1XOmz12WwPkJjAk3sIfRmmkLia1NktA==",
+      "via": "npm-cli"
+    },
+    "npm:@microsoft/fabric-mcp": {
+      "status": "resolved",
+      "version": "1.6.0",
+      "integrity": "sha512-e/WvShNb8onut+P8Ohzwt+okzDy79XNd8K8/MMa2wIeDETMo76XijrN7p5AEZbztYxVSSrkKGCMx6Tas6p+QfQ==",
+      "via": "npm-cli"
+    },
+    "npm:@microsoft/powerbi-modeling-mcp": {
+      "status": "resolved",
+      "version": "1.0.0",
+      "integrity": "sha512-purQLCSiXeUlFGdioqBNfSnr/aSo03D3gJhM2zjKtRWx6bmQg/SbE0N+0WEcxvS1wd3BRtG2z5IxUnLjWYlb2Q==",
+      "via": "npm-cli"
+    },
+    "nuget:Azure.Bicep.McpServer": {
+      "status": "unresolved",
+      "reason": "network",
+      "detail": "tls"
+    },
+    "pypi:microsoft-fabric-rti-mcp": {
+      "status": "resolved",
+      "version": "0.6.2",
+      "sha256": "426b6cb15653587ed6776e6c6f08cfad2848fe82790e0d70c4fac530721b7b06",
+      "via": "pypi"
+    },
+    "pypi:ms-fabric-cli": {
+      "status": "resolved",
+      "version": "1.8.0",
+      "sha256": "28b477a486f402e7685238bf11a58b23d84b0d54fc3e71b6406f6902e006c150",
+      "via": "pypi"
+    }
+  },
+  "contracts": {
+    "azure-mcp/read": {
+      "status": "skipped",
+      "reason": "skipped",
+      "detail": "contracts not captured"
+    },
+    "bicep-mcp/default": {
+      "status": "skipped",
+      "reason": "skipped",
+      "detail": "contracts not captured"
+    },
+    "fabric-core/default": {
+      "status": "skipped",
+      "reason": "skipped",
+      "detail": "contracts not captured"
+    },
+    "fabric-iq/default": {
+      "status": "skipped",
+      "reason": "skipped",
+      "detail": "contracts not captured"
+    },
+    "fabric-local/docs": {
+      "status": "skipped",
+      "reason": "skipped",
+      "detail": "contracts not captured"
+    },
+    "fabric-local/full": {
+      "status": "skipped",
+      "reason": "skipped",
+      "detail": "contracts not captured"
+    },
+    "fabric-local/read": {
+      "status": "skipped",
+      "reason": "skipped",
+      "detail": "contracts not captured"
+    },
+    "fabric-rti-local/default": {
+      "status": "skipped",
+      "reason": "skipped",
+      "detail": "contracts not captured"
+    },
+    "fabric-sql/default": {
+      "status": "skipped",
+      "reason": "skipped",
+      "detail": "contracts not captured"
+    },
+    "microsoft-learn/default": {
+      "status": "skipped",
+      "reason": "skipped",
+      "detail": "contracts not captured"
+    },
+    "powerbi-authoring-local/interactive": {
+      "status": "skipped",
+      "reason": "skipped",
+      "detail": "contracts not captured"
+    },
+    "powerbi-authoring-local/offline-readonly": {
+      "status": "skipped",
+      "reason": "skipped",
+      "detail": "contracts not captured"
+    },
+    "powerbi-authoring-local/service-readonly": {
+      "status": "skipped",
+      "reason": "skipped",
+      "detail": "contracts not captured"
+    },
+    "powerbi-authoring-remote/default": {
+      "status": "skipped",
+      "reason": "skipped",
+      "detail": "contracts not captured"
+    }
+  }
+}
