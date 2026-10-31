@@ -136,7 +136,7 @@ class SyncFlowTests(unittest.TestCase):
         def skip(folder, names):
             skipped = {n for n in names if n in ("__pycache__", "private", ".pytest_cache", ".factory", ".claude", ".mcp.json")}
             if Path(folder) == PROJECT / ".github":
-                skipped.add("skills")
+                skipped.update(("skills", "common"))
             return skipped | {n for n in names if (Path(folder) / n).resolve() == local}
         # A mirror that is already in place keeps each script run short: robocopy then has nothing to copy.
         shutil.copytree(PROJECT, template / "fabric-automation", ignore=skip)
@@ -349,6 +349,21 @@ class SyncFlowTests(unittest.TestCase):
             self.assertFalse((mirror / rel).exists(), rel)
         self.assertFalse((mirror / ".factory").exists())
         self.assertEqual("{}\n", (mirror / ".github" / "mcp.json").read_text(encoding="utf-8"))
+
+    SOURCE_ONLY = ("docs/research/local/note.txt", "scripts/__pycache__/cache.bin", "docs/__pycache__/x.txt", ".pytest_cache/state.txt",
+                   "docs/loose.pyc", "scripts/deep/loose.pyc")
+
+    def test_local_only_material_caches_and_bytecode_in_the_source_are_not_mirrored(self):
+        # The exclusions of the script, one by one: local research, Python caches at any depth, pytest caches and loose bytecode.
+        for rel in self.SOURCE_ONLY:
+            path = self.project / rel
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(b"x\n")
+        code, out, calls = self.publish("-NoPush")
+        self.assertEqual(0, code, out)
+        mirror = self.clone / "fabric-automation"
+        for rel in self.SOURCE_ONLY:
+            self.assertFalse((mirror / rel).exists(), rel)
 
     def test_a_junction_in_the_clone_stops_the_run_and_nothing_behind_it_is_deleted(self):
         # robocopy /MIR, even with /XJ, deletes what a destination junction points to. The script must refuse instead.

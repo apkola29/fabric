@@ -289,6 +289,18 @@
      "claim": "Copilot CLI reads project MCP servers from .mcp.json and .github/mcp.json (only after folder trust), and does not read .vscode/mcp.json", "cited_in": "docs/research/raw/t10-toolchain-grounding.md section 6"},
     {"id": "page-copilot-cli-repo-settings-plugins", "kind": "page", "url": "https://docs.github.com/en/copilot/reference/copilot-cli-reference/cli-config-dir-reference",
      "all": ["\\.github/\\s*copilot/\\s*settings\\.json", "enabledPlugins", "extraKnownMarketplaces", "The CLI also reads\\s+\\.claude/\\s*settings\\.json"], "stable": false,
-     "claim": "Copilot CLI repository settings (.github/copilot/settings.json, and .claude/settings.json) can carry enabledPlugins and extraKnownMarketplaces", "cited_in": "docs/research/raw/t10-toolchain-grounding.md section 6"}
+     "claim": "Copilot CLI repository settings (.github/copilot/settings.json, and .claude/settings.json) can carry enabledPlugins and extraKnownMarketplaces", "cited_in": "docs/research/raw/t10-toolchain-grounding.md section 6"},
+    {"id": "page-npm-config-before", "kind": "page", "url": "https://docs.npmjs.com/cli/v11/using-npm/config",
+     "all": ["only\\s+versions\\s+that\\s+were\\s+available\\s+on\\s+or\\s+before\\s+the\\s+given\\s+date\\s+are\\s+installed", "If\\s+there\\s+are\\s+no\\s+versions\\s+available\\s+for\\s+the\\s+current\\s+set\\s+of\\s+dependencies,\\s+the\\s+command\\s+will\\s+error"], "stable": false,
+     "claim": "the npm configuration page documents the before setting: only versions that were available on or before the given date are installed, and the command errors when no version qualifies", "cited_in": "docs/research/raw/t10-toolchain-grounding.md section 2"},
+    {"id": "page-uv-env-exclude-newer", "kind": "page", "url": "https://docs.astral.sh/uv/reference/environment/",
+     "all": ["UV_EXCLUDE_NEWER", "exclude\\s+distributions\\s+published\\s+after\\s+the\\s+specified\\s+date"], "stable": false,
+     "claim": "the uv environment reference documents UV_EXCLUDE_NEWER, which makes uv exclude distributions published after the specified date", "cited_in": "docs/research/raw/t10-toolchain-grounding.md section 2"},
+    {"id": "pypi-rti-mcp-0-6-2-dependency-ranges", "kind": "page", "url": "https://pypi.org/pypi/microsoft-fabric-rti-mcp/0.6.2/json", "raw": true,
+     "all": ["fastmcp<4,>=3\\.0", "msal<2,>=1\\.32\\.0", "azure-identity<2,>=1\\.24\\.0"], "stable": true,
+     "claim": "the pinned Real-Time Intelligence server 0.6.2 declares ranges, not exact versions, for fastmcp, msal and azure-identity", "cited_in": "docs/research/raw/t10-toolchain-grounding.md section 2"},
+    {"id": "pypi-fabric-cli-1-8-0-dependency-ranges", "kind": "page", "url": "https://pypi.org/pypi/ms-fabric-cli/1.8.0/json", "raw": true,
+     "all": ["msal<2,>=1\\.34", "azure-identity>=1\\.25\\.0", "fabric-cicd>=1\\.4\\.0", "pyyaml==6\\.0\\.3", "psutil==7\\.0\\.0"], "stable": true,
+     "claim": "the pinned Fabric CLI ms-fabric-cli 1.8.0 declares ranges for msal, azure-identity and fabric-cicd and exact versions for pyyaml and psutil", "cited_in": "docs/research/raw/t10-toolchain-grounding.md section 2"}
   ]
 }

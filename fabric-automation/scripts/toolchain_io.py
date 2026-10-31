@@ -3,9 +3,9 @@
 
 Every module of the kit reaches the machine through a runner, so a test passes a fake with the same
 methods and needs no network. SystemRunner is the real one. It never raises, ends the whole process
-tree on a timeout, runs the .cmd shims of Windows (npx, npm, az, code) correctly, refuses arguments
-that a shim would hand to the command interpreter, and never puts a URL or a host name into an
-error. Standard library only.
+tree on a timeout, finds a command only in the absolute folders of PATH (never in the current folder),
+runs the .cmd shims of Windows (npx, npm, az, code) correctly, refuses arguments that a shim would hand
+to the command interpreter, and never puts a URL or a host name into an error. Standard library only.
 """
 
 from __future__ import annotations
@@ -14,9 +14,10 @@ import functools
 import hashlib
 import http.client
 import ipaddress
+import ntpath
 import os
+import posixpath
 import re
-import shutil
 import signal
 import socket
 import ssl
@@ -31,6 +32,8 @@ MAX_BODY = 5 * 1024 * 1024
 MAX_HASHED = 200 * 1024 * 1024
 USER_AGENT = "fabric-automation-toolchain"
 WINDOWS = os.name == "nt"
+_WINDOWS_ENDINGS = (".exe", ".cmd", ".bat")  # tried by hand for a name without an ending, whatever PATHEXT lists
+_DEFAULT_PATHEXT = ".COM;.EXE;.BAT;.CMD;.VBS;.JS;.WS;.MSC"  # what shutil.which assumes when PATHEXT is not set
 
 
 class CommandResult(NamedTuple):
@@ -127,17 +130,85 @@ def classify_exception(exc):
     return "error"
 
 
+# The pauses, in seconds, between the attempts to move or delete a file or folder that something else has open for a moment (a sync
+# client such as OneDrive, a virus scanner, the search indexer): about six seconds in all. A folder that was just written is the usual
+# case, and Windows then answers "access denied" to the rename of the folder or of a file in it until the other process lets go.
+RETRY_DELAYS = (0.05, 0.1, 0.2, 0.4, 0.8, 1.6, 3.2)
+
+
+def transient_refusal(exc):
+    """True for what Windows answers while another process has the file or folder open: access denied, a sharing violation or a lock violation.
+
+    Anywhere else a refusal is a real one (the file may not be written), and it is not worth waiting for."""
+    return bool(WINDOWS and isinstance(exc, OSError) and (isinstance(exc, PermissionError) or getattr(exc, "winerror", None) in (5, 32, 33)))
+
+
+def retrying(action, sleep=None):
+    """Run `action` and run it again after a short pause while it fails with a transient refusal. Any other failure, and the refusal
+    that is still there after the last pause, is raised."""
+    for delay in RETRY_DELAYS:
+        try:
+            return action()
+        except OSError as exc:
+            if not transient_refusal(exc):
+                raise
+            (sleep or time.sleep)(delay)
+    return action()
+
+
+def replace_retrying(source, target, sleep=None):
+    """os.replace that waits for a file or folder that Windows refuses to move for a moment."""
+    retrying(lambda: os.replace(source, target), sleep)
+
+
+def _is_absolute(path):
+    """An absolute path in the style of the family that WINDOWS names. On Windows it needs a drive or a share as well: `\\x` and `C:x`
+    depend on the current drive or folder."""
+    if WINDOWS:
+        return ntpath.isabs(path) and bool(ntpath.splitdrive(path)[0])
+    return posixpath.isabs(path)
+
+
+def _may_run(path):
+    """An existing file; on POSIX one that this user may execute."""
+    return os.path.isfile(path) and (WINDOWS or os.access(path, os.X_OK))
+
+
+def _file_names(name):
+    """The lists of file names that the search tries for `name`, in order. Every folder is searched for all the names of a list before
+    the next list is tried."""
+    if not WINDOWS:
+        return [[name]]
+    listed = [ending for ending in (os.environ.get("PATHEXT") or _DEFAULT_PATHEXT).split(";") if ending]
+    suffix = ntpath.splitext(name)[1]
+    known = {ending.upper() for ending in listed + list(_WINDOWS_ENDINGS)}
+    names = [[name] if suffix.upper() in known else [name + ending for ending in listed]]
+    if not suffix:
+        names += [[name + ending] for ending in _WINDOWS_ENDINGS]
+    return names
+
+
 def which(name):
-    """shutil.which with the .exe, .cmd and .bat endings tried by hand when PATHEXT does not list them."""
+    """The absolute path of the launcher that `name` stands for, or None.
+
+    Only the absolute folders of PATH are searched. An empty entry, a dot and any relative entry are skipped on every system, so the
+    current folder is never consulted: shutil.which always starts there on Windows, and on POSIX an empty entry of PATH means it.
+    On Windows the name is tried with each ending of PATHEXT and then with .exe, .cmd and .bat. A name with a directory part is checked
+    as a file and returned as it is, but only when it is absolute."""
     if not name or not isinstance(name, str):
         return None
-    found = shutil.which(name)
-    if found is None and WINDOWS and not os.path.splitext(name)[1]:
-        for ending in (".exe", ".cmd", ".bat"):
-            found = shutil.which(name + ending)
-            if found:
-                break
-    return found
+    module = ntpath if WINDOWS else posixpath
+    if module.dirname(name):
+        return name if _is_absolute(name) and _may_run(name) else None
+    path = os.environ.get("PATH")
+    folders = [entry for entry in (os.defpath if path is None else path).split(";" if WINDOWS else ":") if entry and _is_absolute(entry)]
+    for names in _file_names(name):
+        for folder in folders:
+            for file_name in names:
+                found = module.join(folder, file_name)
+                if _may_run(found):
+                    return found
+    return None
 
 
 # A .cmd or .bat file is run by the command interpreter, which reads these characters as syntax.
@@ -145,11 +216,14 @@ _SHIM_UNSAFE = re.compile(r'[&|<>^%"\r\n]')
 
 
 def resolve_command(argv, finder=which):
-    """argv with the executable replaced by its full path. Raises LaunchError for a command that cannot be run safely."""
+    """argv with the executable replaced by its full path. Raises LaunchError for a command that cannot be run safely.
+
+    A command that the finder does not turn into an absolute path is not found: it is never started under its bare name, because the
+    search of the operating system looks in the current folder first on Windows."""
     if not argv or not all(isinstance(part, str) for part in argv) or not argv[0]:
         raise LaunchError(127, "not found")
     found = finder(argv[0])
-    if not found:
+    if not found or not isinstance(found, str) or not _is_absolute(found):
         raise LaunchError(127, "not found")
     if WINDOWS and found.lower().endswith((".cmd", ".bat")):
         if any(_SHIM_UNSAFE.search(part) for part in argv[1:]):

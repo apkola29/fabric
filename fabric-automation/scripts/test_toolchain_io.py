@@ -7,11 +7,15 @@ address. Nothing leaves the machine and the real home folder is never read. Run 
     python -m unittest scripts.test_toolchain_io -v
 """
 
+import contextlib
 import hashlib
 import http.client
 import http.server
 import json
+import ntpath
 import os
+import posixpath
+import shutil
 import socket
 import ssl
 import subprocess
@@ -29,7 +33,7 @@ HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 
 import toolchain_io  # noqa: E402
-from toolchain_io import CommandResult, HttpResult, SystemRunner  # noqa: E402
+from toolchain_io import CommandResult, HttpResult, LaunchError, SystemRunner  # noqa: E402
 
 PY = sys.executable
 WINDOWS = os.name == "nt"
@@ -216,6 +220,362 @@ class ShimTests(unittest.TestCase):
         result = self.runner.run([PY, "-c", "import sys; print(sys.argv[1])", payload], cwd=str(self.dir))
         self.assertEqual(0, result.returncode, result.stderr)
         self.assertEqual(payload, result.stdout.strip())
+
+
+@contextlib.contextmanager
+def in_folder(folder):
+    """Make `folder` the current directory for the length of the block: on Windows the search for a command starts there."""
+    previous = os.getcwd()
+    os.chdir(str(folder))
+    try:
+        yield
+    finally:
+        os.chdir(previous)
+
+
+def write_launcher(folder, name, *, prints="", marker=None):
+    """A launcher that prints a word and may leave a marker file: `name.cmd` on Windows, an executable shell script elsewhere."""
+    lines = []
+    if marker is not None:
+        lines.append('echo ran> "%s"' % marker if WINDOWS else "echo ran > '%s'" % marker)
+    if prints:
+        lines.append("echo " + prints)
+    if WINDOWS:
+        path = Path(folder) / (name + ".cmd")
+        path.write_bytes(("@echo off\r\n" + "".join(line + "\r\n" for line in lines)).encode("utf-8"))
+    else:
+        path = Path(folder) / name
+        path.write_bytes(("#!/bin/sh\n" + "".join(line + "\n" for line in lines)).encode("utf-8"))
+        path.chmod(0o755)
+    return path
+
+
+class WhichTests(unittest.TestCase):
+    """`which` never finds a launcher through the current folder. On Windows the search of the system starts there, and on POSIX an
+    empty entry of PATH means it. These tests use the real file system of the machine that runs them."""
+
+    NAME = "tc-which-tool"
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.dir = Path(os.path.realpath(self.tmp.name))
+        self.bin, self.decoys, self.other = self.dir / "bin", self.dir / "decoys", self.dir / "other"
+        for folder in (self.bin, self.decoys, self.other):
+            folder.mkdir()
+        self.marker = self.dir / "decoy-ran.txt"
+        self.real = write_launcher(self.bin, self.NAME, prints="real")
+        self.decoy = write_launcher(self.decoys, self.NAME, prints="decoy", marker=self.marker)
+
+    def assertSameLauncher(self, expected, found):
+        self.assertIsNotNone(found)
+        self.assertTrue(os.path.isabs(found), found)
+        self.assertEqual(os.path.normcase(str(expected)), os.path.normcase(found))
+
+    def search_path(self, *entries):
+        return mock.patch.dict(os.environ, {"PATH": os.pathsep.join(str(entry) for entry in entries)})
+
+    def test_a_launcher_in_an_absolute_folder_of_the_path_is_found_by_its_absolute_path(self):
+        with self.search_path(self.bin):
+            self.assertSameLauncher(self.real, toolchain_io.which(self.NAME))
+            self.assertSameLauncher(self.real, SystemRunner().which(self.NAME))
+
+    def test_the_launcher_of_the_current_folder_is_never_the_one_that_is_found_or_run(self):
+        cases = (
+            ("an empty entry first", self.decoys, ("", self.bin)),
+            ("an empty entry between others", self.decoys, (self.other, "", self.bin)),
+            ("a dot first", self.decoys, (".", self.bin)),
+            ("a relative folder that holds the decoy", self.dir, ("decoys", self.bin)),
+            ("a relative folder reached through ..", self.dir, (os.path.join("..", self.dir.name, "decoys"), self.bin)),
+        )
+        for label, cwd, entries in cases:
+            with self.subTest(label), in_folder(cwd), self.search_path(*entries):
+                self.assertSameLauncher(self.real, toolchain_io.which(self.NAME))
+                result = SystemRunner().run([self.NAME])
+                self.assertEqual(0, result.returncode, result.stderr)
+                self.assertEqual("real", result.stdout.strip())
+            self.assertFalse(self.marker.exists(), "the decoy of the current folder was run: " + label)
+
+    def test_a_launcher_that_is_only_in_the_current_folder_is_not_found_and_not_run(self):
+        cases = (
+            ("no folder at all", self.decoys, ()),
+            ("an empty entry", self.decoys, ("",)),
+            ("a dot", self.decoys, (".",)),
+            ("other folders and an empty entry", self.decoys, (self.other, "")),
+            ("a relative name of the folder", self.dir, ("decoys",)),
+        )
+        for label, cwd, entries in cases:
+            with self.subTest(label), in_folder(cwd), self.search_path(*entries):
+                self.assertIsNone(toolchain_io.which(self.NAME))
+                self.assertEqual(CommandResult(127, "", "not found"), SystemRunner().run([self.NAME]))
+            self.assertFalse(self.marker.exists(), "the decoy of the current folder was run: " + label)
+
+    def test_with_no_path_variable_at_all_nothing_comes_from_the_current_folder(self):
+        with in_folder(self.decoys), mock.patch.dict(os.environ):
+            os.environ.pop("PATH", None)
+            self.assertIsNone(toolchain_io.which(self.NAME))
+            self.assertEqual(127, SystemRunner().run([self.NAME]).returncode)
+        self.assertFalse(self.marker.exists())
+
+    def test_without_a_path_variable_the_default_path_of_the_system_is_searched(self):
+        with mock.patch.dict(os.environ), mock.patch.object(toolchain_io.os, "defpath", os.pathsep.join(("", str(self.bin)))):
+            os.environ.pop("PATH", None)
+            self.assertSameLauncher(self.real, toolchain_io.which(self.NAME))
+
+    def test_a_name_with_a_directory_part_is_never_looked_up_from_the_current_folder(self):
+        relative = os.path.join(".", self.NAME + (".cmd" if WINDOWS else ""))
+        with in_folder(self.decoys), self.search_path(self.bin):
+            self.assertIsNone(toolchain_io.which(relative))
+            self.assertEqual(127, SystemRunner().run([relative]).returncode)
+            with self.assertRaises(LaunchError) as caught:
+                toolchain_io.popen_tree([relative])
+            self.assertEqual(127, caught.exception.returncode)
+        self.assertFalse(self.marker.exists())
+
+    def test_an_absolute_name_is_returned_as_it_is_when_it_is_a_launcher(self):
+        self.assertEqual(str(self.real), toolchain_io.which(str(self.real)))
+        self.assertIsNone(toolchain_io.which(str(self.bin / "no-such-launcher")))
+        self.assertIsNone(toolchain_io.which(str(self.bin)), "a folder is not a launcher")
+
+    def test_a_runner_whose_which_gives_a_bare_name_never_starts_it(self):
+        class Sloppy(SystemRunner):
+            def which(self, name):
+                return name
+
+        with in_folder(self.decoys), self.search_path("", self.other):
+            result = Sloppy().run([self.NAME])
+        self.assertEqual(CommandResult(127, "", "not found"), result)
+        self.assertFalse(self.marker.exists(), "a bare name was started through the search of the system")
+
+    @unittest.skipUnless(WINDOWS, "only on Windows does the search of the system for a command start in the current folder")
+    def test_a_decoy_git_cmd_in_the_current_folder_is_neither_returned_nor_run(self):
+        with in_folder(self.other):
+            expected = shutil.which("git")  # nothing is in this empty folder, so this is the git of the search path
+        if expected is None:
+            self.skipTest("git is not installed")
+        marker = self.decoys / "git-decoy-ran.txt"
+        (self.decoys / "git.cmd").write_bytes(('@echo off\r\necho ran> "%s"\r\n' % marker).encode("utf-8"))
+        with in_folder(self.decoys):
+            found = toolchain_io.which("git")
+            result = SystemRunner().run(["git", "--version"])
+        self.assertSameLauncher(expected, found)
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertIn("git version", result.stdout)
+        self.assertFalse(marker.exists(), "the decoy git.cmd was run")
+
+    @unittest.skipIf(WINDOWS, "an empty entry of PATH that means the current folder is a POSIX rule")
+    def test_a_decoy_git_in_the_current_folder_is_not_found_through_an_empty_entry_of_the_path(self):
+        real = "/usr/bin/git"
+        if not (os.path.isfile(real) and os.access(real, os.X_OK)):
+            self.skipTest("git is not in /usr/bin")
+        write_launcher(self.decoys, "git", marker=self.dir / "git-decoy-ran.txt")
+        for path in (":/usr/bin", "/usr/bin::/bin", ".:/usr/bin"):
+            with in_folder(self.decoys), mock.patch.dict(os.environ, {"PATH": path}):
+                self.assertEqual(real, toolchain_io.which("git"), path)
+                self.assertEqual(0, SystemRunner().run(["git", "--version"]).returncode)
+        self.assertFalse((self.dir / "git-decoy-ran.txt").exists(), "the decoy git was run")
+
+
+class FakeMachine:
+    """A made-up file system and search path for `which`, in the style of one family (Windows or POSIX), whatever machine runs the test.
+
+    Every path that `which` asks about is recorded in `checked`."""
+
+    def __init__(self, windows, path, files=(), pathext=None, executable=None):
+        self.windows, self.path, self.pathext = windows, path, pathext
+        self.files = set(files)
+        self.executable = set(self.files if executable is None else executable)
+        self.checked = []
+
+    def __enter__(self):
+        self.stack = contextlib.ExitStack()
+        self.stack.enter_context(mock.patch.object(toolchain_io, "WINDOWS", self.windows))
+        self.stack.enter_context(mock.patch.dict(os.environ))
+        os.environ.pop("PATHEXT", None)
+        if self.path is None:
+            os.environ.pop("PATH", None)
+        else:
+            os.environ["PATH"] = self.path
+        if self.pathext is not None:
+            os.environ["PATHEXT"] = self.pathext
+        self.stack.enter_context(mock.patch.object(toolchain_io.os.path, "isfile", side_effect=self.isfile))
+        self.stack.enter_context(mock.patch.object(toolchain_io.os, "access", side_effect=lambda path, mode: path in self.executable))
+        return self
+
+    def __exit__(self, *exc):
+        self.stack.close()
+        return False
+
+    def isfile(self, path):
+        self.checked.append(path)
+        return path in self.files
+
+    def only_absolute_paths_were_asked_about(self):
+        if self.windows:
+            return all(ntpath.isabs(path) and ntpath.splitdrive(path)[0] for path in self.checked)
+        return all(posixpath.isabs(path) for path in self.checked)
+
+
+class WhichRuleTests(unittest.TestCase):
+    """The rule of `which` for both families, written with a made-up file system so that every machine tests both."""
+
+    WIN_RELATIVE_DECOYS = (r".\git.CMD", "git.CMD", r"tools\git.CMD", r"\rooted\git.CMD", r"C:rel\git.CMD", r"..\git.CMD", r"\git.CMD")
+
+    def test_windows_entries_that_are_empty_or_relative_are_never_searched(self):
+        files = set(self.WIN_RELATIVE_DECOYS) | {r"C:\bin\git.CMD", r"D:\more\git.CMD"}
+        path = r";.;tools;\rooted;C:rel;..;C:\bin;D:\more"
+        with FakeMachine(True, path, files, ".COM;.EXE;.BAT;.CMD") as machine:
+            self.assertEqual(r"C:\bin\git.CMD", toolchain_io.which("git"))
+        self.assertTrue(machine.only_absolute_paths_were_asked_about(), machine.checked)
+
+    def test_windows_nothing_is_found_when_only_the_current_folder_and_relative_folders_hold_it(self):
+        files = set(self.WIN_RELATIVE_DECOYS) | {r"C:\other\git.CMD"}
+        for path in (r";;", ".", r"tools;\rooted;C:rel", r"C:\bin"):
+            with self.subTest(path), FakeMachine(True, path, files, ".COM;.EXE;.BAT;.CMD") as machine:
+                self.assertIsNone(toolchain_io.which("git"))
+            self.assertTrue(machine.only_absolute_paths_were_asked_about(), machine.checked)
+
+    def test_windows_a_unc_folder_is_an_absolute_folder(self):
+        with FakeMachine(True, r"\\server\share\bin", {r"\\server\share\bin\git.EXE"}, ".EXE") as machine:
+            self.assertEqual(r"\\server\share\bin\git.EXE", toolchain_io.which("git"))
+        self.assertTrue(machine.only_absolute_paths_were_asked_about(), machine.checked)
+
+    def test_windows_the_endings_of_pathext_are_tried_in_their_order(self):
+        files = {r"C:\bin\git.BAT", r"C:\bin\git.CMD", r"C:\bin\git.EXE"}
+        for pathext, expected in ((".COM;.EXE;.BAT;.CMD", r"C:\bin\git.EXE"), (".CMD;.BAT;.EXE", r"C:\bin\git.CMD"), (".BAT;.CMD", r"C:\bin\git.BAT")):
+            with self.subTest(pathext), FakeMachine(True, r"C:\bin", files, pathext):
+                self.assertEqual(expected, toolchain_io.which("git"))
+
+    def test_windows_an_ending_that_only_pathext_lists_is_tried(self):
+        with FakeMachine(True, r"C:\bin", {r"C:\bin\tool.XYZ"}, ".ABC;.XYZ"):
+            self.assertEqual(r"C:\bin\tool.XYZ", toolchain_io.which("tool"))
+        with FakeMachine(True, r"C:\bin", {r"C:\bin\tool.XYZ"}, ".ABC"):
+            self.assertIsNone(toolchain_io.which("tool"))
+
+    def test_windows_the_folder_order_comes_before_the_ending_order(self):
+        files = {r"C:\a\git.CMD", r"C:\b\git.EXE"}
+        with FakeMachine(True, r"C:\a;C:\b", files, ".EXE;.CMD"):
+            self.assertEqual(r"C:\a\git.CMD", toolchain_io.which("git"))
+
+    def test_windows_a_name_that_already_ends_with_a_listed_ending_is_tried_as_it_is(self):
+        files = {r"C:\bin\git.exe.CMD", r"C:\bin\git.exe.COM", r"C:\bin\git.EXE"}
+        with FakeMachine(True, r"C:\bin", files, ".COM;.EXE;.BAT;.CMD") as machine:
+            self.assertIsNone(toolchain_io.which("git.exe"), "the made-up file system keeps letter case, so git.EXE is another name")
+        self.assertEqual([r"C:\bin\git.exe"], machine.checked)
+        with FakeMachine(True, r"C:\bin", {r"C:\bin\git.exe"}, ".COM;.EXE;.BAT;.CMD"):
+            self.assertEqual(r"C:\bin\git.exe", toolchain_io.which("git.exe"))
+
+    def test_windows_without_pathext_the_usual_list_is_used(self):
+        for pathext in (None, ""):
+            with self.subTest(repr(pathext)), FakeMachine(True, r"C:\bin", {r"C:\bin\git.BAT"}, pathext):
+                self.assertEqual(r"C:\bin\git.BAT", toolchain_io.which("git"))
+
+    def test_windows_exe_cmd_and_bat_are_tried_even_when_pathext_does_not_list_them(self):
+        with FakeMachine(True, r"C:\a;C:\b", {r"C:\a\git.cmd", r"C:\b\git.exe", r"C:\b\git.bat"}, ".COM"):
+            self.assertEqual(r"C:\b\git.exe", toolchain_io.which("git"), "exe before cmd before bat, whatever the folder order")
+        with FakeMachine(True, r"C:\a;C:\b", {r"C:\a\git.bat", r"C:\b\git.cmd"}, ".COM"):
+            self.assertEqual(r"C:\b\git.cmd", toolchain_io.which("git"))
+        with FakeMachine(True, r"C:\a", {r"C:\a\git.bat"}, ".COM"):
+            self.assertEqual(r"C:\a\git.bat", toolchain_io.which("git"))
+
+    def test_windows_the_listed_endings_come_before_the_three_that_are_tried_by_hand(self):
+        with FakeMachine(True, r"C:\a;C:\b", {r"C:\a\git.exe", r"C:\b\git.XYZ"}, ".XYZ"):
+            self.assertEqual(r"C:\b\git.XYZ", toolchain_io.which("git"))
+
+    def test_windows_the_three_endings_are_not_tried_for_a_name_that_has_an_ending(self):
+        with FakeMachine(True, r"C:\bin", {r"C:\bin\tool.dat.exe", r"C:\bin\tool.dat.cmd"}, ".COM"):
+            self.assertIsNone(toolchain_io.which("tool.dat"))
+
+    def test_windows_a_name_that_ends_with_exe_cmd_or_bat_is_tried_as_it_is_even_when_pathext_does_not_list_it(self):
+        for name in ("git.exe", "git.cmd", "git.bat", "git.EXE", "GIT.Cmd"):
+            with self.subTest(name), FakeMachine(True, r"C:\bin", {r"C:\bin" + "\\" + name}, ".COM") as machine:
+                self.assertEqual(r"C:\bin" + "\\" + name, toolchain_io.which(name))
+            self.assertEqual([r"C:\bin" + "\\" + name], machine.checked)
+
+    def test_windows_a_name_that_is_a_path_is_checked_as_a_file_and_returned_as_it_is_only_when_absolute(self):
+        files = {r"C:\tools\git.exe", r"\\server\share\git.exe", r"tools\git.exe", r".\git.exe", r"..\git.exe", r"\git.exe", r"C:git.exe"}
+        with FakeMachine(True, r"C:\bin", files, ".EXE") as machine:
+            self.assertEqual(r"C:\tools\git.exe", toolchain_io.which(r"C:\tools\git.exe"))
+            self.assertEqual(r"\\server\share\git.exe", toolchain_io.which(r"\\server\share\git.exe"))
+            self.assertIsNone(toolchain_io.which(r"C:\tools\git"), "an absolute name gets no ending")
+            checked = len(machine.checked)
+            for name in (r"tools\git.exe", r".\git.exe", r"..\git.exe", r"\git.exe", r"C:git.exe", "tools/git.exe", "./git.exe"):
+                self.assertIsNone(toolchain_io.which(name), name)
+            self.assertEqual(checked, len(machine.checked), "a relative name with a directory part was looked up")
+
+    def test_posix_empty_and_relative_entries_are_never_searched(self):
+        files = {"/usr/bin/git", "/bin/git", "git", "./git", "bin/git", "relative/dir/git"}
+        cases = ((":/usr/bin", "/usr/bin/git"), ("/usr/bin::/bin", "/usr/bin/git"), ("/usr/bin:", "/usr/bin/git"), (".:/usr/bin", "/usr/bin/git"),
+                 ("bin:/usr/bin", "/usr/bin/git"), ("./bin:/bin", "/bin/git"), ("relative/dir:/bin", "/bin/git"),
+                 (":", None), (".", None), ("", None), ("relative/dir", None), ("::.", None))
+        for path, expected in cases:
+            with self.subTest(path), FakeMachine(False, path, files) as machine:
+                self.assertEqual(expected, toolchain_io.which("git"))
+            self.assertTrue(machine.only_absolute_paths_were_asked_about(), machine.checked)
+
+    def test_an_empty_entry_is_skipped_by_a_rule_of_its_own(self):
+        # Even where every entry counted as absolute, an empty entry would stand for the current folder, so it is dropped first.
+        with FakeMachine(False, "::", {"git", "./git"}) as machine, mock.patch.object(toolchain_io, "_is_absolute", return_value=True):
+            self.assertIsNone(toolchain_io.which("git"))
+        self.assertEqual([], machine.checked)
+        with FakeMachine(True, ";;", {"git.CMD"}, ".CMD") as machine, mock.patch.object(toolchain_io, "_is_absolute", return_value=True):
+            self.assertIsNone(toolchain_io.which("git"))
+        self.assertEqual([], machine.checked)
+
+    def test_posix_a_file_that_may_not_be_run_is_skipped_for_a_later_one(self):
+        files = {"/a/git", "/b/git"}
+        with FakeMachine(False, "/a:/b", files, executable={"/b/git"}):
+            self.assertEqual("/b/git", toolchain_io.which("git"))
+        with FakeMachine(False, "/a:/b", files, executable=()):
+            self.assertIsNone(toolchain_io.which("git"))
+
+    def test_posix_the_endings_of_windows_play_no_part(self):
+        with FakeMachine(False, "/bin", {"/bin/git.CMD", "/bin/git.exe"}, ".CMD;.EXE"):
+            self.assertIsNone(toolchain_io.which("git"))
+        with FakeMachine(False, "/bin", {"/bin/git"}, ".CMD"):
+            self.assertEqual("/bin/git", toolchain_io.which("git"))
+
+    def test_posix_a_name_that_is_a_path_is_checked_as_a_file_and_returned_as_it_is_only_when_absolute(self):
+        files = {"/usr/bin/git", "git", "./git", "bin/git", "../git", "/git"}
+        with FakeMachine(False, "/usr/bin", files) as machine:
+            self.assertEqual("/usr/bin/git", toolchain_io.which("/usr/bin/git"))
+            self.assertIsNone(toolchain_io.which("/usr/bin/nothing"))
+            checked = len(machine.checked)
+            for name in ("./git", "bin/git", "../git", "bin/../git", "./bin/"):
+                self.assertIsNone(toolchain_io.which(name), name)
+            self.assertEqual(checked, len(machine.checked), "a relative name with a directory part was looked up")
+        with FakeMachine(False, "/usr/bin", {"/usr/bin/git"}, executable=()):
+            self.assertIsNone(toolchain_io.which("/usr/bin/git"), "a file that may not be run is not a launcher")
+
+    def test_a_name_that_is_not_text_or_is_empty_is_not_found_and_nothing_is_looked_up(self):
+        for windows, path in ((False, "/usr/bin"), (True, r"C:\bin")):
+            with FakeMachine(windows, path, {"/usr/bin/git", r"C:\bin\git.EXE"}, ".EXE") as machine:
+                for name in (None, "", 5, ["git"], b"git"):
+                    self.assertIsNone(toolchain_io.which(name), repr(name))
+            self.assertEqual([], machine.checked)
+
+
+class ResolveCommandTests(unittest.TestCase):
+    def test_a_finder_that_does_not_give_an_absolute_path_means_not_found(self):
+        for answer in ("git", "./git", r".\git.cmd", "bin/git", "", None, "git.exe", r"C:git.exe", r"\git.exe", Path(PY), 5):
+            with self.subTest(repr(answer)):
+                with self.assertRaises(LaunchError) as caught:
+                    toolchain_io.resolve_command(["git", "--version"], finder=lambda name, answer=answer: answer)
+                self.assertEqual(127, caught.exception.returncode)
+                self.assertEqual("not found", caught.exception.message)
+
+    def test_an_absolute_path_from_the_finder_is_used_with_the_rest_of_the_arguments(self):
+        self.assertEqual([PY, "-c", "pass"], toolchain_io.resolve_command(["whatever", "-c", "pass"], finder=lambda name: PY))
+        asked = []
+        toolchain_io.resolve_command(["whatever"], finder=lambda name: asked.append(name) or PY)
+        self.assertEqual(["whatever"], asked)
+
+    def test_a_command_that_cannot_be_named_is_not_found(self):
+        for argv in ([], [""], [None], [5], ["git", 5]):
+            with self.subTest(repr(argv)):
+                with self.assertRaises(LaunchError) as caught:
+                    toolchain_io.resolve_command(argv, finder=lambda name: PY)
+                self.assertEqual(127, caught.exception.returncode)
 
 
 PAYLOAD_BLOCK = bytes(range(256)) * 256  # 64 KiB
@@ -757,6 +1117,123 @@ class TaskkillTests(unittest.TestCase):
                 self.assertEqual(usual, toolchain_io._system_taskkill().lower())
             with mock.patch.object(toolchain_io.os.path, "isfile", return_value=False):
                 self.assertIsNone(toolchain_io._system_taskkill())
+
+
+class RetryTests(unittest.TestCase):
+    """A refusal that Windows gives while something else has a file or folder open for a moment (a sync client such as OneDrive, a
+    virus scanner, the indexer) is tried again after a short pause. Nothing else is."""
+
+    @staticmethod
+    def refusal(winerror=5):
+        exc = PermissionError(13, "Access is denied")
+        exc.winerror = winerror
+        return exc
+
+    def test_the_refusals_that_go_away_by_themselves_are_access_denied_sharing_and_lock_violations_on_windows_only(self):
+        with mock.patch.object(toolchain_io, "WINDOWS", True):
+            self.assertTrue(toolchain_io.transient_refusal(PermissionError(13, "denied")))
+            for code in (5, 32, 33):
+                self.assertTrue(toolchain_io.transient_refusal(self.refusal(code)), code)
+            other = OSError(22, "invalid")
+            other.winerror = 32
+            self.assertTrue(toolchain_io.transient_refusal(other))
+            for exc in (FileNotFoundError(2, "gone"), OSError(28, "no space"), FileExistsError(17, "there"), OSError(), ValueError("x"), KeyError("k")):
+                self.assertFalse(toolchain_io.transient_refusal(exc), repr(exc))
+            unrelated = OSError(22, "invalid")
+            unrelated.winerror = 123
+            self.assertFalse(toolchain_io.transient_refusal(unrelated))
+        with mock.patch.object(toolchain_io, "WINDOWS", False):
+            self.assertFalse(toolchain_io.transient_refusal(PermissionError(13, "denied")))
+            self.assertFalse(toolchain_io.transient_refusal(self.refusal(32)))
+
+    def test_the_pauses_grow_and_add_up_to_a_few_seconds(self):
+        delays = toolchain_io.RETRY_DELAYS
+        self.assertEqual(sorted(delays), list(delays))
+        self.assertEqual(len(delays), len(set(delays)))
+        self.assertTrue(3 <= sum(delays) <= 10, sum(delays))
+        self.assertTrue(all(delay > 0 for delay in delays))
+
+    def test_an_action_that_is_refused_for_a_moment_is_run_again_after_each_pause_and_its_result_is_returned(self):
+        calls, pauses = [], []
+
+        def flaky():
+            calls.append(1)
+            if len(calls) < 4:
+                raise self.refusal()
+            return "done"
+        with mock.patch.object(toolchain_io, "WINDOWS", True):
+            self.assertEqual("done", toolchain_io.retrying(flaky, sleep=pauses.append))
+        self.assertEqual(4, len(calls))
+        self.assertEqual(list(toolchain_io.RETRY_DELAYS[:3]), pauses)
+
+    def test_an_action_that_is_always_refused_is_tried_once_more_than_there_are_pauses_and_the_last_refusal_is_raised(self):
+        calls, pauses = [], []
+
+        def refused():
+            calls.append(1)
+            raise self.refusal(32)
+        with mock.patch.object(toolchain_io, "WINDOWS", True), self.assertRaises(PermissionError) as caught:
+            toolchain_io.retrying(refused, sleep=pauses.append)
+        self.assertEqual(32, caught.exception.winerror)
+        self.assertEqual(len(toolchain_io.RETRY_DELAYS) + 1, len(calls))
+        self.assertEqual(list(toolchain_io.RETRY_DELAYS), pauses)
+
+    def test_any_other_failure_is_raised_at_once_without_a_pause(self):
+        for exc in (FileNotFoundError(2, "gone"), OSError(28, "no space"), ValueError("x")):
+            with self.subTest(exc=type(exc).__name__):
+                calls, pauses = [], []
+
+                def failing():
+                    calls.append(1)
+                    raise exc
+                with mock.patch.object(toolchain_io, "WINDOWS", True), self.assertRaises(type(exc)):
+                    toolchain_io.retrying(failing, sleep=pauses.append)
+                self.assertEqual(([1], []), (calls, pauses))
+
+    def test_where_the_system_is_not_windows_a_refusal_is_a_real_one_and_is_raised_at_once(self):
+        calls, pauses = [], []
+
+        def refused():
+            calls.append(1)
+            raise PermissionError(13, "denied")
+        with mock.patch.object(toolchain_io, "WINDOWS", False), self.assertRaises(PermissionError):
+            toolchain_io.retrying(refused, sleep=pauses.append)
+        self.assertEqual(([1], []), (calls, pauses))
+
+    def test_without_a_sleep_of_its_own_it_waits_with_time_sleep(self):
+        state = {"n": 0}
+
+        def flaky():
+            state["n"] += 1
+            if state["n"] == 1:
+                raise self.refusal()
+        with mock.patch.object(toolchain_io, "WINDOWS", True), mock.patch.object(toolchain_io.time, "sleep") as slept:
+            toolchain_io.retrying(flaky)
+        slept.assert_called_once_with(toolchain_io.RETRY_DELAYS[0])
+
+    def test_a_replace_is_tried_again_while_it_is_refused_and_then_lands(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            source, target = Path(tmp) / "source", Path(tmp) / "target"
+            source.mkdir()
+            (source / "file.txt").write_text("hello", encoding="utf-8")
+            real, calls, pauses = os.replace, [], []
+
+            def flaky(src, dst):
+                calls.append((src, dst))
+                if len(calls) < 3:
+                    raise self.refusal()
+                return real(src, dst)
+            with mock.patch.object(toolchain_io, "WINDOWS", True), mock.patch.object(toolchain_io.os, "replace", side_effect=flaky):
+                toolchain_io.replace_retrying(source, target, sleep=pauses.append)
+            self.assertEqual("hello", (target / "file.txt").read_text(encoding="utf-8"))
+            self.assertFalse(source.exists())
+            self.assertEqual(3, len(calls))
+            self.assertEqual(list(toolchain_io.RETRY_DELAYS[:2]), pauses)
+
+    def test_a_replace_that_fails_for_another_reason_is_raised_at_once(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            with mock.patch.object(toolchain_io, "WINDOWS", True), self.assertRaises(FileNotFoundError):
+                toolchain_io.replace_retrying(Path(tmp) / "missing", Path(tmp) / "target", sleep=lambda _delay: self.fail("a pause for a missing file"))
 
 
 if __name__ == "__main__":

@@ -652,6 +652,8 @@
         "version": "4.0.0-beta.4"
       },
       "package_version": "4.0.0-beta.4",
+      "launch": "sha256:d4208754d23af110c2c294da4b251c5f271c168d1382809804a541a4583bd1e1",
+      "captured": "2026-10-31",
       "tools": {
         "acr": {
           "schema": "sha256:d29390f9d486a10750d90dc1c26944ad46ab9d6356778640c4df5d0bbdfd575c",
@@ -1095,6 +1097,8 @@
         "version": "1.6.0"
       },
       "package_version": "1.6.0",
+      "launch": "sha256:5409b28f55abfcd2205f4b585b23fe9ed385b8f163767a7dd2ec12c9a89fa03d",
+      "captured": "2026-10-31",
       "tools": {
         "docs_api-examples": {
           "schema": "sha256:70d53fb0ff0296c4595e27c893ee7d357e1f2a7ece508ceda58ff14abad51630",
@@ -1143,6 +1147,8 @@
         "version": "1.6.0"
       },
       "package_version": "1.6.0",
+      "launch": "sha256:84fdc21af8f64cecc9273dbd79ac863bf51a0abd461386076f18742265d4048e",
+      "captured": "2026-10-31",
       "tools": {
         "core_assign-workspace-to-capacity": {
           "schema": "sha256:ad343d112ff97079a75f43628da9d6bb1c9e5430c958793c2ae80f86ba629237",
@@ -1527,6 +1533,8 @@
         "version": "1.6.0"
       },
       "package_version": "1.6.0",
+      "launch": "sha256:3a4efa90732b2e26488f05d835d6cdce3f31bee0d45ec2bc5ff7bc5ff6d6addc",
+      "captured": "2026-10-31",
       "tools": {
         "core_get-capacity": {
           "schema": "sha256:7dd48063f2657979742f7685c7fcae7a0dda95a629cd62823bac39f5adc4e77a",
@@ -1743,6 +1751,8 @@
         "version": "1.30.0"
       },
       "package_version": "0.6.2",
+      "launch": "sha256:8936cb80db8a713f6c8d9fe85e0d963eb451283ce6b2adbd032d658ff4a7c92c",
+      "captured": "2026-10-31",
       "tools": {
         "activator_create_trigger": {
           "schema": "sha256:9d5ae27bd73094fa9bba8f9c69add572ce52238674674038322ed165c54c0a35",

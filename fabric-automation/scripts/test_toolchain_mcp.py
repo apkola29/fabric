@@ -17,6 +17,7 @@ import queue
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import unittest
 from pathlib import Path
@@ -169,6 +170,12 @@ for raw in sys.stdin:
             fail(mid, -32022, "Unsupported protocol version", {"supported": ["2027-01-01"]})
         elif mode == "modern-other":
             fail(mid, -32022, "Unsupported protocol version", {"supported": ["2026-07-28"]})
+        elif mode == "legacy-later":
+            fail(mid, -32022, "Unsupported protocol version", {"supported": ["2027-01-01"]})
+        elif mode == "legacy-dated-text":
+            fail(mid, -32603, "Unsupported client version, server build 2026-10-31")
+        elif mode == "legacy-bad-protocol":
+            reply(mid, dict(legacy_result, protocolVersion=20250618))
         elif mode == "legacy-error":
             fail(mid, -32603, "Internal error 2026-09-01 at startup")
         elif mode == "legacy-strict" and params.get("protocolVersion") != "2025-06-18":
@@ -399,7 +406,7 @@ class StdioTests(unittest.TestCase):
 
     def test_a_server_that_never_answers_discover_is_started_again_for_the_handshake_after_a_short_wait(self):
         started = time.monotonic()
-        with mock.patch.object(toolchain_mcp, "DISCOVER_WAIT", 0.7):
+        with mock.patch.object(toolchain_mcp, "DISCOVER_WAIT", 3.0):  # long enough for a busy machine to start the stand-in and for it to read discover
             result = self.probe("ignore-discover", env={"FAKE_STARTS": str(self.starts)}, timeout=30)
         self.assertEqual(("legacy", EXPECTED_TOOLS), (result["era"], result["tools"]))
         self.assertEqual(["server/discover", "initialize", "notifications/initialized", "tools/list"], [m["method"] for m in self.messages()])
@@ -412,7 +419,7 @@ class StdioTests(unittest.TestCase):
     def test_a_budget_that_ends_before_the_wait_is_a_timeout_and_no_handshake_follows(self):
         started = time.monotonic()
         with mock.patch.object(toolchain_mcp, "DISCOVER_WAIT", 30.0):
-            self.assertFails("timeout", "ignore-discover", timeout=1.5)
+            self.assertFails("timeout", "ignore-discover", timeout=4.0)
         self.assertLess(time.monotonic() - started, 20)
         self.assertEqual(["server/discover"], [m["method"] for m in self.messages()])
 
@@ -422,6 +429,19 @@ class StdioTests(unittest.TestCase):
                 self.log.unlink()
             self.assertIn("mutually", str(self.assertFails("protocol-error", mode)), mode)
             self.assertEqual(["server/discover"], [m["method"] for m in self.messages()], mode)
+
+    def test_a_legacy_server_whose_error_names_only_dates_that_nobody_here_speaks_is_a_protocol_error_not_a_modern_server(self):
+        for mode in ("legacy-later", "legacy-dated-text"):
+            if self.log.exists():
+                self.log.unlink()
+            error = self.assertFails("protocol-error", mode)
+            self.assertEqual("protocol-error: no mutually supported protocol version", str(error), mode)
+            self.assertEqual(["server/discover", "initialize"], [m["method"] for m in self.messages()], mode)
+
+    def test_a_legacy_answer_with_a_protocol_version_that_is_not_a_date_string_is_a_protocol_error(self):
+        error = self.assertFails("protocol-error", "legacy-bad-protocol")
+        self.assertIn("protocol version", str(error))
+        self.assertEqual(["server/discover", "initialize"], [m["method"] for m in self.messages()])
 
     def test_a_modern_server_that_is_slow_to_start_is_started_again_and_found_modern(self):
         with mock.patch.object(toolchain_mcp, "DISCOVER_WAIT", 0.5):
@@ -519,6 +539,22 @@ class StdioTests(unittest.TestCase):
         self.assertLess(time.monotonic() - started, 30)
         self.assertGone(wait=0.5)
 
+    def test_a_server_that_ignores_the_end_of_input_and_the_gentle_stop_is_ended_by_kill_tree(self):
+        # terminate_tree does nothing here, so that only kill_tree can end the process (on Windows terminate_tree kills as well)
+        def end_what_is_left():
+            for pid in read_pids(self.pids, seconds=0.5):
+                if pid and pid_alive(pid):
+                    if WINDOWS:
+                        subprocess.run([os.path.join(os.environ.get("SystemRoot", "C:\\Windows"), "System32", "taskkill.exe"), "/PID", str(pid), "/T", "/F"],
+                                       capture_output=True, check=False, timeout=30)
+                    else:
+                        os.kill(pid, 9)
+        self.addCleanup(end_what_is_left)
+        with mock.patch.object(toolchain_mcp, "terminate_tree"), mock.patch.object(toolchain_mcp, "GRACE", 0.3):
+            result = self.probe("legacy", env={"FAKE_IGNORE_EOF": "1"})
+        self.assertEqual(EXPECTED_TOOLS, result["tools"])
+        self.assertGone(wait=0.5)
+
     def test_a_server_that_exits_at_once_is_exited(self):
         error = self.assertFails("exited", "exit")
         self.assertIn("3", str(error))
@@ -570,10 +606,10 @@ class StdioTests(unittest.TestCase):
             "    elif 'id' in msg:\n"
             "        print(json.dumps({'jsonrpc': '2.0', 'id': msg['id'], 'error': {'code': -32601, 'message': 'Method not found'}}), flush=True)\n",
             encoding="utf-8")
-        work = self.dir / "workdir"
+        work = self.dir / "7workdir"
         work.mkdir(exist_ok=True)
         result = toolchain_mcp.probe_stdio([PY, str(script)], env={"TC_NAME": "from-env"}, cwd=str(work), timeout=20)
-        self.assertEqual({"name": "from-env", "version": "workdir"}, result["server"])
+        self.assertEqual({"name": "from-env", "version": "7workdir"}, result["server"])  # the stand-in reports its folder as its version, and a version starts with a digit
         self.assertEqual(["t"], list(result["tools"]))
 
     def dump_env(self, declared=None, parent=None):
@@ -675,7 +711,7 @@ class StdioTests(unittest.TestCase):
         self.assertEqual({"name": "unknown", "version": "1.6.0+abc123"}, result["server"])
         path_name = "R:" + chr(92) + "scratch" + chr(92) + "ExampleUser" + chr(92) + "server"
         result = toolchain_mcp.probe_stdio([PY, str(script)], env={"TC_INFO": json.dumps({"name": path_name, "version": "build.private.example"})}, timeout=20)
-        self.assertEqual({"name": "unknown", "version": "build.private.example"}, result["server"])
+        self.assertEqual({"name": "unknown", "version": "unknown"}, result["server"])  # a version that reads like a host is no longer kept (round 3, item 6)
         result = toolchain_mcp.probe_stdio([PY, str(script)], env={"TC_INFO": json.dumps({"name": "Fake Server", "version": "1.2.3 beta"})}, timeout=20)
         self.assertEqual({"name": "Fake Server", "version": "unknown"}, result["server"])
 
@@ -802,10 +838,36 @@ class ServerInfoTests(unittest.TestCase):
         return toolchain_mcp._server_info({"name": name, "version": version})
 
     def test_a_plain_name_and_version_pass_through(self):
-        for name in ("Fake Server", "fabmcp", "my_server-2.0", "A", "x" * 64, "Microsoft.Fabric.Mcp"):
+        for name in ("Fake Server", "fabmcp", "my_server-2.0", "A", "x" * 64, "Fabric MCP Server", "Azure MCP Server", "fabric-rti-mcp-server"):
             self.assertEqual({"name": name, "version": "1.0.0"}, self.info(name), name)
-        for version in ("1.6.0", "1.6.0+abc123", "2.0.0-rc.1", "build.private.example", "1" * 64, "v1_2~3"):
+        for version in ("1.6.0", "1.6.0+abc123", "2.0.0-rc.1", "1" * 64, "v1_2~3", "4.0.0-beta.4", "1.30.0", "0.48.1", "v1.2.3", "0", "10.0.0-preview.5.25277.114"):
             self.assertEqual(version, self.info("n", version)["version"], version)
+
+    def test_a_name_or_version_with_a_word_that_is_a_key_a_host_or_an_address_is_unknown(self):
+        key = "".join(("A1b2C3d4", "E5f6G7h8", "I9j0K1l2", "M3n4"))
+        token = "ghp" + "_" + key
+        host = "internal." + "contoso" + ".corp"
+        address = ".".join(("10", "1", "2", "3"))
+        for name in ("Server " + token, token, token + " Server", "Fabric " + token + " Server", host, "Server " + host, "Fabric " + host + " Server",
+                     address, "Server " + address, token + ".x", "name." + token, "server." + "contoso" + ".example", "a" * 20 + "1" * 10):
+            self.assertEqual("unknown", self.info(name)["name"], name)
+        for version in (address, "1.0.0+" + token, "1.0.0-" + host, "1.0.0+" + key[:24], "1.2.3." + "4", "1.0.0." + "beta", "1.0.0+" + token + ".x"):
+            self.assertEqual("unknown", self.info("n", version)["version"], version)
+
+    def test_a_dotted_name_that_reads_like_a_host_is_unknown_because_the_rule_cannot_tell_it_from_one(self):
+        for name in ("Microsoft.Fabric.Mcp", "build.private.example"):
+            self.assertEqual("unknown", self.info(name)["name"], name)
+
+    def test_a_version_starts_with_a_digit_or_with_v_and_a_digit(self):
+        for version in ("build.private.example", "alpha", "latest", "main", "release-1", "vv1", "v", "v.1", "x1.0", "V1.0"):
+            self.assertEqual("unknown", self.info("n", version)["version"], version)
+        for version in ("1", "v1", "0.0.1", "9" * 64):
+            self.assertEqual(version, self.info("n", version)["version"], version)
+
+    def test_the_name_and_the_version_are_judged_apart(self):
+        host = "internal." + "contoso" + ".corp"
+        self.assertEqual({"name": "unknown", "version": "1.2.3"}, self.info(host, "1.2.3"))
+        self.assertEqual({"name": "Fine Server", "version": "unknown"}, self.info("Fine Server", host))
 
     def test_a_name_that_is_not_a_plain_label_is_unknown(self):
         names = ("R:" + "\\scratch\\" + "ExampleUser" + "\\server", "alice" + "@" + "example.test", "x" * 65, " lead", "-lead", ".lead", "a/b", "a:b",
@@ -1032,10 +1094,12 @@ class DiscoverTests(unittest.TestCase):
             server.call.return_value = answer
         return server
 
-    def test_the_wait_for_discover_is_a_short_named_constant(self):
+    def test_the_wait_for_discover_is_long_enough_for_a_slow_start_and_still_bounded(self):
+        # Changed on purpose in round 3: at 5 seconds the real local Fabric server (4.6 seconds to answer on a loaded machine) was recorded
+        # as a legacy server in three runs of four, because it was asked again on a new process after the wait.
         self.assertIsInstance(toolchain_mcp.DISCOVER_WAIT, float)
-        self.assertGreater(toolchain_mcp.DISCOVER_WAIT, 0)
-        self.assertLessEqual(toolchain_mcp.DISCOVER_WAIT, 5.0)
+        self.assertGreaterEqual(toolchain_mcp.DISCOVER_WAIT, 15.0)
+        self.assertLessEqual(toolchain_mcp.DISCOVER_WAIT, 30.0)
 
     def test_discover_carries_the_metadata_and_waits_for_the_shorter_of_the_wait_and_the_budget(self):
         answer = {"result": {"supportedVersions": ["2026-07-28"]}}
@@ -1083,10 +1147,13 @@ class ScriptedServer:
     """Answers the requests it is sent from a list, in order; an item that is an exception is raised instead."""
 
     def __init__(self, *steps):
-        self.steps, self.sent = list(steps), []
+        self.steps, self.sent, self.params = list(steps), [], []
 
     def call(self, method, params, deadline):
         self.sent.append(method)
+        self.params.append(params)
+        if not self.steps:
+            raise AssertionError("the client sent %s although nothing more was expected (sent so far: %s)" % (method, ", ".join(self.sent)))
         step = self.steps.pop(0)
         if isinstance(step, Exception):
             raise step
@@ -1182,6 +1249,100 @@ class InitializeTests(unittest.TestCase):
         self.assertEqual("protocol-error", error.code)
         self.assertIn("mutually", str(error))
 
+    # ---- only the version of the modern revision makes a server modern (a later date is no such thing) ----
+
+    def test_an_error_that_names_only_dates_that_nobody_here_speaks_is_a_protocol_error_and_never_a_modern_server(self):
+        def error(code, message, data=None):
+            return {"error": dict({"code": code, "message": message}, **({"data": data} if data is not None else {}))}
+
+        for label, answer in (
+                ("a later version in the data", NAMES_OTHERS),
+                ("several later versions in the data", error(-32022, "Unsupported protocol version", {"supported": ["2027-01-01", "2028-02-02"]})),
+                ("a current date in the text of a legacy error", error(-32603, "Unsupported version of the client, server build 2026-10-31")),
+                ("a date after the modern one in a text that is about support", error(-32600, "This server supports only 2026-12-01")),
+                ("a later date in a text in the data", error(-32600, "Invalid request", {"detail": "protocol version 2026-08-01 is required"})),
+                ("a date between the revisions that nobody here speaks", error(-32022, "x", {"supported": ["2026-01-15"]})),
+                ("a date older than every revision that is spoken here", error(-32022, "x", {"supported": ["2024-01-01"]}))):
+            for answered in (True, False):
+                with self.subTest(label, answered=answered):
+                    server, caught = self.fails(answered, answer)
+                    self.assertEqual("protocol-error", caught.code)
+                    self.assertEqual("protocol-error: no mutually supported protocol version", str(caught))
+                    self.assertEqual(["initialize"], server.sent, "nothing is asked after a refusal that names no version that is spoken here")
+
+    def test_a_server_is_modern_when_its_error_names_the_modern_version_whatever_else_it_names(self):
+        for supported in (["2026-07-28"], ["2026-07-28", "2027-01-01"], ["2027-01-01", "2026-07-28", "2025-11-25"], ["2024-11-05", "2026-07-28"]):
+            answer = {"error": {"code": -32022, "message": "Unsupported protocol version", "data": {"supported": supported}}}
+            server, result = self.start(True, answer, TOOLS_ANSWER)
+            self.assertEqual(("modern", UNKNOWN_SERVER), (result["era"], result["server"]), supported)
+            self.assertEqual(["initialize", "tools/list"], server.sent)
+        text = {"error": {"code": -32600, "message": "This server only supports protocol versions 2026-07-28 and later"}}
+        server, result = self.start(True, text, TOOLS_ANSWER)
+        self.assertEqual("modern", result["era"])
+
+    def test_an_older_version_that_the_error_names_and_that_the_handshake_era_knows_is_asked_for_once(self):
+        answer = {"error": {"code": -32602, "message": "Unsupported protocol version", "data": {"supported": ["2024-11-05", "2025-03-26", "2027-01-01"]}}}
+        server, result = self.start(True, answer, LEGACY_ANSWER, TOOLS_ANSWER)
+        self.assertEqual("legacy", result["era"])
+        self.assertEqual(["initialize", "initialize", "notifications/initialized", "tools/list"], server.sent)
+        self.assertEqual(["2025-11-25", "2025-03-26"], [params["protocolVersion"] for params in server.params[:2]])
+        between = {"error": {"code": -32602, "message": "Unsupported protocol version", "data": {"supported": ["2025-03-26", "2025-07-01"]}}}
+        server, result = self.start(True, between, LEGACY_ANSWER, TOOLS_ANSWER)
+        self.assertEqual("2025-03-26", server.params[1]["protocolVersion"], "a date that the handshake era does not know was asked for")
+        server, error = self.fails(True, answer, answer)
+        self.assertEqual(["initialize", "initialize"], server.sent, "a second refusal is not answered with a third request")
+        self.assertIn("initialize failed with code -32602", str(error))
+
+    def test_a_date_that_the_handshake_era_does_not_know_is_never_asked_for(self):
+        for supported in (["2024-01-01"], ["2025-07-01"], ["2024-01-01", "2027-01-01"]):
+            answer = {"error": {"code": -32602, "message": "Unsupported protocol version", "data": {"supported": supported}}}
+            server, error = self.fails(True, answer)
+            self.assertEqual("protocol-error: no mutually supported protocol version", str(error), supported)
+            self.assertEqual(["initialize"], server.sent)
+
+    def test_an_error_that_names_the_version_that_was_asked_for_is_not_a_reason_for_another_request(self):
+        answer = {"error": {"code": -32603, "message": "Internal error", "data": {"supported": ["2025-11-25", "2027-01-01"]}}}
+        server, error = self.fails(True, answer)
+        self.assertEqual(["initialize"], server.sent)
+        self.assertIn("initialize failed with code -32603", str(error))
+
+    # ---- the protocol version of an answer is a date string ----
+
+    def test_the_protocol_version_of_a_legacy_answer_must_be_a_date_string(self):
+        info = {"name": "Old Server", "version": "0.1"}
+        for label, value in (("true", True), ("false", False), ("a number", 123), ("a date as a number", 20250618), ("none", None), ("empty", ""),
+                             ("a list", ["2025-06-18"]), ("an object", {"a": 1}), ("a word", "latest"), ("a short month", "2025-6-18"),
+                             ("a trailing newline", "2025-06-18\n"), ("a trailing text", "2025-06-18T00:00"), ("a leading space", " 2025-06-18"),
+                             ("two dates", "2025-06-18 2025-11-25"), ("a date without dashes", "20250618"),
+                             ("digits of another script", "\u0662\u0660\u0662\u0665-\u0660\u0666-\u0661\u0668")):
+            with self.subTest(label):
+                server, caught = self.fails(True, {"result": {"protocolVersion": value, "serverInfo": info}})
+                self.assertEqual("protocol-error", caught.code)
+                self.assertIn("protocol version", str(caught))
+                self.assertEqual(["initialize"], server.sent, "the handshake went on after an answer without a usable protocol version")
+        for label, result in (("no field", {"serverInfo": info}), ("an empty result", {}), ("a list", []), ("text", "text"), ("none", None)):
+            with self.subTest(label):
+                server, caught = self.fails(True, {"result": result})
+                self.assertEqual("protocol-error", caught.code)
+                self.assertEqual(["initialize"], server.sent)
+
+    def test_a_protocol_version_that_is_a_date_is_taken_as_it_is(self):
+        for version in ("2024-11-05", "2025-03-26", "2025-06-18", "2025-11-25", "2027-01-01"):
+            server, result = self.start(True, {"result": {"protocolVersion": version, "serverInfo": {"name": "Old Server", "version": "0.1"}}}, TOOLS_ANSWER)
+            self.assertEqual(("legacy", version), (result["era"], result["protocol"]))
+            self.assertEqual(["initialize", "notifications/initialized", "tools/list"], server.sent)
+
+
+class NamedVersionsTests(unittest.TestCase):
+    def test_only_dates_of_ascii_digits_are_named_and_a_text_counts_only_when_it_is_about_versions_or_support(self):
+        named = toolchain_mcp._named_versions
+        self.assertEqual(["2026-07-28"], named({"message": "needs protocol 2026-07-28"}))
+        self.assertEqual([], named({"message": "Internal error 2026-09-01 at startup"}))
+        self.assertEqual([], named({"message": "supported \u0662\u0660\u0662\u0665-\u0660\u0666-\u0661\u0668"}))
+        self.assertEqual(["2025-06-18"], named({"message": "x", "data": {"supported": ["2025-06-18", "\u0662\u0660\u0662\u0665-\u0660\u0666-\u0661\u0668", 5, "latest"]}}))
+        self.assertEqual([], named({"message": "supported versions: 12026-07-288"}))
+        self.assertEqual([], named("text"))
+
 
 class ProbeDecisionTests(unittest.TestCase):
     def probe(self, *servers):
@@ -1274,6 +1435,78 @@ class SessionTests(unittest.TestCase):
             session.close()
         self.assertEqual([("start", 1, ["srv", "--x"], {"A": "1"}, "somewhere"), ("close", 1),
                           ("start", 2, ["srv", "--x"], {"A": "1"}, "somewhere"), ("close", 2)], events)
+
+
+class EndlessServer:
+    """A server whose tools/list never ends: every page names a new tool and hands out a new cursor. It refuses to be asked for more than
+    `limit` pages, so that a client without a limit fails the test instead of running for ever."""
+
+    def __init__(self, limit, last_page=None):
+        self.calls, self.limit, self.last_page = 0, limit, last_page
+
+    def call(self, method, params, deadline):
+        self.calls += 1
+        if self.calls > self.limit:
+            raise AssertionError("the client went on asking for pages beyond the limit of pages")
+        result = {"tools": [{"name": "t%d" % self.calls, "inputSchema": {}}]}
+        if self.calls != self.last_page:
+            result["nextCursor"] = "cursor-%d" % self.calls
+        return {"result": result}
+
+
+class PaginationTests(unittest.TestCase):
+    def test_pages_that_never_end_are_a_protocol_error_after_the_page_limit(self):
+        for meta in (None, toolchain_mcp._meta()):
+            with mock.patch.object(toolchain_mcp, "MAX_PAGES", 5):
+                server = EndlessServer(limit=50)
+                with self.assertRaises(toolchain_mcp.McpProbeError) as caught:
+                    toolchain_mcp._list_tools(server, time.monotonic() + 100, meta)
+            self.assertEqual("protocol-error: too many pages", str(caught.exception))
+            self.assertEqual(5, server.calls, "the limit of pages is not the number of pages that were asked for")
+
+    def test_a_list_that_ends_on_the_last_page_that_is_allowed_is_complete(self):
+        with mock.patch.object(toolchain_mcp, "MAX_PAGES", 5):
+            server = EndlessServer(limit=50, last_page=5)
+            tools = toolchain_mcp._list_tools(server, time.monotonic() + 100, None)
+            self.assertEqual(["t1", "t2", "t3", "t4", "t5"], list(tools))
+            self.assertEqual(5, server.calls)
+            server = EndlessServer(limit=50, last_page=6)
+            with self.assertRaises(toolchain_mcp.McpProbeError) as caught:
+                toolchain_mcp._list_tools(server, time.monotonic() + 100, None)
+        self.assertEqual("protocol-error: too many pages", str(caught.exception))
+
+
+class CloseTests(unittest.TestCase):
+    def server(self, wait):
+        server = object.__new__(toolchain_mcp._Server)
+        server.stop = threading.Event()
+        server.proc = mock.Mock()
+        server.proc.wait.side_effect = wait
+        server.reader = mock.Mock()
+        server.reader.is_alive.return_value = False
+        return server
+
+    def close(self, server):
+        events = []
+        with mock.patch.object(toolchain_mcp, "terminate_tree", side_effect=lambda proc: events.append("terminate")), \
+                mock.patch.object(toolchain_mcp, "kill_tree", side_effect=lambda proc: events.append("kill")):
+            server.close()
+        return events
+
+    def test_a_process_that_does_not_leave_by_itself_is_stopped_and_then_killed(self):
+        server = self.server(subprocess.TimeoutExpired("server", 1))
+        self.assertEqual(["terminate", "kill"], self.close(server))
+        self.assertTrue(server.stop.is_set())
+
+    def test_a_process_that_leaves_by_itself_is_not_stopped_but_its_tree_is_still_killed(self):
+        server = self.server([0])
+        self.assertEqual(["kill"], self.close(server))
+        server.proc.stdin.close.assert_called_once_with()
+
+    def test_the_input_is_closed_first_and_a_failure_to_close_it_changes_nothing(self):
+        server = self.server([0])
+        server.proc.stdin.close.side_effect = OSError("closed")
+        self.assertEqual(["kill"], self.close(server))
 
 
 class DeadlineTests(unittest.TestCase):

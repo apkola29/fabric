@@ -29,7 +29,8 @@ HERE = Path(__file__).resolve().parent
 if str(HERE) not in sys.path:
     sys.path.insert(0, str(HERE))
 
-from toolchain_io import WINDOWS, LaunchError, SystemRunner, kill_tree, popen_tree, safe_detail, terminate_tree  # noqa: E402
+from toolchain_io import (  # noqa: E402
+    _IPV4, WINDOWS, LaunchError, SystemRunner, _host_like, _token_like, kill_tree, popen_tree, terminate_tree)
 
 LEGACY_VERSION = "2025-11-25"
 MODERN_VERSION = "2026-07-28"
@@ -39,10 +40,11 @@ CLIENT_INFO = {"name": "fabric-automation-toolchain", "version": "1"}
 MAX_LINE = 16 * 1024 * 1024
 MAX_PAGES = 200
 GRACE = 1.0  # seconds a server gets to leave by itself once its input is closed
-# Seconds that server/discover gets to be answered. A server that stays silent for that long, for instance because it is slow to
-# start, is started again and gets the handshake; the handshake finds a modern server too (see _identify). A longer wait means
-# fewer new starts of slow servers and a longer delay for a server that never answers.
-DISCOVER_WAIT = 5.0
+# Seconds that server/discover gets to be answered. A server that stays silent for that long is started again and gets the handshake
+# (the handshake finds a modern server too, see _identify), which records it as a legacy server. A cold start of a .NET or an npm
+# server on a busy machine takes several seconds (the local Fabric server answered after 4.6 s on a loaded machine, and after 3 s on a
+# quiet one), so a short wait made the era of one server flip between runs. A server that never answers costs this long once.
+DISCOVER_WAIT = 20.0
 UNSUPPORTED_VERSION = -32022
 METHOD_NOT_FOUND = -32601
 
@@ -70,10 +72,12 @@ ENV_ADDRESS_NAMES = ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "npm_config_proxy
 
 _EOF = object()
 _TOO_LONG = object()
-_DATE = re.compile(r"\b\d{4}-\d{2}-\d{2}\b")
+_DATE = re.compile(r"\b[0-9]{4}-[0-9]{2}-[0-9]{2}\b")  # a protocol version: a date of ASCII digits
 _VERSION_WORDS = re.compile(r"version|protocol|support", re.IGNORECASE)
 _SERVER_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9 ._-]{0,63}")
-_SERVER_VERSION = re.compile(r"[0-9A-Za-z][0-9A-Za-z.+_~-]{0,63}")
+_SERVER_VERSION = re.compile(r"v?[0-9][0-9A-Za-z.+_~-]{0,63}")
+_LABEL = re.compile(r"[A-Za-z0-9_=-]+")  # a word cut at every dot and every other character, to look for a key in it
+_RUN = re.compile(r"[A-Za-z0-9_.=-]+")  # a word cut at every character but the dot, to look for a host or an address in it
 
 
 class McpProbeError(Exception):
@@ -324,8 +328,14 @@ def _server_info(info):
     return {"name": _label(info.get("name"), _SERVER_NAME), "version": _label(info.get("version"), _SERVER_VERSION)}
 
 
+def _suspect(value):
+    """True when a word of `value` is token-like, host-like or an IPv4 address: what safe_detail removes from a text."""
+    return (any(_token_like(label) for label in _LABEL.findall(value))
+            or any(_host_like(run) or _IPV4.search(run) for run in _RUN.findall(value)))
+
+
 def _label(value, pattern):
-    return value if isinstance(value, str) and pattern.fullmatch(value) else "unknown"
+    return value if isinstance(value, str) and pattern.fullmatch(value) and not _suspect(value) else "unknown"
 
 
 def _flag(value):
@@ -424,9 +434,9 @@ def _modern(server, deadline, info):
 
 def _legacy(server, deadline, answer):
     result = answer.get("result")
-    protocol = safe_detail(result.get("protocolVersion"), 32) if isinstance(result, dict) else ""
-    if not protocol:
-        raise _fail("protocol-error", "initialize answered without a protocol version")
+    protocol = result.get("protocolVersion") if isinstance(result, dict) else None
+    if not (isinstance(protocol, str) and _DATE.fullmatch(protocol)):
+        raise _fail("protocol-error", "initialize answered without a usable protocol version")
     server.notify("notifications/initialized")
     return {"era": "legacy", "protocol": protocol, "server": _server_info(result.get("serverInfo")),
             "tools": _list_tools(server, deadline, None)}
@@ -453,9 +463,12 @@ def _initialize(server, deadline, answered):
             return _legacy(server, deadline, answer)
         error = answer["error"]
         named = _named_versions(error)
-        if any(version >= MODERN_VERSION for version in named):
+        if MODERN_VERSION in named:
             return _modern(server, deadline, _identify(server, deadline, answered) or _server_info(None))
-        older = [version for version in named if version < LEGACY_VERSION]
+        known = [version for version in named if version in HANDSHAKE_VERSIONS]
+        if named and not known:
+            raise _fail("protocol-error", "no mutually supported protocol version")
+        older = [version for version in known if version < LEGACY_VERSION]
         if older and requested == LEGACY_VERSION:
             requested = older[-1]
             continue

@@ -32,7 +32,7 @@ HERE = Path(__file__).resolve().parent
 if str(HERE) not in sys.path:
     sys.path.insert(0, str(HERE))
 
-from toolchain_io import WINDOWS, SystemRunner, safe_detail  # noqa: E402
+from toolchain_io import WINDOWS, SystemRunner, replace_retrying, retrying, safe_detail  # noqa: E402
 
 MAX_TREE_BYTES = 100 * 1024 * 1024
 MAX_TREE_FILES = 5000
@@ -190,20 +190,57 @@ def _check_url(url):
 
 _GIT_CONFIG_DROPPED = ("GIT_CONFIG_COUNT", "GIT_CONFIG_PARAMETERS")
 _GIT_NETWORK_DROPPED = ("GIT_ASKPASS", "GIT_SSH", "GIT_SSH_COMMAND", "SSH_ASKPASS")
+# Variables that name a repository, its object store, its program folder or the templates of a new one: git must find none of them.
+_GIT_REPOSITORY_DROPPED = ("GIT_DIR", "GIT_WORK_TREE", "GIT_COMMON_DIR", "GIT_INDEX_FILE", "GIT_OBJECT_DIRECTORY",
+                           "GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_NAMESPACE", "GIT_EXEC_PATH", "GIT_TEMPLATE_DIR")
 _GIT_NUMBERED = re.compile(r"GIT_CONFIG_(?:KEY|VALUE)_[0-9]+", re.IGNORECASE)
+_BARE_CONFIG = b"[core]\n\trepositoryformatversion = 0\n\tbare = true\n"
 
 
 def _git_env(network=False, file_url=False):
     """The environment overlay of a git call. Git reads no configuration file of the operator or of the system, takes no setting from
-    GIT_CONFIG_* variables and never asks for a password; a network call also takes no program from GIT_ASKPASS or the ssh variables
-    and may use https only (and file for a file address). A value of None removes the variable that the process inherited."""
+    GIT_CONFIG_* variables, is told of no repository, work tree, object store, program folder or template by the environment, and never
+    asks for a password; a network call also takes no program from GIT_ASKPASS or the ssh variables and may use https only (and file for
+    a file address). A value of None removes the variable that the process inherited."""
     env = {"GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_NOSYSTEM": "1", "GIT_TERMINAL_PROMPT": "0"}
     env.update(dict.fromkeys(_GIT_CONFIG_DROPPED))
+    env.update(dict.fromkeys(_GIT_REPOSITORY_DROPPED))
     env.update(dict.fromkeys(name for name in os.environ if _GIT_NUMBERED.fullmatch(name)))
     if network:
         env.update(dict.fromkeys(_GIT_NETWORK_DROPPED))
         env["GIT_ALLOW_PROTOCOL"] = "https:file" if file_url else "https"
     return env
+
+
+def _run_alone(runner, argv, env, timeout):
+    """runner.run for a git call that is not made against a cache folder of ours: it names a remote or creates a cache.
+
+    It runs in a new empty folder, removed afterwards, and GIT_CEILING_DIRECTORIES names the parent of that folder, so that git does not
+    look above it. Whatever repository holds the current directory of this process, or one of the folders around the temporary folder, is
+    never found, and its configuration (an address rewrite, a program for a remote) is never read."""
+    try:
+        folder = os.path.realpath(tempfile.mkdtemp(prefix="tc-git-"))
+    except OSError:
+        raise _fail("unresolved", "no temporary folder") from None
+    try:
+        return runner.run(argv, cwd=folder, env=dict(env, GIT_CEILING_DIRECTORIES=os.path.dirname(folder)), timeout=timeout)
+    finally:
+        try:
+            _rmtree(folder)
+        except OSError:
+            pass
+
+
+def _reset_cache_config(dest):
+    """Put the minimal configuration of a bare repository into `<dest>/config`, whatever is there. A cache folder that was not made by
+    this call is not trusted: what it names (an address rewrite, a program for a remote or for ssh) must not take effect."""
+    config = os.path.join(str(dest), "config")
+    try:
+        _remove(config)
+        with open(config, "xb") as handle:
+            handle.write(_BARE_CONFIG)
+    except OSError:
+        raise _fail("unresolved", "cannot write the cache configuration") from None
 
 
 def _network_argv(url, *args):
@@ -348,7 +385,7 @@ def _highest(names):
 
 
 def _ls_remote(url, runner, kind):
-    result = runner.run(_network_argv(url, "ls-remote", kind, url), env=_network_env(url), timeout=NETWORK_TIMEOUT)
+    result = _run_alone(runner, _network_argv(url, "ls-remote", kind, url), _network_env(url), NETWORK_TIMEOUT)
     if result.returncode != 0:
         raise _git_failure(result)
     refs = {}
@@ -396,22 +433,33 @@ def resolve_git_ref(url, track, runner=None):
 
 
 def fetch_git(url, commit, dest, runner=None):
-    """Make `dest` a bare git dir that holds exactly that commit, fetched anonymously and shallow. Returns dest."""
+    """Make `dest` a bare git dir that holds exactly that commit, fetched anonymously and shallow. Returns dest.
+
+    The configuration of the cache folder is replaced by the minimal one of a bare repository before the folder is used and again right
+    after git has made it, so that nothing a cache folder holds (a hostile configuration included) takes effect. Git is always given
+    the folder by its absolute path (--git-dir) and runs from an empty folder. A cache folder that is a link (a symbolic link or a
+    junction) is refused: what is written into it would go to another place."""
     runner = runner or SystemRunner()
     sha = _sha(commit)
     _check_url(url)
     dest = Path(dest)
-    if dest.is_dir() and _has_commit(runner, dest, sha):
-        return dest
+    if _is_link(dest):
+        raise _fail("unresolved", "the cache folder is a link")
+    cache = os.path.abspath(str(dest))
+    if dest.is_dir():
+        _reset_cache_config(cache)
+        if _has_commit(runner, cache, sha):
+            return dest
     dest.mkdir(parents=True, exist_ok=True)
-    created = runner.run(["git", "init", "--bare", "--quiet", str(dest)], env=_git_env(), timeout=60)
+    created = _run_alone(runner, ["git", "init", "--bare", "--quiet", cache], _git_env(), 60)
     if created.returncode != 0:
         raise _git_failure(created)
-    fetched = runner.run(_network_argv(url, "--git-dir", str(dest), "fetch", "--quiet", "--depth", "1", "--no-tags", url, sha),
-                         env=_network_env(url), timeout=NETWORK_TIMEOUT)
+    _reset_cache_config(cache)
+    fetched = _run_alone(runner, _network_argv(url, "--git-dir=" + cache, "fetch", "--quiet", "--depth", "1", "--no-tags", url, sha),
+                         _network_env(url), NETWORK_TIMEOUT)
     if fetched.returncode != 0:
         raise _git_failure(fetched)
-    if not _has_commit(runner, dest, sha):
+    if not _has_commit(runner, cache, sha):
         raise _fail("unresolved", "the commit did not arrive")
     return dest
 
@@ -655,15 +703,20 @@ def lint_skill(root):
         count = total = 0
         for rel, path, is_link in _walk(str(root)):
             if is_link:
-                continue
-            try:
-                size = os.path.getsize(path)
-            except OSError:
-                raise _fail("unresolved", "cannot read a file") from None
+                target = _read_entry(path, True)
+                size = len(target)
+            else:
+                try:
+                    size = os.path.getsize(path)
+                except OSError:
+                    raise _fail("unresolved", "cannot read a file") from None
             count, total = count + 1, total + size
             if count > MAX_TREE_FILES or total > MAX_TREE_BYTES:
                 beyond = rel
                 break
+            if is_link:
+                files[rel] = target  # a link is a file that holds its target, as in the digest and in the git tree
+                continue
             if size > MAX_LINT_FILE and rel != "SKILL.md":
                 try:
                     with open(path, "rb") as handle:
@@ -887,6 +940,10 @@ def _npm_cli(runner, name, pin):
     except OSError:
         return None, ("npm failed", "fail")
     try:
+        # npm reads the .npmrc beside the first package.json that it finds above its folder: these two files are that project.
+        for file_name, text in ((".npmrc", ""), ("package.json", "{}")):
+            with open(os.path.join(work, file_name), "w", encoding="utf-8", newline="") as handle:
+                handle.write(text)
         result = runner.run(["npm", "view", spec, "version", "dist.integrity", "--json"], cwd=work, timeout=NPM_TIMEOUT)
         returncode, stdout, stderr = int(result.returncode), result.stdout or "", result.stderr or ""
     except Exception:  # a runner never raises, but a stand-in might
@@ -940,17 +997,18 @@ def _npm_registry(runner, name, pin):
 
 
 def _resolve_npm(runner, name, pin):
-    """The npm command line answers first, in a folder of its own so that no project file configures it, and the official registry
-    document is asked next. When both answer they must agree on the version and the integrity; an answer without an integrity is
-    never taken. The official registry may be unreachable: then the command line, the operator's own configuration, stands alone."""
+    """The npm command line answers first, in a folder of its own that holds its own project files so that no file above it configures
+    it, and the official registry document is asked next. When both answer they must agree on the version and the integrity; an answer
+    without an integrity is never taken. The command line stands alone only when the official registry gave no answer at all (the
+    network is blocked): the command line is the operator's own configuration, and it may be pointed at another registry that serves
+    another package of the same name, so a registry that answers, even with not found, an unusable document or no integrity, wins."""
     cli, cli_failure = _npm_cli(runner, name, pin)
     registry, registry_failure = _npm_registry(runner, name, pin)
     if cli and registry:
         agree = (cli["version"], cli["integrity"]) == (registry["version"], registry["integrity"])
         return cli if agree else _unresolved("unresolved", "mismatch")
     if cli:
-        # the document answered but does not list the version that the command line gave
-        return _unresolved("unresolved", "mismatch") if registry_failure[1] == "absent" else cli
+        return cli if registry_failure[1] == "network" else _unresolved("unresolved", "mismatch")
     if registry:
         return registry
     stages = [cli_failure, registry_failure]
@@ -1082,9 +1140,9 @@ def _rmtree(path):
         function(target)
 
     if sys.version_info >= (3, 12):
-        shutil.rmtree(path, onexc=retry)
+        retrying(lambda: shutil.rmtree(path, onexc=retry))
     else:
-        shutil.rmtree(path, onerror=retry)
+        retrying(lambda: shutil.rmtree(path, onerror=retry))
 
 
 def _remove(path):
@@ -1099,7 +1157,7 @@ def _remove(path):
         _rmtree(path)
     else:
         os.chmod(path, stat.S_IWRITE)
-        os.unlink(path)
+        retrying(lambda: os.unlink(path))
 
 
 def _safe_skill_name(name):
@@ -1206,8 +1264,14 @@ def _pick_shared(lock, shared):
     return picked
 
 
-def _stage(runner, cache, info, destination):
-    entries = _tree_entries(runner, cache, info["commit"], info["path"])
+def _stage(runner, cache, info, destination, shared=False):
+    if shared:
+        plugin_path, _, folder = info["path"].rpartition("/")
+        entries = _shared_entries_of(_tree_entries(runner, cache, info["commit"], plugin_path, limits=False), folder)
+        if not entries:
+            raise _fail("unresolved", "shared folder not found")
+    else:
+        entries = _tree_entries(runner, cache, info["commit"], info["path"])
     blobs = _read_blobs(runner, cache, [entry.sha for entry in entries])
     for entry in entries:
         target = destination.joinpath(*_file_parts(entry.path))
@@ -1223,7 +1287,7 @@ def _stage(runner, cache, info, destination):
 
 
 def _move(source, target):
-    os.replace(source, target)
+    replace_retrying(source, target)
 
 
 class _Swap:
@@ -1273,6 +1337,36 @@ def _listed_shared(store):
     return {name for name in listed if _shared_folder(name)} if isinstance(listed, dict) else set()
 
 
+def _holds_link(folder):
+    """True when a link is anywhere below `folder`. A top-level .git is looked at too."""
+    return any(is_link for _rel, _path, is_link in _walk(str(folder), "", False))
+
+
+def _refuse_links(store, picked, wanted):
+    """Refuse a pack folder in which a write or a delete would go through a link (a symbolic link or a junction) to somewhere else.
+
+    Looked at, before anything is staged or swapped: the pack folder, its skills folder, every folder in the skills folder, every
+    shared folder that is asked for or that the MANIFEST lists, the folder of the git caches and the cache of each commit, and
+    everything below the skill folders and the shared folders. A link anywhere else in the pack folder is none of our business."""
+    skills_dir = store / "skills"
+    if _is_link(store) or _is_link(skills_dir):
+        raise _fail("unresolved", "the pack folder is a link")
+    try:
+        folders = sorted(skills_dir.iterdir()) if skills_dir.is_dir() else []
+    except OSError:
+        raise _fail("unresolved", "cannot read a folder") from None
+    folders += [store / name for name in sorted(set(wanted) | _listed_shared(store))]
+    for folder in folders:
+        if _is_link(folder):
+            raise _fail("unresolved", "the pack folder is a link")
+        if folder.is_dir() and _holds_link(folder):
+            raise _fail("unresolved", "a link inside the pack folder")
+    caches = store / ".cache"
+    commits = sorted({info["commit"][:12] for group in (picked, wanted) for info in group.values()})
+    if any(_is_link(path) for path in [caches] + [caches / commit for commit in commits]):
+        raise _fail("unresolved", "the pack folder is a link")
+
+
 def _entry_of(info, measured):
     return {"source": info["source"], "plugin": info["plugin"], "commit": info["commit"], "digest": info["digest"],
             "files": measured["files"], "bytes": measured["bytes"]}
@@ -1283,12 +1377,15 @@ def vendor_skills(lock, selection, store, runner=None, quarantine=(), shared=())
     and verify every one against the lock.
 
     All or nothing: everything is staged and checked first, and only then does the store change, and the change is undone if a step
-    fails. `shared` is a list of (source id, folder). A shared folder that the previous MANIFEST lists and that is not asked for now
-    is removed. With nothing selected and nothing shared the store is left as it is. Returns the MANIFEST dict."""
+    fails. A pack folder that holds a link (a symbolic link or a junction) where a write or a delete would go through it is refused
+    with `unresolved` before anything happens. `shared` is a list of (source id, folder). A shared folder that the previous MANIFEST
+    lists and that is not asked for now is removed. With nothing selected and nothing shared the store is left as it is. Returns the
+    MANIFEST dict."""
     runner = runner or SystemRunner()
     store = Path(store)
     picked = _pick(lock, selection, quarantine)
     wanted = _pick_shared(lock, shared)
+    _refuse_links(store, picked, wanted)
     if not picked and not wanted:
         present = _manifest_of(store)
         if isinstance(present, dict) and isinstance(present.get("skills"), dict):
@@ -1315,7 +1412,7 @@ def vendor_skills(lock, selection, store, runner=None, quarantine=(), shared=())
             info = (picked if kind == "skill" else wanted)[name]
             if info["commit"] not in fetched:
                 fetched[info["commit"]] = fetch_git(info["repo"], info["commit"], store / ".cache" / info["commit"][:12], runner)
-            measured[(kind, name)] = _stage(runner, fetched[info["commit"]], info, work / "new" / kind / name)
+            measured[(kind, name)] = _stage(runner, fetched[info["commit"]], info, work / "new" / kind / name, kind == "shared")
         manifest = {"schema": 1, "lock_inputs_digest": lock.get("inputs_digest"),
                     "skills": {name: _entry_of(picked[name], measured[("skill", name)]) for name in sorted(picked)},
                     "shared": {name: _entry_of(wanted[name], measured[("shared", name)]) for name in sorted(wanted)}}

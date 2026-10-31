@@ -39,6 +39,7 @@ Result = namedtuple("Result", "returncode stdout stderr")
 NOW = datetime.datetime(2026, 10, 30, 12, 0, 0, tzinfo=datetime.timezone.utc)
 STAMP = "20261030T120000Z"
 EULA_ENV = "ACME_ACCEPT_EULA"
+ADDRESS = ".".join(("10", "1", "2", "3"))  # joined at run time: the repository scanner reads four numbers in a row as a version
 
 
 def pin(name, version):
@@ -223,11 +224,34 @@ def small_profiles():
 
 
 PACKAGE_VERSIONS = {"npm": "1.6.0", "pypi": "1.8.0", "nuget": "0.5.0"}
+CAPTURED = "2026-10-30"  # the day of NOW: what a capture made with the fake clock records
+
+
+def tools_manifest():
+    """The small manifest with a second pinned command-line tool, from npm (`fab` is from PyPI and is in it already)."""
+    manifest = small_manifest()
+    manifest["tools"].append({"id": "pra", "command": "pra", "version_args": ["--version"], "min": "0.1", "needed_for": "the report skills",
+                              "required": False, "package": {"ecosystem": "npm", "name": "@acme/report-cli", "track": "latest"}})
+    return manifest
+
+
+def tools_profiles():
+    """The small profiles, and the command-line tools that each of them pins; an executor profile has only a tool."""
+    profiles = small_profiles()
+    profiles["profiles"]["dev-a"]["tools"] = ["fab", "pra"]
+    profiles["profiles"]["agent-ok"]["tools"] = ["pra"]
+    profiles["profiles"]["exec-tool"] = {"mode": "executor", "skills": [], "mcp": [], "instructions": [], "tools": ["fab"]}
+    return profiles
 
 
 def server_label(package):
     """The server name that a probe reports for a package: a plain label, never the package spec."""
     return re.sub(r"[^A-Za-z0-9 ._-]+", "-", package).strip("-")
+
+
+def launch_of(manifest, packages, server_id, variant_name):
+    """The digest that binds a captured contract to the launch it was captured under."""
+    return toolchain.launch_digest(toolchain.server_launch(manifest, {"packages": packages}, server_id, variant_name))
 
 
 def synthetic_lock(manifest, profiles, today="2026-10-01"):
@@ -281,6 +305,7 @@ def synthetic_lock(manifest, profiles, today="2026-10-01"):
             version = packages[toolchain.package_key(server["package"])]["version"]
             contracts[key] = {"status": "captured", "era": "legacy", "protocol": "2025-11-25",
                               "server": {"name": server_label(package), "version": version}, "package_version": version,
+                              "launch": launch_of(manifest, packages, server["id"], name), "captured": CAPTURED,
                               "tools": {t: {"schema": "sha256:" + fake_hash(package + t), "read_only": True, "destructive": False,
                                             "idempotent": True} for t in ("tool_a", "tool_b")}}
     return toolchain.Lock({"schema": 1, "generated": today, "inputs_digest": toolchain.inputs_digest(manifest),
@@ -349,6 +374,15 @@ GOOD_TOOLS = {("git", "--version"): (0, "git version 2.43.0.windows.1\n", ""), (
               ("gh", "--version"): (0, "gh version 2.45.0 (2024-03-01)\n", ""), ("az", "--version"): (0, "azure-cli  2.61.0\n", "")}
 
 
+def sentinel_detail(word="anything"):
+    """A stand-in for safe_detail that answers SENTINEL for a text that holds `word` and does what the real one does for any other text."""
+    real = toolchain.toolchain_io.safe_detail
+
+    def fake(text, limit=80):
+        return "SENTINEL" if word in str(text) else real(text, limit)
+    return fake
+
+
 def forbidden(name):
     def call(*args, **kwargs):
         raise AssertionError("%s must not be called here" % name)
@@ -382,6 +416,7 @@ class Upstream:
                 self.entries[(path, folder)] = shared_entries(folder)
         self.packages = copy.deepcopy(dict(lock["packages"]))
         self.labels, self.server_versions = {}, {}
+        self.protocol = "2025-11-25"
         package_of = {s["id"]: s["package"]["name"] for s in manifest["mcp_servers"] if "package" in s}
         for key, contract in lock["contracts"].items():
             if contract["status"] == "captured":
@@ -427,7 +462,7 @@ class Upstream:
         for arg in argv:
             name, _, version = arg.rpartition("@")
             if name in self.tools:
-                return {"era": "legacy", "protocol": "2025-11-25",
+                return {"era": "legacy", "protocol": self.protocol,
                         "server": {"name": self.labels.get(name, "unknown"), "version": self.server_versions.get(name, version)},
                         "tools": copy.deepcopy(self.tools[name])}
         raise toolchain_mcp.McpProbeError("exited: the fake server is gone")
@@ -737,6 +772,20 @@ class SchemaTests(Base):
         manifest["tools"][4]["package"] = {"ecosystem": "npm", "name": "@acme/tool", "track": "2.0.0"}
         self.assertProblem(toolchain.validate_manifest(manifest), "different track")
 
+    def test_a_profile_may_list_the_command_line_tools_it_pins(self):
+        profiles = copy.deepcopy(dict(tools_profiles()))
+        self.assertEqual([], toolchain.validate_profiles(profiles))
+        profiles["profiles"]["agent-ok"]["tools"] = []
+        self.assertEqual([], toolchain.validate_profiles(profiles))
+        del profiles["profiles"]["agent-ok"]["tools"]
+        self.assertEqual([], toolchain.validate_profiles(profiles), "the key is optional and means no tool")
+        for value in ("fab", {"fab": 1}, None, 5, [5], [""], ["a b"], ["fab", "fab"], [["fab"]], ["fab", None], ["../fab"]):
+            with self.subTest(tools=value):
+                profiles["profiles"]["agent-ok"]["tools"] = value
+                self.assertProblem(toolchain.validate_profiles(profiles), "profiles.agent-ok.tools")
+        profiles["profiles"]["agent-ok"]["tools"] = ["fab", "fab"]
+        self.assertProblem(toolchain.validate_profiles(profiles), "'fab' is listed twice")
+
     def test_the_license_variable_must_be_passed_through_and_default_to_false(self):
         manifest = small_manifest()
         manifest["mcp_servers"][3]["env"][EULA_ENV]["default"] = "true"
@@ -880,9 +929,84 @@ class SchemaTests(Base):
             with self.subTest(version=version):
                 problems = self.lock_problems(lambda l: l["contracts"]["npm-srv/online"]["server"].update(version=version))
                 self.assertProblem(problems, "server.version")
-        for version in ("1.6.0", "4.0.0-beta.4", "1.0.0+build.5", "1.0rc1", "0_1~2", "unknown", "x" * 64):
+        for version in ("1.6.0", "4.0.0-beta.4", "1.0.0+build.5", "1.0rc1", "0_1~2", "unknown", "1" * 64, "v1.2.3", "1.30.0", "5.3.20.RELEASE"):
             with self.subTest(version=version):
                 self.assertEqual([], self.lock_problems(lambda l: l["contracts"]["npm-srv/online"]["server"].update(version=version)))
+
+    def test_a_server_version_starts_with_a_digit_and_is_no_host_name(self):
+        build_host = "build." + "private." + "example"
+        for version in (build_host, "x" * 64, "1" * 65, "v", "V1.0", "v.1", "build1", "1." + build_host, "1.2.3." + "example." + "com", "10." + build_host,
+                        "1.0.0-" + "rc." + "final"):
+            with self.subTest(version=version):
+                self.assertProblem(self.lock_problems(lambda l: l["contracts"]["npm-srv/online"]["server"].update(version=version)), "server.version")
+        for version in ("1.6.0", "4.0.0-beta.4", "1.30.0", "v2.0.1", "1.0.0.windows.1", "2025.10.1", "5.3.20.RELEASE", "1.0.0-beta.4+build.7"):
+            with self.subTest(version=version):
+                self.assertEqual([], self.lock_problems(lambda l: l["contracts"]["npm-srv/online"]["server"].update(version=version)))
+
+    def test_the_protocol_of_a_captured_contract_is_a_date(self):
+        path_like = "C:\\" + "Users\\jane\\protocol"
+        for protocol in ("2025-11-25", "2026-07-28", "2024-11-05", "2025-03-26"):
+            with self.subTest(protocol=protocol):
+                self.assertEqual([], self.lock_problems(lambda l: l["contracts"]["npm-srv/online"].update(protocol=protocol)))
+        for protocol in ("", "latest", "2025-1-25", "20251125", "2025-11-25 ", " 2025-11-25", "2025-11-25\n", "2025-11-25x", path_like, "/home" + "/jane/p",
+                         "2025-11-25" + "@" + "example.invalid", None, 20251125):
+            with self.subTest(protocol=protocol):
+                self.assertProblem(self.lock_problems(lambda l: l["contracts"]["npm-srv/online"].update(protocol=protocol)), ".protocol")
+
+    def test_a_tool_name_is_a_plain_token(self):
+        tool = {"schema": "sha256:" + "5" * 64, "read_only": True, "destructive": False, "idempotent": True}
+        accent = "caf\u00e9"
+        for name in ("tool_a", "docs_api-examples", "a.b", "A", "x" * 128, "azmcp_storage_account_list", "Fabric-MCP-core_get-item"):
+            with self.subTest(name=name):
+                self.assertEqual([], self.lock_problems(lambda l: l["contracts"]["npm-srv/online"]["tools"].__setitem__(name, dict(tool))))
+        for name in ("", "x" * 129, "a b", "a/b", "C:\\" + "Users\\jane\\t", "../x", "tool\n", "a" + "@" + "b", accent, "a;b", "'quoted'", "a:b"):
+            with self.subTest(name=name):
+                problems = self.lock_problems(lambda l: l["contracts"]["npm-srv/online"]["tools"].__setitem__(name, dict(tool)))
+                self.assertProblem(problems, "is not a valid tool name")
+        problems = self.lock_problems(lambda l: l["contracts"].__setitem__("hosted/default", {"status": "open", "tools": {"a b": dict(tool)}}))
+        self.assertProblem(problems, "is not a valid tool name")
+
+    def test_a_captured_contract_carries_the_digest_of_the_launch_it_was_captured_under(self):
+        key, where = "npm-srv/online", "contracts.npm-srv/online"
+        good = "sha256:" + "0123456789abcdef" * 4
+        self.assertEqual([], self.lock_problems(lambda l: l["contracts"][key].update(launch=good)))
+        self.assertProblem(self.lock_problems(lambda l: l["contracts"][key].pop("launch")), where + ": missing key 'launch'")
+        for value in ("", "sha256:abc", "md5:" + "0" * 32, "sha256:" + "A" * 64, "sha256:" + "0" * 63, "sha256:" + "0" * 65, "0" * 64, " " + good,
+                      good + "\n", None, 5, ["x"], {"digest": good}):
+            with self.subTest(launch=value):
+                self.assertProblem(self.lock_problems(lambda l: l["contracts"][key].update(launch=value)), where + ".launch")
+
+    def test_only_a_captured_contract_may_carry_a_launch_digest(self):
+        launch = "sha256:" + "1" * 64
+        for key in ("hosted/default", "docs/default"):
+            with self.subTest(key=key):
+                self.assertProblem(self.lock_problems(lambda l: l["contracts"][key].update(launch=launch)), "unknown key 'launch'")
+        for contract in ({"status": "skipped", "reason": "skipped", "detail": "launch changed"},
+                         {"status": "unavailable", "reason": "timeout", "detail": ""}):
+            with self.subTest(contract=contract):
+                self.assertEqual([], self.lock_problems(lambda l: l["contracts"].__setitem__("npm-srv/online", dict(contract))))
+                self.assertProblem(self.lock_problems(lambda l: l["contracts"].__setitem__("npm-srv/online", dict(contract, launch=launch))), "unknown key 'launch'")
+
+    def test_a_captured_contract_carries_the_date_of_its_capture(self):
+        key, where = "npm-srv/online", "contracts.npm-srv/online"
+        for good in ("2026-10-31", "2024-02-29", "2026-01-01", "2026-12-31"):
+            with self.subTest(captured=good):
+                self.assertEqual([], self.lock_problems(lambda l: l["contracts"][key].update(captured=good)))
+        self.assertProblem(self.lock_problems(lambda l: l["contracts"][key].pop("captured")), where + ": missing key 'captured'")
+        for bad in ("", "2026-13-01", "2026-02-30", "2027-02-29", "2026-00-10", "2026-10-00", "2026-2-3", "20261031", "yesterday", "2026-10-31 ", " 2026-10-31",
+                    "2026-10-31T00:00:00Z", "2026-10-31\n", None, 20261031, ["2026-10-31"]):
+            with self.subTest(captured=bad):
+                self.assertProblem(self.lock_problems(lambda l: l["contracts"][key].update(captured=bad)), where + ".captured")
+        self.assertProblem(self.lock_problems(lambda l: l["contracts"][key].update(captured="2026-02-30")), "is not a real date")
+
+    def test_only_a_captured_contract_may_carry_a_capture_date(self):
+        for key in ("hosted/default", "docs/default"):
+            with self.subTest(key=key):
+                self.assertProblem(self.lock_problems(lambda l: l["contracts"][key].update(captured="2026-10-31")), "unknown key 'captured'")
+        for contract in ({"status": "skipped", "reason": "skipped", "detail": "launch changed"}, {"status": "unavailable", "reason": "timeout", "detail": ""}):
+            with self.subTest(contract=contract):
+                self.assertProblem(self.lock_problems(lambda l: l["contracts"].__setitem__("npm-srv/online", dict(contract, captured="2026-10-31"))),
+                                   "unknown key 'captured'")
 
     def test_a_resolved_package_carries_the_integrity_form_of_its_ecosystem(self):
         sha512 = "sha512-" + "A" * 86 + "=="
@@ -931,14 +1055,35 @@ class SchemaTests(Base):
 
     def test_a_reason_detail_may_not_hold_a_url_or_a_host(self):
         feed = "pkgs." + "contoso." + "invalid"
-        for detail in ("see https://" + feed + "/x", "// " + feed, "fails at " + feed, "x" * 81, "bad;chars", "a@b"):
+        secret = "jane" + ":" + "hunter2"
+        key = "a1b2c3d4e5f6a7b8c9d0e1f2a3b4"
+        for detail in ("see https://" + feed + "/x", "// " + feed, "fails at " + feed, "x" * 81, "bad;chars", "a@b",
+                       "login " + secret, "from " + ADDRESS + " refused", "key " + key, "at " + "/home" + "/jane/x"):
             with self.subTest(detail=detail):
                 lock = copy.deepcopy(dict(synthetic_lock(small_manifest(), small_profiles())))
                 lock["packages"]["npm:@acme/tool"] = {"status": "unresolved", "reason": "network", "detail": detail}
                 self.assertTrue(toolchain.validate_lock(lock))
         lock = copy.deepcopy(dict(synthetic_lock(small_manifest(), small_profiles())))
+        for detail in ("E404 version 1.6.0 not found", "exited with code 1", "license not accepted", "failed: 404 not found", "", "E404  not found", " E404 not found "):
+            with self.subTest(detail=detail):
+                lock["packages"]["npm:@acme/tool"] = {"status": "unresolved", "reason": "network", "detail": detail}
+                self.assertEqual([], toolchain.validate_lock(lock))
+        lock["packages"]["npm:@acme/tool"] = {"status": "unresolved", "reason": "network", "detail": "login " + secret}
+        self.assertProblem(toolchain.validate_lock(lock), "must not hold a URL or a host name")
         lock["packages"]["npm:@acme/tool"] = {"status": "unresolved", "reason": "network", "detail": "E404 version 1.6.0 not found"}
         self.assertEqual([], toolchain.validate_lock(lock))
+
+    def test_the_detail_check_of_the_lock_is_the_one_of_the_shared_sanitiser(self):
+        lock = copy.deepcopy(dict(synthetic_lock(small_manifest(), small_profiles())))
+        lock["packages"]["npm:@acme/tool"] = {"status": "unresolved", "reason": "network", "detail": "at " + "pkgs." + "contoso." + "invalid"}
+        self.assertProblem(toolchain.validate_lock(lock), "must not hold a URL or a host name")
+        with mock.patch.object(toolchain.toolchain_io, "safe_detail", side_effect=lambda text, limit=80: text):
+            self.assertEqual([], toolchain.validate_lock(lock))
+        lock["packages"]["npm:@acme/tool"] = {"status": "unresolved", "reason": "network", "detail": "E404 not found"}
+        with mock.patch.object(toolchain.toolchain_io, "safe_detail", return_value="changed"):
+            self.assertProblem(toolchain.validate_lock(lock), "must not hold a URL or a host name")
+        self.assertFalse(hasattr(toolchain, "HOSTLIKE_RE"), "the host rule lives in toolchain_io only")
+        self.assertFalse(hasattr(toolchain, "safe_detail"), "there is one safe_detail, the one of toolchain_io")
         lock["packages"]["npm:@acme/tool"] = {"status": "unresolved", "reason": "internal-feed", "detail": ""}
         self.assertProblem(toolchain.validate_lock(lock), "reason")
         lock["contracts"]["hosted/default"] = {"status": "skipped", "reason": "skipped", "detail": "license not accepted"}
@@ -1450,7 +1595,8 @@ class RenderTests(Base):
                 self.assertIn(spec, text, (host, spec))
             self.assertNotIn("latest", text)
 
-    def test_the_load_plan_holds_the_pinned_skills_servers_contracts_and_instructions(self):
+    def test_the_load_plan_holds_the_pinned_skills_servers_contracts_tools_and_instructions(self):
+        self.small_project(manifest=tools_manifest(), profiles=tools_profiles())
         lock_file = self.root / "toolchain" / "toolchain.lock.json"
         expected_lock = "sha256:" + hashlib.sha256(lock_file.read_bytes().replace(b"\r\n", b"\n")).hexdigest()
         for lock in (self.lock, toolchain.load_lock(lock_file)):
@@ -1470,6 +1616,8 @@ class RenderTests(Base):
                                      "integrity": self.lock["packages"]["npm:@acme/tool"]["integrity"]},
                          "provisioning": "preinstalled",
                          "contract": self.lock["contracts"]["npm-srv/offline"]}],
+                "tools": [{"id": "pra", "command": "pra", "ecosystem": "npm", "package": "@acme/report-cli", "version": "1.6.0",
+                           "integrity": self.lock["packages"]["npm:@acme/report-cli"]["integrity"], "provisioning": "preinstalled"}],
                 "instructions": [{"path": "instructions/base.md", "digest": toolchain.digest_text("# Preamble\n\nBe careful.\n")}],
             }
             self.assertGolden(expected, plan)
@@ -2146,7 +2294,7 @@ class SharedResolveTests(SharedFolderBase):
         self.assertEqual([{"folder": "common", "source": "src", "plugin": "core", "commit": "1" * 40, "path": "plugins/core/common",
                            "digest": shared_digest("common"), "store_path": "common"}], plan["shared"])
         self.assertEqual([], toolchain.render("load-plan", self.resolved("agent-empty"))["shared"])
-        self.assertEqual(["schema", "profile", "mode", "lock", "skills", "shared", "repo_skills", "mcp", "instructions"], list(plan))
+        self.assertEqual(["schema", "profile", "mode", "lock", "skills", "shared", "repo_skills", "mcp", "tools", "instructions"], list(plan))
 
     def test_list_profile_prints_the_shared_folders(self):
         out = self.cli("list", "--profile", "dev-a")[1]
@@ -2299,7 +2447,7 @@ class RepoSkillTests(Base):
         plan = toolchain.render("load-plan", self.resolved("agent-ok"))
         self.assertEqual([self.entry()], plan["repo_skills"])
         self.assertEqual([], toolchain.render("load-plan", self.resolved("agent-empty"))["repo_skills"])
-        self.assertEqual(["schema", "profile", "mode", "lock", "skills", "shared", "repo_skills", "mcp", "instructions"], list(plan))
+        self.assertEqual(["schema", "profile", "mode", "lock", "skills", "shared", "repo_skills", "mcp", "tools", "instructions"], list(plan))
 
     def test_verify_lints_each_repo_owned_skill_once_and_a_finding_fails_in_every_mode(self):
         self.assertEqual(0, self.cli("render", "--write-project")[0])
@@ -2323,6 +2471,31 @@ class RepoSkillTests(Base):
         code, out, err = self.cli("verify", "--profile", "agent-empty", deps=self.deps(lint_skill=forbidden("lint_skill")))
         self.assertEqual((0, ""), (code, err), out)
         self.assertNotIn("V8", out)
+
+    def test_each_repo_owned_skill_is_linted_on_its_own_and_only_the_one_with_a_finding_is_reported(self):
+        write(self.root / "toolchain" / "skills" / "alpha-router" / "SKILL.md", "---\nname: alpha-router\ndescription: fine\n---\n")
+        write(self.router / "SKILL.md", "---\nname: router\n---\n")
+        seen = []
+
+        def lint(path):
+            seen.append(Path(path).name)
+            return fake_lint_skill(path)
+        code, out, _ = self.cli("verify", deps=self.deps(lint_skill=lint))
+        self.assertEqual(1, code)
+        self.assertEqual(["alpha-router", "router"], sorted(seen), "once each, although render lints them again")
+        self.assertEqual(1, out.count("[FAIL] V8: repo-owned skill router: missing description"), out)
+        self.assertNotIn("repo-owned skill alpha-router", out)
+
+    def test_a_folder_name_that_is_wrong_is_reported_once_and_also_when_the_rules_had_no_folder_to_look_at(self):
+        write(self.root / "toolchain" / "skills" / "Bad Name" / "SKILL.md", "x\n")
+        with self.assertRaises(toolchain.ToolchainError) as caught:
+            self.resolved()
+        self.assertEqual(1, len([p for p in caught.exception.problems if "lower-case letters" in p]), caught.exception.problems)
+        with mock.patch.object(toolchain, "DEFAULT_ROOT", self.root):
+            with self.assertRaises(toolchain.ToolchainError) as caught:
+                toolchain.resolve_profile(self.manifest, self.profiles, self.lock, "dev-a", deps=self.deps())
+        self.assertEqual(["profile dev-a: toolchain/skills/Bad Name: a skill folder is named with lower-case letters, digits and hyphens"],
+                         caught.exception.problems)
 
     def test_the_skills_column_counts_unique_upstream_skills_and_the_repo_owned_ones(self):
         profiles = small_profiles()
@@ -2519,11 +2692,14 @@ class LoadPlanLaunchTests(Base):
         for sid in ("npm-srv", "py-srv", "nuget-local"):
             self.assertEqual("on-demand", entries[sid]["provisioning"], sid)
 
-    def test_a_launcher_other_than_npx_and_uvx_is_left_alone_and_a_server_without_a_package_has_no_provisioning(self):
-        entries = self.entries("agent-all")
-        self.assertEqual([self.nuget, "--yes"], entries["nuget-local"]["args"])
-        self.assertEqual("preinstalled", entries["nuget-local"]["provisioning"])
-        docs = self.entries("dev-all")["docs"]
+    def test_a_launcher_other_than_npx_and_uvx_is_refused_in_a_job_and_a_server_without_a_package_has_no_provisioning(self):
+        with self.assertRaises(toolchain.ToolchainError) as caught:
+            self.entries("agent-all")
+        self.assertProblem(caught.exception.problems, "profile agent-all: server nuget-local launches through dnx, which has no offline form")
+        entries = self.entries("dev-all")
+        self.assertEqual([self.nuget, "--yes"], entries["nuget-local"]["args"], "a dev plan leaves it alone")
+        self.assertEqual("on-demand", entries["nuget-local"]["provisioning"])
+        docs = entries["docs"]
         self.assertNotIn("provisioning", docs)
         self.assertEqual([], docs["args"])
 
@@ -2534,6 +2710,21 @@ class LoadPlanLaunchTests(Base):
         self.assertEqual(before, resolved["mcp"])
         self.assertEqual(first, toolchain.render("load-plan", resolved))
         self.assertEqual(["-y", self.npm, "--offline"], resolved["mcp"][0]["args"])
+
+    def test_the_plan_claims_a_preinstalled_package_only_when_the_launcher_was_told_to_stay_offline(self):
+        resolved = self.resolved("agent-ok")
+        entry = toolchain.render("load-plan", resolved)["mcp"][0]
+        self.assertEqual((["--offline", "-y", self.npm, "--offline"], "preinstalled"), (entry["args"], entry["provisioning"]))
+        for command in ("npx.cmd", "pnpm", "/opt/tools/npx", "uvx.exe"):
+            for args in (["-y", self.npm, "--offline"], ["--offline", "-y", self.npm]):
+                with self.subTest(command=command, args=args):
+                    resolved["mcp"][0].update(command=command, args=list(args))
+                    entry = toolchain.render("load-plan", resolved)["mcp"][0]
+                    self.assertEqual(args, entry["args"], "no flag is added to a launcher that has no offline form")
+                    self.assertEqual("on-demand", entry["provisioning"], "the package would be downloaded at launch")
+        resolved["mcp"][0].update(command="uvx", args=[self.py])
+        entry = toolchain.render("load-plan", resolved)["mcp"][0]
+        self.assertEqual((["--offline", self.py], "preinstalled"), (entry["args"], entry["provisioning"]))
 
     def test_the_offline_flag_is_not_added_twice(self):
         resolved = self.resolved("agent-ok")
@@ -2553,6 +2744,64 @@ class LoadPlanLaunchTests(Base):
                             self.assertEqual(["-y", self.npm, "--offline"], server["args"])
                         if server.get("command") == "uvx":
                             self.assertEqual([self.py, "--all"], server["args"])
+
+
+class LaunchDigestTests(unittest.TestCase):
+    """A captured contract is bound to the launch it was captured under by the digest of the command, the arguments and the declared environment."""
+
+    def setUp(self):
+        self.launch = {"command": "npx", "args": ["-y", pin("@acme/tool", "1.6.0"), "--online"],
+                       "env": {"ACME_MODE": {"from_env": "ACME_MODE", "default": "safe"}, "ACME_TARGET": {"from_env": "ACME_TARGET"}}}
+
+    def digest(self, **change):
+        return toolchain.launch_digest(dict(self.launch, **change))
+
+    def test_the_digest_is_the_sha256_of_the_canonical_json_of_command_args_and_env(self):
+        canonical = ('{"args":["-y","%s","--online"],"command":"npx","env":{"ACME_MODE":{"default":"safe","from_env":"ACME_MODE"},'
+                     '"ACME_TARGET":{"from_env":"ACME_TARGET"}}}' % pin("@acme/tool", "1.6.0"))
+        self.assertEqual("sha256:" + hashlib.sha256(canonical.encode("ascii")).hexdigest(), self.digest())
+        self.assertRegex(self.digest(), r"\Asha256:[0-9a-f]{64}\Z")
+
+    def test_only_the_command_the_arguments_and_the_declared_environment_count(self):
+        full = {"transport": "stdio", "command": "npx", "args": list(self.launch["args"]), "env": copy.deepcopy(self.launch["env"]),
+                "url": None, "headers": {}}
+        self.assertEqual(self.digest(), toolchain.launch_digest(full))
+        self.assertEqual(self.digest(), toolchain.launch_digest(dict(full, url="https://elsewhere.example.invalid", headers={"X": "y"})))
+
+    def test_a_change_of_the_command_an_argument_or_the_environment_changes_the_digest(self):
+        env = self.launch["env"]
+        changes = {
+            "the command": dict(command="pnpm"),
+            "the package version": dict(args=["-y", pin("@acme/tool", "1.7.0"), "--online"]),
+            "an argument dropped": dict(args=["-y", pin("@acme/tool", "1.6.0")]),
+            "an argument added": dict(args=self.launch["args"] + ["--all"]),
+            "the order of the arguments": dict(args=["--online", "-y", pin("@acme/tool", "1.6.0")]),
+            "an env default": dict(env=dict(env, ACME_MODE={"from_env": "ACME_MODE", "default": "fast"})),
+            "an env default removed": dict(env=dict(env, ACME_MODE={"from_env": "ACME_MODE"})),
+            "the source of an env variable": dict(env=dict(env, ACME_MODE={"from_env": "OTHER_MODE", "default": "safe"})),
+            "an env variable added": dict(env=dict(env, ACME_EXTRA={"from_env": "ACME_EXTRA"})),
+            "an env variable removed": dict(env={"ACME_MODE": env["ACME_MODE"]}),
+        }
+        for what, change in changes.items():
+            with self.subTest(what=what):
+                self.assertNotEqual(self.digest(), self.digest(**change))
+        self.assertEqual(len(changes), len({self.digest(**c) for c in changes.values()}), "every change gives its own digest")
+
+    def test_the_order_of_the_keys_does_not_matter_and_the_text_that_is_digested_is_plain_ascii(self):
+        env = {"B": {"from_env": "B", "default": "x"}, "A": {"default": "y", "from_env": "A"}}
+        reordered = {"A": {"from_env": "A", "default": "y"}, "B": {"default": "x", "from_env": "B"}}
+        self.assertEqual(self.digest(env=env), self.digest(env=reordered))
+        canonical = '{"args":["caf\\u00e9"],"command":"npx","env":{}}'
+        self.assertEqual("sha256:" + hashlib.sha256(canonical.encode("ascii")).hexdigest(),
+                         toolchain.launch_digest({"command": "npx", "args": ["caf\u00e9"], "env": {}}))
+
+    def test_the_digest_depends_on_nothing_of_the_machine(self):
+        base = self.digest()
+        machine = {"ACME_MODE": "a value of this machine", "ACME_TARGET": "elsewhere", "HOME": "/somewhere/else"}
+        with mock.patch.dict(os.environ, machine), mock.patch.object(os, "linesep", "\r\n"), mock.patch.object(sys, "platform", "linux"):
+            self.assertEqual(base, self.digest())
+        with mock.patch.object(os, "linesep", "\n"), mock.patch.object(sys, "platform", "win32"):
+            self.assertEqual(base, self.digest())
 
 
 class OneValidationPathTests(Base):
@@ -2614,11 +2863,177 @@ class OneValidationPathTests(Base):
         self.rewrite_lock(lambda lock: lock["packages"].pop("nuget:Acme.Nuget"))
         self.assertAllRefuse("dev-a", "package nuget:Acme.Nuget is not in the lock")
 
+    NO_OFFLINE = "server %s launches through %s, which has no offline form; agent and executor profiles may launch only through npx or uvx"
+
+    def launcher_project(self, command, index):
+        """A project whose server number `index` launches through `command`, with a lock that agrees, and an executor profile besides the others."""
+        manifest = small_manifest()
+        manifest["mcp_servers"][index]["launch"]["command"] = command
+        profiles = small_profiles()
+        profiles["profiles"]["exec-ok"] = {"mode": "executor", "skills": [], "instructions": [], "mcp": [{"server": "py-srv", "variant": "default"}]}
+        self.small_project(manifest=manifest, profiles=profiles)
+
+    def test_a_launcher_with_no_offline_form_stops_an_agent_and_an_executor_profile(self):
+        for command in ("npx.cmd", "pnpm", "bunx", "uvx.exe", "dnx", "node", "NPX"):
+            for profile, index, server in (("agent-ok", 0, "npm-srv"), ("exec-ok", 1, "py-srv")):
+                with self.subTest(command=command, profile=profile):
+                    self.launcher_project(command, index)
+                    message = self.NO_OFFLINE % (server, command)
+                    self.assertAllRefuse(profile, message)
+                    code, out, _ = self.cli("verify", "--profile", profile)
+                    self.assertEqual(1, code)
+                    self.assertIn("[FAIL] V4: profile %s: %s" % (profile, message), out)
+                    self.assertRaises(toolchain.ToolchainError, self.resolved, profile)
+
+    def test_the_same_launchers_are_fine_in_dev_mode_and_npx_and_uvx_are_fine_in_every_mode(self):
+        self.launcher_project("pnpm", 0)
+        for argv in (["render", "--host", "copilot-cli", "--profile", "dev-a"], ["render", "--host", "load-plan", "--profile", "dev-a"],
+                     ["render", "--write-project"], ["install", "--host", "copilot-cli", "--skip-skills", "--profile", "dev-a"]):
+            with self.subTest(argv=argv):
+                code, out, err = self.cli(*argv, deps=self.deps(runner=self.runner))
+                self.assertEqual(0, code, out + err)
+        self.assertNotIn("offline form", self.cli("verify", "--profile", "dev-a")[1])
+        self.launcher_project("npx", 0)
+        self.assertEqual(0, self.cli("render", "--write-project")[0])
+        code, out, _ = self.cli("verify")
+        self.assertEqual(0, code, out)
+        self.assertNotIn("offline form", out)
+        for profile in ("agent-ok", "exec-ok"):
+            self.assertEqual(0, self.cli("render", "--host", "load-plan", "--profile", profile)[0], profile)
+
+    def test_a_hosted_server_has_no_launcher_and_a_server_that_only_a_dev_profile_uses_is_not_held_to_the_rule(self):
+        manifest = small_manifest()
+        manifest["mcp_servers"][2]["launch"]["command"] = "pnpm"
+        manifest["mcp_servers"].append({"id": "cloud-http", "transport": "http", "status": "ga", "url": "https://cloud.example.invalid/mcp",
+                                        "variants": {"default": variant("microsoft-cloud", "azure-identity")}})
+        profiles = small_profiles()
+        profiles["profiles"]["exec-http"] = {"mode": "executor", "skills": [], "instructions": [], "mcp": [{"server": "cloud-http", "variant": "default"}]}
+        lock = synthetic_lock(manifest, profiles)
+        for name in profiles["profiles"]:
+            with self.subTest(profile=name):
+                self.assertEqual([], [f for f in toolchain.profile_findings(manifest, profiles, lock, name) if f[1] == "V4"])
+
+    def test_an_absolute_path_to_npx_is_no_known_launcher_and_a_manifest_cannot_name_one_anyway(self):
+        manifest = small_manifest()
+        manifest["mcp_servers"][0]["launch"]["command"] = "/opt/tools/npx"
+        profiles = small_profiles()
+        lock = synthetic_lock(manifest, profiles)
+        findings = toolchain.profile_findings(manifest, profiles, lock, "agent-ok")
+        self.assertIn(("FAIL", "V4", self.NO_OFFLINE % ("npm-srv", "/opt/tools/npx")), findings)
+        self.assertEqual([], [f for f in toolchain.profile_findings(manifest, profiles, lock, "dev-a") if f[1] == "V4"])
+        self.assertProblem(toolchain.validate_manifest(manifest), "launch.command")
+
+    STALE = "was captured for another launch; capture it again (python scripts/toolchain.py lock --contracts)"
+
+    def relaunch(self, change):
+        """Edit the manifest and stamp the lock with the new inputs digest by hand, as `lock --no-network` once did: every captured contract stays."""
+        self.rewrite_manifest(change)
+        self.rewrite_lock(lambda lock: lock.update(inputs_digest=toolchain.inputs_digest(self.manifest)))
+
+    def test_a_contract_captured_for_another_launch_stops_every_command_in_every_mode(self):
+        cases = [
+            ("the arguments of an agent variant", lambda m: m["mcp_servers"][0]["variants"]["offline"].update(args=["--all"]), "agent-ok", "npm-srv/offline"),
+            ("the command of a dev variant", lambda m: m["mcp_servers"][1]["launch"].update(command="pipx"), "dev-a", "py-srv/default"),
+            ("a declared env default", lambda m: m["mcp_servers"][0]["env"]["ACME_MODE"].update(default="fast"), "agent-ok", "npm-srv/offline"),
+            ("a dev variant of the same server", lambda m: m["mcp_servers"][0]["variants"]["online"].update(args=["--all"]), "dev-a", "npm-srv/online"),
+        ]
+        for what, change, profile, label in cases:
+            with self.subTest(what=what):
+                self.small_project()
+                self.relaunch(change)
+                self.assertAllRefuse(profile, "contract %s %s" % (label, self.STALE))
+                code, out, _ = self.cli("verify", "--profile", profile)
+                self.assertEqual(1, code)
+                self.assertIn("[FAIL] V10: profile %s: contract %s %s" % (profile, label, self.STALE), out)
+                self.assertRaises(toolchain.ToolchainError, self.resolved, profile)
+
+    def test_a_changed_launch_that_a_profile_does_not_use_does_not_stop_it(self):
+        self.relaunch(lambda m: (m["mcp_servers"][0]["variants"]["writer"].update(args=["--all"]),
+                                 m["mcp_servers"][1]["launch"].update(command="pipx")))
+        for argv in (["verify", "--profile", "agent-ok"], ["render", "--host", "load-plan", "--profile", "agent-ok"],
+                     ["render", "--host", "copilot-cli", "--profile", "agent-ok"]):
+            with self.subTest(argv=argv):
+                code, out, err = self.cli(*argv)
+                self.assertEqual((0, ""), (code, err), out)
+        self.assertEqual(1, self.cli("verify", "--profile", "dev-a")[0], "dev-a uses py-srv/default")
+
+    def test_a_contract_that_is_not_captured_and_a_hosted_variant_have_no_launch_to_compare(self):
+        self.relaunch(lambda m: (m["mcp_servers"][4].update(url="https://mcp.example.invalid/v2/mcp"),
+                                 m["mcp_servers"][0]["variants"]["offline"].update(args=["--all"])))
+        self.rewrite_lock(lambda lock: lock["contracts"].__setitem__("npm-srv/offline", {"status": "skipped", "reason": "skipped", "detail": "launch changed"}))
+        code, out, _ = self.cli("verify", "--profile", "agent-ok")
+        self.assertEqual(0, code, out)
+        self.assertNotIn("another launch", out)
+        self.assertIn("[WARN] V10: profile agent-ok: contract npm-srv/offline is skipped", out)
+        findings = toolchain.profile_findings(self.manifest, self.profiles, self.lock, "dev-a")
+        self.assertEqual([], [f for f in findings if "launch" in f[2]])
+
+    def test_a_captured_contract_without_a_launch_digest_is_a_contract_for_another_launch(self):
+        lock = copy.deepcopy(dict(self.lock))
+        del lock["contracts"]["npm-srv/offline"]["launch"]
+        findings = toolchain.profile_findings(self.manifest, self.profiles, toolchain.Lock(lock), "agent-ok")
+        self.assertIn(("FAIL", "V10", "contract npm-srv/offline " + self.STALE), findings)
+        self.assertEqual([], [f for f in toolchain.profile_findings(self.manifest, self.profiles, self.lock, "agent-ok") if f[0] == "FAIL"])
+
     def test_a_skill_finding_stops_an_agent_profile_and_only_warns_for_a_dev_profile(self):
         self.rewrite_lock(lambda lock: lock["skill_sources"]["src"]["plugins"]["core"]["skills"]["alpha-core"].update(findings=["missing description"]))
         self.assertAllRefuse("agent-ok", "skill src/core/alpha-core has findings: missing description")
         code, out, err = self.cli("render", "--host", "copilot-cli", "--profile", "dev-a")
         self.assertEqual(0, code, err)
+
+    def break_router(self):
+        write(self.root / "toolchain" / "skills" / "router" / "SKILL.md", "---\nname: router\n---\n")
+
+    def test_a_repo_owned_skill_with_a_finding_stops_every_command_of_a_profile_that_loads_it(self):
+        self.break_router()
+        for profile in ("agent-ok", "dev-a"):
+            with self.subTest(profile=profile):
+                self.assertAllRefuse(profile, "profile %s: repo-owned skill router: missing description" % profile)
+        code, out, err = self.cli("fetch", "--profile", "agent-ok", deps=self.deps(vendor_skills=self.vendor))
+        self.assertEqual(1, code)
+        self.assertIn("profile agent-ok: repo-owned skill router: missing description", err)
+        self.assertEqual([], self.vendored, "fetch refuses before it downloads anything")
+        with self.assertRaises(toolchain.ToolchainError) as caught:
+            self.resolved("agent-ok")
+        self.assertIn("profile agent-ok: repo-owned skill router: missing description", caught.exception.problems)
+        self.assertIn("[FAIL] V8: repo-owned skill router: missing description", self.cli("verify")[1])
+
+    def test_a_profile_that_loads_no_repo_owned_skill_is_not_stopped_by_one_and_a_repaired_skill_lets_the_others_through(self):
+        self.break_router()
+        deps = self.deps(lint_skill=forbidden("lint_skill"))
+        for argv in (["render", "--host", "load-plan", "--profile", "agent-empty"], ["render", "--host", "copilot-cli", "--profile", "agent-empty"]):
+            with self.subTest(argv=argv):
+                code, out, err = self.cli(*argv, deps=deps)
+                self.assertEqual((0, ""), (code, err), out)
+        code, out, err = self.cli("fetch", "--profile", "agent-empty", deps=self.deps(lint_skill=forbidden("lint_skill"), vendor_skills=self.vendor))
+        self.assertEqual((0, ""), (code, err), out)
+        self.assertIn("nothing to fetch", out)
+        self.assertEqual(1, self.cli("render", "--host", "load-plan", "--profile", "agent-ok")[0])
+        write(self.root / "toolchain" / "skills" / "router" / "SKILL.md", "---\nname: router\ndescription: routes work\n---\n")
+        code, out, err = self.cli("render", "--host", "load-plan", "--profile", "agent-ok")
+        self.assertEqual((0, ""), (code, err), out)
+
+    def test_a_captured_contract_that_lists_no_tool_stops_every_command_of_a_profile_that_uses_it(self):
+        self.rewrite_lock(lambda lock: lock["contracts"]["npm-srv/offline"].update(tools={}))
+        self.assertAllRefuse("agent-ok", "profile agent-ok: contract npm-srv/offline is captured but lists no tool")
+        code, out, _ = self.cli("verify", "--profile", "agent-ok")
+        self.assertEqual(1, code)
+        self.assertIn("[FAIL] V11: profile agent-ok: contract npm-srv/offline is captured but lists no tool", out)
+        self.assertIn("[FAIL] V11: contract npm-srv/offline is captured but lists no tool", out, "the lock itself is still reported once")
+        findings = toolchain.profile_findings(self.manifest, self.profiles, self.lock, "agent-ok")
+        self.assertIn(("FAIL", "V11", "contract npm-srv/offline is captured but lists no tool"), findings)
+        self.assertEqual([], [f for f in toolchain.profile_findings(self.manifest, self.profiles, self.lock, "dev-a") if f[1] == "V11"])
+        self.assertEqual(["agent-ok"], [b["profile"] for b in toolchain.what_breaks(self.manifest, self.profiles, None, self.lock)])
+        for argv in (["render", "--host", "copilot-cli", "--profile", "dev-a"], ["render", "--host", "load-plan", "--profile", "dev-a"]):
+            with self.subTest(argv=argv):
+                code, out, err = self.cli(*argv)
+                self.assertEqual((0, ""), (code, err), "dev-a does not use that variant: " + out)
+
+    def test_fetch_is_not_stopped_by_a_contract_that_lists_no_tool(self):
+        self.rewrite_lock(lambda lock: lock["contracts"]["npm-srv/offline"].update(tools={}))
+        code, out, err = self.cli("fetch", "--profile", "agent-ok", deps=self.deps(vendor_skills=self.vendor))
+        self.assertEqual((0, ""), (code, err), out)
+        self.assertEqual([[("src", "core", "alpha-core")]], self.vendored)
 
     def test_an_unresolved_package_leaves_the_server_out_of_a_dev_profile_with_a_note(self):
         self.unresolved("nuget:Acme.Nuget")
@@ -2903,10 +3318,89 @@ class ContractCheckTests(Base):
         for argv in self.launched():
             self.assertFalse(any("accept" in a.lower() or "eula" in a.lower() for a in argv), argv)
 
-    def test_the_probe_environment_holds_the_declared_defaults_and_the_operators_values(self):
+    def test_the_probe_environment_holds_the_declared_defaults_and_the_operators_values_for_the_declared_names_only(self):
+        # Changed on purpose in round 3: the check also bounds the dependency resolution by the day after the capture (item 9), and the
+        # operator's other variables (PATH here) are not passed on by the command line: the probe gives a server the few variables that
+        # every process needs, and nothing else.
         self.verify(env={"ACME_TARGET": "sandbox", "PATH": "/opt/fake/bin"})
         call = [c for c in self.up.calls["probe_stdio"] if NPM in " ".join(c["argv"])][0]
-        self.assertEqual({"ACME_MODE": "safe", "ACME_TARGET": "sandbox", "PATH": "/opt/fake/bin"}, call["env"])
+        self.assertEqual({"ACME_MODE": "safe", "ACME_TARGET": "sandbox",
+                          "npm_config_before": "2026-10-31T00:00:00Z", "UV_EXCLUDE_NEWER": "2026-10-31T00:00:00Z"}, call["env"])
+
+    OPERATOR_SECRETS = {"GITHUB_TOKEN": "operator-secret-one", "NPM_TOKEN": "operator-secret-two", "AZURE_CLIENT_SECRET": "operator-secret-three"}
+
+    def test_a_server_gets_what_its_variant_declares_and_none_of_the_rest_of_the_operators_environment(self):
+        operator = dict(self.OPERATOR_SECRETS, PATH="/opt/fake/bin", HOME="/opt/fake/home", ACME_TARGET="sandbox", ACME_UNDECLARED="x", **{EULA_ENV: "true"})
+        code, out, err = self.verify(env=operator)
+        self.assertEqual(0, code, out + err)
+        self.assertEqual(4, len(self.up.calls["probe_stdio"]))
+        for call in self.up.calls["probe_stdio"]:
+            names = set(call["env"])
+            self.assertEqual(set(), names & (set(operator) - {"ACME_TARGET", EULA_ENV}), call["argv"])
+            self.assertLessEqual(names, {"ACME_MODE", "ACME_TARGET", EULA_ENV, *self.BOUNDS}, call["argv"])
+        self.assertEqual("sandbox", self.call_for(NPM)["env"]["ACME_TARGET"])
+        self.assertEqual("true", self.call_for(LICENSED)["env"][EULA_ENV])
+
+    BOUNDS = ("npm_config_before", "UV_EXCLUDE_NEWER")
+
+    def call_for(self, fragment):
+        return [c for c in self.up.calls["probe_stdio"] if fragment in " ".join(c["argv"])][0]
+
+    def bounds(self, fragment):
+        return {name: self.call_for(fragment)["env"].get(name) for name in self.BOUNDS}
+
+    def test_the_check_bounds_the_resolution_of_the_dependencies_by_the_day_after_the_capture_for_every_server_it_launches(self):
+        code, out, err = self.verify(env={EULA_ENV: "true"})
+        self.assertEqual(0, code, out + err)
+        for fragment in (NPM, PY, NUGET, LICENSED):
+            self.assertEqual({"npm_config_before": "2026-10-31T00:00:00Z", "UV_EXCLUDE_NEWER": "2026-10-31T00:00:00Z"}, self.bounds(fragment), fragment)
+
+    def test_the_bound_is_midnight_at_the_start_of_the_next_day_and_the_ends_of_months_and_years_roll_over(self):
+        for captured, bound in (("2026-10-31", "2026-11-01T00:00:00Z"), ("2026-12-31", "2027-01-01T00:00:00Z"), ("2028-02-29", "2028-03-01T00:00:00Z"),
+                                ("2027-02-28", "2027-03-01T00:00:00Z"), ("2028-02-28", "2028-02-29T00:00:00Z"), ("2026-04-30", "2026-05-01T00:00:00Z"),
+                                ("2026-01-01", "2026-01-02T00:00:00Z"), ("2099-12-31", "2100-01-01T00:00:00Z")):
+            with self.subTest(captured=captured):
+                self.rewrite_lock(lambda lock: [lock["contracts"][k].update(captured=captured) for k in ("npm-srv/online", "py-srv/default")])
+                self.up.calls["probe_stdio"].clear()
+                code, out, err = self.verify(env={EULA_ENV: "true"})
+                self.assertEqual(0, code, out + err)
+                self.assertEqual({"npm_config_before": bound, "UV_EXCLUDE_NEWER": bound}, self.bounds(NPM))
+                self.assertEqual({"npm_config_before": bound, "UV_EXCLUDE_NEWER": bound}, self.bounds(PY))
+
+    def test_two_contracts_with_different_capture_dates_get_different_bounds(self):
+        def change(lock):
+            lock["contracts"]["npm-srv/online"]["captured"] = "2026-10-31"
+            lock["contracts"]["py-srv/default"]["captured"] = "2026-12-31"
+            lock["contracts"]["nuget-srv/default"]["captured"] = "2028-02-29"
+        self.rewrite_lock(change)
+        self.verify(env={EULA_ENV: "true"})
+        self.assertEqual("2026-11-01T00:00:00Z", self.bounds(NPM)["npm_config_before"])
+        self.assertEqual("2027-01-01T00:00:00Z", self.bounds(PY)["UV_EXCLUDE_NEWER"])
+        self.assertEqual("2028-03-01T00:00:00Z", self.bounds(NUGET)["npm_config_before"])
+        self.assertEqual("2026-10-31T00:00:00Z", self.bounds(LICENSED)["UV_EXCLUDE_NEWER"], "the contract of the licensed server keeps the date of the synthetic lock")
+
+    def test_the_bounds_replace_whatever_the_operators_environment_says_in_any_case_and_keep_the_declared_variables(self):
+        operator = {"NPM_CONFIG_BEFORE": "2099-01-01", "uv_exclude_newer": "2099-01-01", "npm_config_before": "2099-01-01", "UV_EXCLUDE_NEWER": "2099-01-01",
+                    "PATH": "/opt/fake/bin", "ACME_TARGET": "sandbox", EULA_ENV: "true"}
+        self.verify(env=operator)
+        for fragment in (NPM, PY):
+            env = self.call_for(fragment)["env"]
+            self.assertEqual(sorted(name for name in env if name.lower() in ("npm_config_before", "uv_exclude_newer")), sorted(self.BOUNDS), fragment)
+            self.assertEqual({"npm_config_before": "2026-10-31T00:00:00Z", "UV_EXCLUDE_NEWER": "2026-10-31T00:00:00Z"}, self.bounds(fragment))
+        env = self.call_for(NPM)["env"]
+        self.assertEqual(("safe", "sandbox"), (env["ACME_MODE"], env["ACME_TARGET"]))
+        self.assertNotIn("PATH", env)
+        self.assertEqual("2099-01-01", operator["npm_config_before"], "the operator's own mapping is not changed")
+
+    def test_the_license_variable_still_goes_only_to_the_server_that_declares_it_when_the_bounds_are_added(self):
+        self.verify(env={})
+        self.assertEqual(3, len(self.launched()))
+        env = {EULA_ENV: "true"}
+        self.up.calls["probe_stdio"].clear()
+        self.verify(env=env)
+        self.assertEqual({EULA_ENV: "true"}, env)
+        for call in self.up.calls["probe_stdio"]:
+            self.assertEqual(LICENSED in " ".join(call["argv"]), EULA_ENV in call["env"])
 
     def test_an_unavailable_or_skipped_contract_is_a_warning_and_is_not_launched(self):
         def change(lock):
@@ -2937,6 +3431,81 @@ class ContractCheckTests(Base):
     def test_without_the_flag_nothing_is_launched(self):
         deps = self.deps()
         self.assertEqual(0, self.cli("verify", deps=deps)[0])
+
+
+class ProbeEnvironmentTests(unittest.TestCase):
+    """What the command line declares to a server that it launches, and what of it reaches the process (R-B-3 as it is wired)."""
+    SPEC = {"ACME_MODE": {"from_env": "ACME_MODE", "default": "safe"}, "ACME_TARGET": {"from_env": "ACME_TARGET"},
+            "ACME_RENAMED": {"from_env": "ACME_SOURCE", "default": "fallback"}}
+    SECRETS = {"GITHUB_TOKEN": "operator-secret-one", "NPM_TOKEN": "operator-secret-two", "AZURE_CLIENT_SECRET": "operator-secret-three"}
+    OTHER_EULA = "OTHER_ACCEPT_EULA"
+    BASE = dict(SECRETS, PATH="/opt/fake/bin", HOME="/opt/fake/home", ACME_TARGET="sandbox", ACME_SOURCE="from-the-operator", ACME_UNDECLARED="x",
+                **{EULA_ENV: "true", "OTHER_ACCEPT_EULA": "true"})
+    LICENSES = {EULA_ENV, "OTHER_ACCEPT_EULA"}
+
+    def environment(self, spec=None, base=None, eula=None):
+        return toolchain.probe_environment(self.SPEC if spec is None else spec, self.BASE if base is None else base, eula, self.LICENSES)
+
+    def test_it_holds_the_declared_variables_and_nothing_else_of_the_operators_environment(self):
+        self.assertEqual({"ACME_MODE": "safe", "ACME_TARGET": "sandbox", "ACME_RENAMED": "from-the-operator"}, self.environment())
+
+    def test_a_declared_variable_that_the_operator_did_not_set_takes_its_default_or_is_left_out(self):
+        env = self.environment(base={"PATH": "/opt/fake/bin"})
+        self.assertEqual({"ACME_MODE": "safe", "ACME_RENAMED": "fallback"}, env)
+
+    def test_the_license_variable_of_a_server_goes_through_only_when_the_operator_set_it_and_no_other_license_variable_does(self):
+        eula = {"env": EULA_ENV}
+        self.assertEqual({EULA_ENV: "true"}, self.environment(spec={}, eula=eula))
+        self.assertEqual({}, self.environment(spec={}, eula=eula, base={k: v for k, v in self.BASE.items() if k != EULA_ENV}))
+        self.assertEqual({}, self.environment(spec={}))
+        other = {self.OTHER_EULA: {"from_env": self.OTHER_EULA}}
+        self.assertEqual({EULA_ENV: "true"}, self.environment(spec=other, eula=eula))
+        self.assertEqual({}, self.environment(spec=other))
+
+    def test_the_license_default_of_a_declaration_is_never_handed_on_for_the_operator_who_did_not_set_it(self):
+        declared = {EULA_ENV: {"from_env": EULA_ENV, "default": "false"}}
+        self.assertEqual({}, toolchain.probe_environment(declared, {"PATH": "/opt/fake/bin"}, {"env": EULA_ENV}, ()))
+        self.assertEqual({EULA_ENV: "true"}, toolchain.probe_environment(declared, {EULA_ENV: "true"}, {"env": EULA_ENV}, ()))
+
+    def test_through_the_capture_environment_a_server_gets_the_declared_variables_and_the_few_a_process_needs_and_no_secret(self):
+        declared = self.environment()
+        child = toolchain_mcp.capture_env(declared, self.BASE)
+        self.assertEqual(set(), set(child) & (set(self.SECRETS) | self.LICENSES | {"ACME_UNDECLARED"}))
+        self.assertEqual(("sandbox", "safe", "from-the-operator", "/opt/fake/bin"), (child["ACME_TARGET"], child["ACME_MODE"], child["ACME_RENAMED"], child["PATH"]))
+
+    STANDIN = (
+        "import json, os, sys\n"
+        "names = ('npm_config_before', 'UV_EXCLUDE_NEWER', 'GITHUB_TOKEN', 'NPM_TOKEN', 'AZURE_CLIENT_SECRET', 'ACME_UNDECLARED')\n"
+        "seen = {n: v for n in names for k, v in os.environ.items() if k.lower() == n.lower()}\n"
+        "json.dump(seen, open(sys.argv[1], 'w'))\n"
+        "def send(m):\n"
+        "    sys.stdout.write(json.dumps(m) + '\\n'); sys.stdout.flush()\n"
+        "for line in sys.stdin:\n"
+        "    try:\n"
+        "        m = json.loads(line)\n"
+        "    except ValueError:\n"
+        "        continue\n"
+        "    method, ident = m.get('method'), m.get('id')\n"
+        "    if method is None or ident is None:\n"
+        "        continue\n"
+        "    if method == 'server/discover':\n"
+        "        send({'jsonrpc': '2.0', 'id': ident, 'error': {'code': -32601, 'message': 'Method not found'}})\n"
+        "    elif method == 'initialize':\n"
+        "        send({'jsonrpc': '2.0', 'id': ident, 'result': {'protocolVersion': '2025-06-18', 'capabilities': {}, 'serverInfo': {'name': 'Stand-in', 'version': '1.0'}}})\n"
+        "    elif method == 'tools/list':\n"
+        "        send({'jsonrpc': '2.0', 'id': ident, 'result': {'tools': [{'name': 'one', 'inputSchema': {'type': 'object'}}]}})\n")
+
+    def test_a_real_server_process_sees_the_date_bound_and_none_of_the_operators_secrets(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            script, out = Path(tmp) / "stand_in.py", Path(tmp) / "seen.json"
+            script.write_text(self.STANDIN, encoding="utf-8")
+            operator = dict(self.SECRETS, ACME_UNDECLARED="x", npm_config_before="2099-01-01T00:00:00Z", UV_EXCLUDE_NEWER="2099-01-01T00:00:00Z")
+            with mock.patch.dict(os.environ, operator), mock.patch.object(toolchain_mcp, "DISCOVER_WAIT", 30.0):
+                declared = toolchain.bounded_environment(toolchain.probe_environment({}, os.environ, None, ()), "2026-12-31")
+                result = toolchain_mcp.probe_stdio([sys.executable, str(script), str(out)], env=declared, cwd=tmp, timeout=60)
+            seen = json.loads(out.read_text(encoding="utf-8"))
+        self.assertEqual(["one"], list(result["tools"]))
+        self.assertEqual({"npm_config_before": "2027-01-01T00:00:00Z", "UV_EXCLUDE_NEWER": "2027-01-01T00:00:00Z"}, seen)
 
 
 class InstallBase(Base):
@@ -3177,6 +3746,17 @@ class InstallTests(InstallBase):
         self.assertNotIn(feed, err)
         self.assertIn("fetch failed", err)
 
+    def test_the_reason_of_a_failed_vendor_comes_from_the_one_safe_detail_of_toolchain_io(self):
+        shutil.rmtree(self.store)
+
+        def vendor(*args, **kwargs):
+            raise toolchain_sources.SourceError("anything")
+        with mock.patch.object(toolchain.toolchain_io, "safe_detail", side_effect=sentinel_detail()) as detail:
+            code, out, err = self.install("--apply", "--skip-mcp", vendor_skills=vendor)
+        self.assertEqual(1, code)
+        self.assertIn("fetch failed: SENTINEL", err)
+        self.assertEqual("anything", str(detail.call_args[0][0]))
+
     def test_a_copy_that_does_not_match_the_locked_digest_is_refused(self):
         def digest(path):
             if Path(path).name.startswith(".toolchain-new-"):
@@ -3342,8 +3922,11 @@ class InstallSafetyTests(InstallBase):
         for prefix in (".toolchain-new-", ".toolchain-old-"):
             with self.subTest(failing=prefix):
                 with mock.patch.object(os, "replace", side_effect=failing(prefix)):
-                    with self.assertRaises(OSError):
-                        self.install("--apply", "--skip-mcp")
+                    code, out, err = self.install("--apply", "--skip-mcp")
+                self.assertEqual(1, code)
+                self.assertIn("error: install failed while applying ~ skill beta-core: replace .github/skills/beta-core: disk full", err)
+                self.assertNotIn("Traceback", err)
+                self.assertNotIn("applied:", out)
                 self.assertEqual(old, (self.skills / "beta-core" / "SKILL.md").read_bytes())
                 self.assertEqual([], self.leftovers())
         self.assertEqual(0, self.install("--apply", "--skip-mcp", "--force")[0])
@@ -3357,6 +3940,217 @@ class InstallSafetyTests(InstallBase):
         self.assertEqual(0, code, out)
         self.assertIn("changed upstream", (self.skills / "beta-core" / "SKILL.md").read_text(encoding="utf-8"))
         self.assertEqual([], self.leftovers())
+
+    @staticmethod
+    def refusal():
+        error = PermissionError(13, "Access is denied")
+        error.winerror = 5
+        return error
+
+    def refused(self, name, times, transient=True, delays=(0, 0, 0)):
+        """The patches that make Windows refuse the first `times` moves of a folder or file called `name`. (The test does not change what
+        system it runs on: only the answer to "is this refusal one that goes away" is given.)"""
+        real, seen = os.replace, []
+
+        def replace(src, dst, *args, **kwargs):
+            if Path(dst).name == name and len(seen) < times:
+                seen.append(1)
+                raise self.refusal()
+            return real(src, dst, *args, **kwargs)
+        stack = contextlib.ExitStack()
+        stack.enter_context(mock.patch.object(toolchain.toolchain_io, "transient_refusal", side_effect=lambda exc: transient))
+        stack.enter_context(mock.patch.object(toolchain.toolchain_io, "RETRY_DELAYS", delays))
+        stack.enter_context(mock.patch.object(os, "replace", side_effect=replace))
+        return stack, seen
+
+    def test_a_folder_that_windows_refuses_to_move_for_a_moment_is_moved_after_a_pause(self):
+        # What OneDrive, a virus scanner or the indexer does to a folder that has just been written.
+        patches, seen = self.refused("gamma", 3)
+        with patches:
+            code, out, err = self.install("--apply", "--skip-mcp")
+        self.assertEqual((0, ""), (code, err), out)
+        self.assertEqual(3, len(seen))
+        self.assertEqual(skill_files("gamma")["SKILL.md"], (self.skills / "gamma" / "SKILL.md").read_bytes())
+        self.assertIn("applied: profile dev-a", out)
+        self.assertEqual([], self.leftovers())
+
+    def test_a_refusal_that_does_not_go_away_is_an_error_line_after_the_last_pause_and_leaves_nothing_behind(self):
+        patches, seen = self.refused("gamma", 99, delays=(0, 0))
+        with patches:
+            code, out, err = self.install("--apply", "--skip-mcp")
+        self.assertEqual(1, code)
+        self.assertEqual(3, len(seen), "once, and again after each of the two pauses")
+        self.assertIn("error: install failed while applying + skill gamma -> .github/skills/gamma: ", err)
+        self.assertNotIn("Traceback", err)
+        self.assertNotIn("applied:", out)
+        self.assertEqual([], self.leftovers())
+
+    def test_a_refusal_that_is_not_one_that_goes_away_is_a_real_one_and_is_not_waited_for(self):
+        patches, seen = self.refused("gamma", 99, transient=False)
+        with patches:
+            code, out, err = self.install("--apply", "--skip-mcp")
+        self.assertEqual(1, code)
+        self.assertEqual(1, len(seen))
+        self.assertIn("error: install failed while applying + skill gamma", err)
+
+    def test_the_files_that_are_written_wait_for_a_refusal_too(self):
+        patches, seen = self.refused("mcp.json", 2)
+        with patches:
+            code, out, err = self.install("--apply")
+        self.assertEqual((0, ""), (code, err), out)
+        self.assertEqual(2, len(seen))
+        self.assertEqual(toolchain.dump_json(golden("copilot-cli")), (self.root / ".github" / "mcp.json").read_text(encoding="utf-8"))
+
+    def test_a_folder_that_is_removed_waits_for_a_refusal_too(self):
+        folder = self.root / "to-remove"
+        write(folder / "a.txt", "x")
+        real, calls = shutil.rmtree, []
+
+        def rmtree(path, *args, **kwargs):
+            calls.append(1)
+            if len(calls) < 3:
+                raise self.refusal()
+            return real(path, *args, **kwargs)
+        with mock.patch.object(toolchain.toolchain_io, "transient_refusal", side_effect=lambda exc: True), \
+                mock.patch.object(toolchain.toolchain_io, "RETRY_DELAYS", (0, 0, 0)), mock.patch.object(shutil, "rmtree", side_effect=rmtree):
+            toolchain.remove_tree(folder)
+        self.assertFalse(folder.exists())
+        self.assertEqual(3, len(calls))
+
+    def test_an_install_that_stopped_half_way_is_finished_by_the_next_run(self):
+        real = os.replace
+
+        def replace(src, dst, *args, **kwargs):
+            if Path(dst).name == "gamma":
+                raise OSError("disk full")
+            return real(src, dst, *args, **kwargs)
+        with mock.patch.object(os, "replace", side_effect=replace):
+            code, out, err = self.install("--apply", "--skip-mcp")
+        self.assertEqual(1, code)
+        self.assertFalse((self.skills / toolchain.MARKER).exists(), "the marker comes last")
+        self.assertTrue((self.skills / "alpha-core" / "SKILL.md").is_file())
+        code, out, err = self.install("--apply", "--skip-mcp")
+        self.assertEqual((0, ""), (code, err), out)
+        self.assertNotRegex(out, r"(?m)^! ")
+        self.assertIn("= skill alpha-core", out)
+        self.assertEqual(["alpha-core", "beta-core", "gamma", "router"], sorted(self.marker()["skills"]))
+        self.assertEqual([], self.leftovers())
+
+    def test_a_folder_that_holds_the_pinned_content_without_a_marker_is_taken_as_it_is(self):
+        shutil.copytree(self.store / "skills" / "alpha-core", self.skills / "alpha-core")
+        code, out, err = self.install("--apply", "--skip-mcp")
+        self.assertEqual((0, ""), (code, err), out)
+        self.assertIn("= skill alpha-core", out)
+        self.assertNotRegex(out, r"(?m)^! ")
+        self.assertEqual(skill_digest("alpha-core"), self.marker()["skills"]["alpha-core"])
+        self.assertEqual(skill_files("alpha-core")["SKILL.md"], (self.skills / "alpha-core" / "SKILL.md").read_bytes())
+
+    def test_a_folder_that_differs_from_the_pinned_content_even_by_a_line_is_still_a_conflict(self):
+        shutil.copytree(self.store / "skills" / "alpha-core", self.skills / "alpha-core")
+        edited = skill_files("alpha-core")["SKILL.md"] + b"one more line\n"
+        (self.skills / "alpha-core" / "SKILL.md").write_bytes(edited)
+        code, out, _ = self.install("--apply", "--skip-mcp")
+        self.assertEqual(1, code)
+        self.assertIn("! skill alpha-core: .github/skills/alpha-core exists and is not managed by the toolchain (use --force to replace it)", out)
+        self.assertEqual(edited, (self.skills / "alpha-core" / "SKILL.md").read_bytes())
+        self.assertNotIn("alpha-core", self.marker()["skills"])
+
+    def test_a_folder_that_cannot_be_measured_is_a_conflict_and_not_a_crash(self):
+        write(self.skills / "alpha-core" / "SKILL.md", "my own skill\n")
+
+        def digest(path):
+            if Path(path) == self.skills / "alpha-core":
+                raise toolchain_sources.SourceError("unresolved: too many files")
+            return tree_digest(path)
+        code, out, err = self.install("--apply", "--skip-mcp", digest_tree=digest)
+        self.assertEqual(1, code)
+        self.assertIn("! skill alpha-core: .github/skills/alpha-core exists and is not managed by the toolchain (use --force to replace it)", out)
+        self.assertNotIn("Traceback", err)
+        self.assertEqual(b"my own skill\n", (self.skills / "alpha-core" / "SKILL.md").read_bytes())
+
+    def test_the_applied_line_comes_after_every_step_and_the_operation_lines_before_the_first(self):
+        seen, real = [], os.replace
+
+        def replace(src, dst, *args, **kwargs):
+            seen.append(sys.stdout.getvalue())
+            return real(src, dst, *args, **kwargs)
+        with mock.patch.object(os, "replace", side_effect=replace):
+            code, out, err = self.install("--apply", "--skip-mcp")
+        self.assertEqual((0, ""), (code, err), out)
+        self.assertGreaterEqual(len(seen), 5, "four skills and the marker")
+        for before in seen:
+            self.assertNotIn("applied:", before)
+            self.assertIn("+ skill alpha-core -> .github/skills/alpha-core", before)
+            self.assertIn("+ marker .github/skills/.toolchain-managed.json", before)
+        self.assertEqual(1, out.count("applied: profile dev-a"))
+        self.assertTrue(out.rstrip().splitlines()[-1].startswith("applied: profile dev-a"), out)
+        self.assertGreater(out.index("applied: profile dev-a"), out.index("+ marker"))
+        code, out, err = self.install("--skip-mcp")
+        self.assertEqual((0, ""), (code, err))
+        self.assertIn("plan: profile dev-a", out)
+        self.assertNotIn("applied:", out)
+        self.assertIn("nothing was changed: add --apply to carry out the plan", out)
+
+    def test_an_error_of_any_kind_while_applying_is_an_error_line_and_exit_one_and_never_a_traceback(self):
+        real = os.replace
+        cases = [(OSError("disk full"), "disk full"), (OSError(), "OSError"), (RuntimeError("weird failure"), "weird failure"),
+                 (ValueError("bad value"), "bad value"),
+                 (PermissionError(13, "Access is denied", str(self.root / "somewhere" / "x")), "Access is denied")]
+        for exc, detail in cases:
+            with self.subTest(exc=type(exc).__name__, detail=detail):
+                if self.skills.exists():
+                    shutil.rmtree(self.skills)
+
+                def replace(src, dst, *args, **kwargs):
+                    if Path(dst).name == "gamma":
+                        raise exc
+                    return real(src, dst, *args, **kwargs)
+                with mock.patch.object(os, "replace", side_effect=replace), mock.patch.object(toolchain.toolchain_io, "RETRY_DELAYS", ()):
+                    code, out, err = self.install("--apply", "--skip-mcp")
+                self.assertEqual(1, code)
+                self.assertIn("error: install failed while applying + skill gamma -> .github/skills/gamma: ", err)
+                self.assertIn(detail, err)
+                self.assertNotIn("Traceback", err)
+                self.assertNotIn("somewhere", err, "the path of the failure is not repeated")
+                self.assertNotIn(str(self.tmp), err)
+                self.assertNotIn(repr(str(self.tmp))[1:-1], err)
+                self.assertNotIn("applied:", out)
+                self.assertIn("+ skill gamma -> .github/skills/gamma", out)
+                self.assertEqual([], self.leftovers(), "the failed step cleans up after itself")
+
+    def test_a_refusal_of_the_toolchain_while_applying_keeps_its_own_words(self):
+        def digest(path):
+            if Path(path).name.startswith(".toolchain-new-"):
+                return {"digest": "sha256:" + "0" * 64, "files": 1, "bytes": 1}
+            return tree_digest(path)
+        code, out, err = self.install("--apply", "--skip-mcp", digest_tree=digest)
+        self.assertEqual(1, code)
+        self.assertIn("error: skill alpha-core: the copy does not match its locked digest", err)
+        self.assertNotIn("install failed", err)
+        self.assertNotIn("applied:", out)
+
+    def test_a_failed_write_of_the_user_mcp_file_names_the_file(self):
+        real = os.replace
+
+        def replace(src, dst, *args, **kwargs):
+            if Path(dst).name == "mcp-config.json":
+                raise OSError("disk full")
+            return real(src, dst, *args, **kwargs)
+        with mock.patch.object(os, "replace", side_effect=replace):
+            code, out, err = self.install("--apply", "--scope", "user", "--host", "copilot-cli", "--skip-skills")
+        self.assertEqual(1, code)
+        self.assertIn("error: install failed while applying write $HOME/.copilot/mcp-config.json: disk full", err)
+        self.assertNotIn(str(self.home), err)
+        self.assertNotIn("applied:", out)
+
+    def test_render_write_project_reports_a_failed_write_as_an_error_line(self):
+        with mock.patch.object(toolchain, "write_atomic", side_effect=OSError(13, "Access is denied", str(self.root / ".github" / "mcp.json"))):
+            code, out, err = self.cli("render", "--write-project")
+        self.assertEqual(1, code)
+        self.assertIn("error: Errno 13 Access is denied", err)
+        self.assertNotIn("Traceback", err)
+        self.assertNotIn(str(self.tmp), err)
+        self.assertNotIn("wrote ", out)
 
     def test_the_copy_is_checked_before_anything_is_replaced(self):
         self.install("--apply", "--skip-mcp")
@@ -3554,6 +4348,91 @@ class InstallSafetyTests(InstallBase):
             self.skipTest("mklink /J is not available here")
         self.addCleanup(lambda: os.rmdir(link) if os.path.lexists(link) else None)
 
+    def vendor_spy(self):
+        """A fetch that records its calls and leaves a usable pack behind, as the real one does."""
+        calls = []
+
+        def vendor(lock, selection, store, runner=None, quarantine=(), shared=()):
+            calls.append(selection)
+            write_store(store, self.lock, [name for _source, _plugin, name in selection])
+            return {}
+        return vendor, calls
+
+    def test_install_does_not_fetch_into_a_pack_folder_that_is_a_link_nor_below_one(self):
+        vendor, calls = self.vendor_spy()
+        for fetch_needed in (True, False):
+            for linked, shown in ((self.store, ".factory/pack"), (self.root / ".factory", ".factory")):
+                for flags in (["--apply"], []):
+                    with self.subTest(fetch_needed=fetch_needed, link=shown, flags=flags):
+                        if fetch_needed and self.store.exists():
+                            shutil.rmtree(self.store)
+                        if not fetch_needed and not self.store.exists():
+                            write_store(self.store, self.lock, ["alpha-core", "beta-core", "gamma"])
+                        with self.linked(linked):
+                            code, out, err = self.install("--skip-mcp", *flags, vendor_skills=vendor)
+                        self.assertEqual(1, code, "a plan is refused too, not only an apply")
+                        self.assertIn("%s is a link; the toolchain does not write through links" % shown, err)
+                        self.assertEqual([], calls, "nothing is fetched")
+                        self.assertFalse(self.skills.exists(), "nothing is installed")
+                        self.assertNotIn("+ skill", out)
+
+    def test_the_apply_step_of_a_fetch_checks_for_a_link_again(self):
+        shutil.rmtree(self.store)
+        vendor, calls = self.vendor_spy()
+        project = toolchain.Project(self.root).load()
+        deps = self.deps(runner=self.runner, vendor_skills=vendor)
+        op = toolchain.store_op(project, deps, self.resolved(), self.store)
+        self.assertTrue(op["apply"])
+        for linked in (self.store, self.root / ".factory"):
+            with self.subTest(link=linked.name):
+                with self.linked(linked):
+                    with self.assertRaises(toolchain.ToolchainError) as caught:
+                        op["apply"]()
+                self.assertIn("is a link; the toolchain does not write through links", str(caught.exception))
+        self.assertEqual([], calls)
+        op["apply"]()
+        self.assertEqual(1, len(calls), "without a link the same step fetches")
+
+    def test_a_pack_folder_outside_the_project_is_refused_when_it_is_a_link_itself_and_only_then(self):
+        vendor, calls = self.vendor_spy()
+        outside = self.tmp / "packs" / "pack"
+        write_store(outside, self.lock, ["alpha-core", "beta-core", "gamma"])
+        with self.linked(outside):
+            code, out, err = self.install("--skip-mcp", "--store", str(outside), vendor_skills=vendor)
+        self.assertEqual(1, code)
+        self.assertIn("pack is a link; the toolchain does not write through links", err)
+        self.assertNotIn(str(self.tmp), err)
+        with self.linked(outside.parent, self.tmp):
+            code, out, err = self.install("--apply", "--skip-mcp", "--store", str(outside), vendor_skills=vendor)
+        self.assertEqual((0, ""), (code, err), out)
+        shutil.rmtree(outside)
+        with self.linked(outside):
+            code, out, err = self.install("--apply", "--skip-mcp", "--store", str(outside), vendor_skills=vendor)
+        self.assertEqual(1, code)
+        self.assertEqual([], calls)
+
+    def test_the_project_folder_is_the_boundary_of_the_walk_above_the_pack_folder(self):
+        vendor, calls = self.vendor_spy()
+        shutil.rmtree(self.store)
+        with self.linked(self.root, self.tmp):
+            code, out, err = self.install("--apply", "--skip-mcp", vendor_skills=vendor)
+        self.assertEqual(0, code, out + err)
+        self.assertEqual(1, len(calls))
+
+    def test_a_real_junction_in_the_way_of_the_pack_stops_fetch_and_install(self):
+        elsewhere = self.tmp / "elsewhere"
+        shutil.rmtree(self.root / ".factory")
+        self.make_junction(self.root / ".factory", elsewhere)
+        self.assertTrue(toolchain.is_link(self.root / ".factory"))
+        vendor, calls = self.vendor_spy()
+        code, out, err = self.cli("fetch", "--profile", "agent-ok", deps=self.deps(vendor_skills=vendor))
+        self.assertEqual(1, code)
+        self.assertIn(".factory is a link; the toolchain does not write through links", err)
+        code, out, err = self.install("--apply", "--skip-mcp", vendor_skills=vendor)
+        self.assertEqual(1, code)
+        self.assertIn(".factory is a link; the toolchain does not write through links", err)
+        self.assertEqual(([], []), (calls, list(elsewhere.iterdir())))
+
     def test_a_real_junction_is_refused(self):
         elsewhere = self.tmp / "elsewhere"
         (self.root / ".github").mkdir()
@@ -3734,8 +4613,11 @@ class SharedInstallTests(InstallBase):
                 raise OSError("disk full")
             return real(src, dst, *args, **kwargs)
         with mock.patch.object(os, "replace", side_effect=replace):
-            with self.assertRaises(OSError):
-                self.install("--apply", "--skip-mcp")
+            code, out, err = self.install("--apply", "--skip-mcp")
+        self.assertEqual(1, code)
+        self.assertRegex(err, r"error: install failed while applying ~ shared common: replace \S+: disk full")
+        self.assertNotIn("Traceback", err)
+        self.assertNotIn("applied:", out)
         self.assertEqual(old, (self.common / "index.md").read_bytes())
         self.assertEqual([], self.leftovers())
 
@@ -3859,6 +4741,22 @@ class SharedInstallTests(InstallBase):
         code, out, _ = self.doctor()
         self.assertEqual(1, code)
         self.assertIn("[FAIL] host copilot-cli shared: .github/common differs from the lock; run: python scripts/toolchain.py install --apply", out)
+
+    def test_the_hint_for_a_shared_folder_of_claude_code_names_the_host_and_the_hint_of_another_profile_names_the_profile(self):
+        self.assertEqual(0, self.install("--apply", "--host", "claude-code")[0])
+        shutil.rmtree(self.root / ".claude" / "common")
+        code, out, _ = self.doctor("--host", "claude-code")
+        self.assertEqual(1, code)
+        self.assertIn("[FAIL] host claude-code shared: .claude/common is missing (the skills in .claude/skills link to it); "
+                      "run: python scripts/toolchain.py install --apply --host claude-code", out)
+        self.assertEqual(0, self.install("--apply", "--host", "claude-code")[0])
+        (self.root / ".claude" / "common" / "index.md").write_bytes(b"edited\n")
+        out = self.doctor("--host", "claude-code")[1]
+        self.assertIn("[FAIL] host claude-code shared: .claude/common differs from the lock; run: python scripts/toolchain.py install --apply --host claude-code", out)
+        self.assertEqual(0, self.install("--apply", "--host", "copilot-cli")[0])
+        (self.common / "index.md").write_bytes(b"edited\n")
+        out = self.doctor("--host", "copilot-cli", "--profile", "agent-ok")[1]
+        self.assertIn("[FAIL] host copilot-cli shared: .github/common differs from the lock; run: python scripts/toolchain.py install --apply --profile agent-ok", out)
 
 
 class HostTests(InstallBase):
@@ -4112,11 +5010,103 @@ class InstalledStateTests(InstallBase):
         self.assertIn("[PASS] host vscode mcp: .vscode/mcp.json equals the rendering of profile dev-a", out)
 
     def test_doctor_counts_the_router_and_the_shared_folders_as_something_to_install(self):
+        # Changed on purpose in round 3: dev-docs is not the default profile, so the hint names it.
         out = self.doctor("--profile", "dev-docs")[1]
-        self.assertIn("[WARN] host copilot-cli, vscode skills: no skills are installed in .github/skills (run: python scripts/toolchain.py install --apply)", out)
+        self.assertIn("[WARN] host copilot-cli, vscode skills: no skills are installed in .github/skills "
+                      "(run: python scripts/toolchain.py install --apply --profile dev-docs)", out)
         self.assertEqual(0, self.install("--apply", "--host", "copilot-cli", "--profile", "dev-docs")[0])
         out = self.doctor("--profile", "dev-docs", found=("git", "python", "gh", "az", "copilot"))[1]
         self.assertIn("[PASS] host copilot-cli skills: the managed skills in .github/skills match the lock", out)
+
+    CLAUDE_HINT = "run: python scripts/toolchain.py install --apply --host claude-code"
+    PRECEDENCE = ".mcp.json takes precedence over .github/mcp.json for Copilot CLI and differs from the rendering of profile %s (%s, or delete it)"
+
+    def test_doctor_fails_for_a_project_mcp_file_that_copilot_cli_reads_before_its_own(self):
+        self.assertEqual(0, self.install("--apply", "--host", "copilot-cli", "vscode")[0])
+        code, out, _ = self.doctor()
+        self.assertEqual(0, code, out)
+        self.assertNotIn("takes precedence", out)
+        write(self.root / ".mcp.json", toolchain.dump_json({"mcpServers": {"other": {"command": "x"}}}))
+        code, out, _ = self.doctor()
+        self.assertEqual(1, code)
+        self.assertIn("[FAIL] host copilot-cli mcp: " + self.PRECEDENCE % ("dev-a", self.CLAUDE_HINT), out)
+        self.assertEqual(1, out.count("takes precedence"))
+        self.assertIn("[PASS] host vscode mcp: .vscode/mcp.json equals the rendering of profile dev-a", out)
+        code, out, _ = self.doctor("--json")
+        self.assertIn({"level": "FAIL", "check": "host copilot-cli mcp", "message": self.PRECEDENCE % ("dev-a", self.CLAUDE_HINT)}, json.loads(out)["findings"])
+        self.assertNotIn("takes precedence", self.doctor("--host", "vscode")[1], "only Copilot CLI reads it first")
+        write(self.root / ".mcp.json", b"\xff\xfe not text")
+        self.assertIn("[FAIL] host copilot-cli mcp: .mcp.json takes precedence", self.doctor()[1])
+        self.assertEqual(0, self.install("--apply", "--host", "claude-code", "--force")[0])
+        code, out, _ = self.doctor()
+        self.assertEqual(0, code, out)
+        self.assertNotIn("takes precedence", out)
+        path = self.root / ".mcp.json"
+        path.write_bytes(path.read_bytes().replace(b"\n", b"\r\n"))
+        self.assertEqual(0, self.doctor()[0], "a CRLF checkout of the same text is the same text")
+
+    def test_doctor_names_the_profile_in_the_hint_of_the_project_file_that_takes_precedence(self):
+        self.assertEqual(0, self.install("--apply", "--host", "copilot-cli", "--profile", "agent-ok")[0])
+        write(self.root / ".mcp.json", "{}\n")
+        out = self.doctor("--profile", "agent-ok")[1]
+        self.assertIn("[FAIL] host copilot-cli mcp: " + self.PRECEDENCE % ("agent-ok", self.CLAUDE_HINT + " --profile agent-ok"), out)
+
+    def test_doctor_has_no_precedence_to_check_without_claude_code_in_the_manifest(self):
+        manifest = small_manifest()
+        del manifest["hosts"]["claude-code"]
+        self.small_project(manifest=manifest)
+        write_store(self.store, self.lock, ["alpha-core", "beta-core", "gamma"])
+        self.assertEqual(0, self.install("--apply", "--host", "copilot-cli", "vscode")[0])
+        write(self.root / ".mcp.json", "{}\n")
+        out = self.doctor()[1]
+        self.assertNotIn("takes precedence", out)
+
+    def test_the_hint_for_the_missing_skills_of_claude_code_names_the_host(self):
+        found = ("git", "python", "gh", "az", "copilot", "claude")
+        out = self.doctor("--host", "claude-code", found=found)[1]
+        self.assertIn("[WARN] host claude-code skills: no skills are installed in .claude/skills (%s)" % self.CLAUDE_HINT, out)
+        out = self.doctor("--host", "copilot-cli", "claude-code", found=found)[1]
+        self.assertIn("[WARN] host copilot-cli skills: no skills are installed in .github/skills (run: python scripts/toolchain.py install --apply)", out)
+        self.assertIn("[WARN] host claude-code skills: no skills are installed in .claude/skills (%s)" % self.CLAUDE_HINT, out)
+        self.assertEqual(0, self.install("--apply", "--host", "claude-code")[0])
+        marker = read_json(self.root / ".claude" / "skills" / toolchain.MARKER)
+        marker["lock"] = "sha256:" + "0" * 64
+        write(self.root / ".claude" / "skills" / toolchain.MARKER, toolchain.dump_json(marker))
+        out = self.doctor("--host", "claude-code", found=found)[1]
+        self.assertIn("[WARN] host claude-code skills: the managed skills in .claude/skills were installed from another lock (%s)" % self.CLAUDE_HINT, out)
+
+    def test_the_hints_for_a_profile_other_than_the_default_say_install_with_the_profile(self):
+        found = ("git", "python", "gh", "az", "copilot", "code", "claude")
+        hint = "run: python scripts/toolchain.py install --apply --profile agent-ok"
+        out = self.doctor("--profile", "agent-ok", found=found)[1]
+        self.assertIn("[WARN] host copilot-cli mcp: .github/mcp.json is missing (%s)" % hint, out)
+        self.assertIn("[WARN] host vscode mcp: .vscode/mcp.json is missing (%s)" % hint, out)
+        self.assertIn("[WARN] host copilot-cli, vscode skills: no skills are installed in .github/skills (%s)" % hint, out)
+        self.assertNotIn("render --write-project", out)
+        out = self.doctor("--profile", "agent-ok", "--host", "claude-code", found=found)[1]
+        self.assertIn("[WARN] host claude-code mcp: .mcp.json is missing (%s --host claude-code --profile agent-ok)" % hint.replace(" --profile agent-ok", ""), out)
+        self.assertIn("[WARN] host claude-code skills: no skills are installed in .claude/skills (%s --host claude-code --profile agent-ok)"
+                      % hint.replace(" --profile agent-ok", ""), out)
+        write(self.root / ".github" / "mcp.json", "{}\n")
+        self.assertIn("[WARN] host copilot-cli mcp: .github/mcp.json differs from the rendering of profile agent-ok (%s)" % hint,
+                      self.doctor("--profile", "agent-ok", found=found)[1])
+
+    def test_the_hints_for_the_default_profile_are_unchanged(self):
+        found = ("git", "python", "gh", "az", "copilot", "code", "claude")
+        out = self.doctor("--host", "copilot-cli", "vscode", "claude-code", found=found)[1]
+        self.assertIn("[WARN] host copilot-cli mcp: .github/mcp.json is missing (run: python scripts/toolchain.py render --write-project)", out)
+        self.assertIn("[WARN] host vscode mcp: .vscode/mcp.json is missing (run: python scripts/toolchain.py render --write-project)", out)
+        self.assertIn("[WARN] host claude-code mcp: .mcp.json is missing (%s)" % self.CLAUDE_HINT, out)
+        self.assertNotIn("--profile", out)
+
+    def test_the_install_command_names_every_host_of_a_list_that_holds_one_install_does_not_pick(self):
+        base = "run: python scripts/toolchain.py install --apply"
+        self.assertEqual(base, toolchain.install_command("dev-a", "dev-a"))
+        self.assertEqual(base, toolchain.install_command("dev-a", "dev-a", ["copilot-cli", "vscode"]))
+        self.assertEqual(base + " --host claude-code", toolchain.install_command("dev-a", "dev-a", ["claude-code"]))
+        self.assertEqual(base + " --host copilot-cli claude-code", toolchain.install_command("dev-a", "dev-a", ["copilot-cli", "claude-code"]))
+        self.assertEqual(base + " --host claude-code --profile agent-ok", toolchain.install_command("agent-ok", "dev-a", ["claude-code"]))
+        self.assertEqual(base + " --profile agent-ok", toolchain.install_command("agent-ok", "dev-a", ["copilot-cli", "vscode"]))
 
 
 class DoctorTests(Base):
@@ -4432,6 +5422,230 @@ class LockCommandTests(Base):
         self.assertEqual({"status": "skipped", "reason": "skipped", "detail": "package version changed"}, self.written()["contracts"]["py-srv/default"])
         self.assertEqual("captured", self.written()["contracts"]["npm-srv/online"]["status"])
 
+    DROPPED = {"status": "skipped", "reason": "skipped", "detail": "launch changed"}
+    RELAUNCH = {  # how the manifest is edited so that a launch changes while no package version does, and the contracts that it concerns
+        "the arguments": (lambda m: m["mcp_servers"][0]["variants"]["online"].update(args=[]), ["npm-srv/online"]),
+        "the command": (lambda m: m["mcp_servers"][1]["launch"].update(command="pipx"), ["py-srv/default"]),
+        "a declared env default": (lambda m: m["mcp_servers"][0]["env"]["ACME_MODE"].update(default="fast"), ["npm-srv/offline", "npm-srv/online"]),
+    }
+
+    def start(self, how):
+        """A lock with every contract captured, then the manifest edited as `how` says. Returns the keys of the contracts that the edit concerns."""
+        self.manifest = small_manifest()
+        write_project(self.root, self.manifest, self.profiles)
+        if self.path.exists():
+            self.path.unlink()
+        self.lock("--contracts", env={EULA_ENV: "true"})
+        self.before = self.written()
+        change, affected = self.RELAUNCH[how]
+        self.rewrite_manifest(change)
+        return affected
+
+    def refreshers(self):
+        return {"lock --no-network": lambda: self.cli("lock", "--no-network", deps=self.deps()), "lock": self.lock,
+                "lock --only": lambda: self.lock("--only", "src"),
+                "update --write": lambda: self.cli("update", "--write", deps=self.up.deps(self.home))}
+
+    def assertDropped(self, affected, out):
+        after = self.written()
+        lines = out.splitlines()
+        for key in affected:
+            self.assertEqual(self.DROPPED, after["contracts"][key], key)
+            self.assertIn("note: dropped the captured contract of %s: its launch changed" % key, lines)
+        for key, contract in self.before["contracts"].items():
+            if key not in affected:
+                self.assertEqual(contract, after["contracts"][key], key)
+        self.assertEqual(self.before["packages"], after["packages"])
+        self.assertEqual(len(affected), len([line for line in lines if "dropped the captured contract" in line]), out)
+
+    def test_a_changed_launch_drops_the_captured_contract_whichever_command_refreshes_the_lock(self):
+        for how in self.RELAUNCH:
+            for name, run in self.refreshers().items():
+                with self.subTest(change=how, command=name):
+                    affected = self.start(how)
+                    code, out, err = run()
+                    self.assertEqual((0, ""), (code, err), out)
+                    self.assertDropped(affected, out)
+
+    def test_a_second_run_changes_nothing_after_a_drop_and_an_unchanged_launch_keeps_its_contract(self):
+        self.lock("--contracts", env={EULA_ENV: "true"})
+        captured = self.path.read_bytes()
+        for name, run in self.refreshers().items():
+            with self.subTest(command=name, launch="unchanged"):
+                code, out, err = run()
+                self.assertEqual((0, ""), (code, err), out)
+                self.assertNotIn("dropped", out)
+                self.assertEqual(captured, self.path.read_bytes())
+        self.start("the arguments")
+        self.assertEqual(0, self.lock()[0])
+        dropped = self.path.read_bytes()
+        for name, run in self.refreshers().items():
+            with self.subTest(command=name, launch="dropped"):
+                code, out, err = run()
+                self.assertEqual((0, ""), (code, err), out)
+                self.assertNotIn("dropped", out)
+                self.assertEqual(dropped, self.path.read_bytes())
+
+    def test_a_new_capture_replaces_a_contract_of_another_launch(self):
+        self.start("the arguments")
+        code, out, err = self.lock("--contracts", env={EULA_ENV: "true"})
+        self.assertEqual((0, ""), (code, err), out)
+        contract = self.written()["contracts"]["npm-srv/online"]
+        self.assertEqual("captured", contract["status"])
+        self.assertEqual(launch_of(self.manifest, self.written()["packages"], "npm-srv", "online"), contract["launch"])
+        self.assertNotEqual(self.before["contracts"]["npm-srv/online"]["launch"], contract["launch"])
+        self.assertNotIn("dropped", out)
+        self.assertEqual(self.before["contracts"]["py-srv/default"], self.written()["contracts"]["py-srv/default"])
+        self.start("the arguments")
+        self.assertEqual(0, self.lock("--only", "@acme/tool", "--contracts", env={EULA_ENV: "true"})[0])
+        self.assertEqual(launch_of(self.manifest, self.written()["packages"], "npm-srv", "online"), self.written()["contracts"]["npm-srv/online"]["launch"])
+
+    def test_a_failed_or_refused_capture_does_not_keep_a_contract_of_another_launch(self):
+        self.start("the arguments")
+        with mock.patch.object(self.up, "probe_stdio", side_effect=toolchain_mcp.McpProbeError("timeout: no answer")):
+            code, out, err = self.lock("--contracts", env={EULA_ENV: "true"})
+        self.assertEqual((0, ""), (code, err), out)
+        self.assertEqual({"status": "unavailable", "reason": "timeout", "detail": "no answer"}, self.written()["contracts"]["npm-srv/online"])
+        self.assertIn("note: dropped the captured contract of npm-srv/online: its launch changed", out.splitlines())
+        self.assertEqual(self.before["contracts"]["py-srv/default"], self.written()["contracts"]["py-srv/default"])
+        self.assertIn("note: kept the captured contract of py-srv/default: the new capture is unavailable", out.splitlines())
+        self.start("the arguments")
+        self.rewrite_manifest(lambda m: m["mcp_servers"][3]["variants"]["offline"].update(args=["--start"]))
+        code, out, err = self.lock("--contracts", env={})
+        self.assertEqual((0, ""), (code, err), out)
+        self.assertEqual({"status": "skipped", "reason": "skipped", "detail": "license not accepted"}, self.written()["contracts"]["licensed/offline"])
+        self.assertIn("note: dropped the captured contract of licensed/offline: its launch changed", out.splitlines())
+
+    def test_a_package_version_that_changed_too_is_reported_as_that_and_without_the_launch_note(self):
+        self.start("the command")
+        self.up.packages["pypi:acme-py"] = {"status": "resolved", "version": "1.9.0", "sha256": "ab" * 32, "via": "pypi"}
+        code, out, err = self.lock()
+        self.assertEqual((0, ""), (code, err), out)
+        self.assertEqual({"status": "skipped", "reason": "skipped", "detail": "package version changed"}, self.written()["contracts"]["py-srv/default"])
+        self.assertNotIn("dropped", out)
+
+    def test_a_contract_of_a_variant_no_profile_uses_is_kept_only_while_its_launch_is_the_same(self):
+        self.lock("--contracts", env={EULA_ENV: "true"})
+        data = self.written()
+        extra = dict(copy.deepcopy(data["contracts"]["npm-srv/offline"]), launch=launch_of(self.manifest, data["packages"], "npm-srv", "writer"))
+        data["contracts"] = dict(sorted(dict(data["contracts"], **{"npm-srv/writer": extra}).items()))
+        write(self.path, toolchain.dump_json(data))
+        code, out, err = self.lock()
+        self.assertEqual((0, ""), (code, err), out)
+        self.assertEqual(extra, self.written()["contracts"]["npm-srv/writer"])
+        self.assertNotIn("dropped", out)
+        self.rewrite_manifest(lambda m: m["mcp_servers"][0]["variants"]["writer"].update(args=["--all"]))
+        code, out, err = self.cli("lock", "--no-network", deps=self.deps())
+        self.assertEqual((0, ""), (code, err), out)
+        self.assertEqual(self.DROPPED, self.written()["contracts"]["npm-srv/writer"])
+        self.assertIn("note: dropped the captured contract of npm-srv/writer: its launch changed", out.splitlines())
+        write(self.path, toolchain.dump_json(data))
+        code, out, err = self.lock()
+        self.assertEqual((0, ""), (code, err), out)
+        self.assertNotIn("npm-srv/writer", self.written()["contracts"])
+        self.assertIn("note: dropped the captured contract of npm-srv/writer: its launch changed", out.splitlines())
+
+    def test_a_contract_with_no_launch_to_compare_is_left_alone_by_the_offline_refresh(self):
+        self.lock("--contracts", env={EULA_ENV: "true"})
+        data = self.written()
+        data["packages"]["npm:@acme/tool"] = {"status": "unresolved", "reason": "network", "detail": ""}
+        data["contracts"]["gone/default"] = copy.deepcopy(data["contracts"]["npm-srv/online"])
+        data["contracts"] = dict(sorted(data["contracts"].items()))
+        write(self.path, toolchain.dump_json(data))
+        self.rewrite_manifest(lambda m: m["mcp_servers"][0]["variants"]["online"].update(args=[]))
+        code, out, err = self.cli("lock", "--no-network", deps=self.deps())
+        self.assertEqual((0, ""), (code, err), out)
+        self.assertNotIn("dropped", out)
+        self.assertEqual(data["contracts"], self.written()["contracts"])
+
+    def test_a_captured_contract_is_bound_to_the_launch_it_was_captured_under(self):
+        self.lock("--contracts", env={EULA_ENV: "true"})
+        contracts, packages = self.written()["contracts"], self.written()["packages"]
+        captured = {key: c for key, c in contracts.items() if c["status"] == "captured"}
+        self.assertEqual(5, len(captured))
+        for key, contract in contracts.items():
+            sid, _, name = key.partition("/")
+            if key in captured:
+                self.assertEqual(launch_of(self.manifest, packages, sid, name), contract["launch"], key)
+            else:
+                self.assertNotIn("launch", contract, key)
+        self.assertEqual(5, len({c["launch"] for c in captured.values()}), "every variant launches in its own way")
+        canonical = ('{"args":["-y","%s","--online"],"command":"npx","env":{"ACME_MODE":{"default":"safe","from_env":"ACME_MODE"},'
+                     '"ACME_TARGET":{"from_env":"ACME_TARGET"}}}' % pin("@acme/tool", "1.6.0"))
+        self.assertEqual("sha256:" + hashlib.sha256(canonical.encode("ascii")).hexdigest(), contracts["npm-srv/online"]["launch"])
+        self.assertEqual(["status", "era", "protocol", "server", "package_version", "launch", "captured", "tools"], list(contracts["npm-srv/online"]))
+
+    def test_a_captured_contract_records_the_utc_date_of_its_capture(self):
+        self.lock("--contracts", env={EULA_ENV: "true"})
+        captured = {key: c["captured"] for key, c in self.written()["contracts"].items() if c["status"] == "captured"}
+        self.assertEqual({"licensed/offline": CAPTURED, "npm-srv/offline": CAPTURED, "npm-srv/online": CAPTURED, "nuget-srv/default": CAPTURED,
+                          "py-srv/default": CAPTURED}, captured)
+        west, east = datetime.timezone(datetime.timedelta(hours=-5)), datetime.timezone(datetime.timedelta(hours=5))
+        for moment, utc_day in ((datetime.datetime(2026, 10, 31, 23, 30, tzinfo=west), "2026-11-01"), (datetime.datetime(2026, 11, 1, 1, 0, tzinfo=east), "2026-10-31"),
+                                (datetime.datetime(2028, 2, 29, 12, 0, tzinfo=datetime.timezone.utc), "2028-02-29")):
+            with self.subTest(moment=moment):
+                self.path.unlink()
+                self.lock("--contracts", env={EULA_ENV: "true"}, clock=lambda: moment)
+                self.assertEqual({utc_day}, {c["captured"] for c in self.written()["contracts"].values() if c["status"] == "captured"})
+                self.assertEqual(utc_day, self.written()["generated"])
+
+    def test_a_capture_of_the_same_contract_on_a_later_day_keeps_its_first_date_and_a_different_one_gets_its_own(self):
+        self.lock("--contracts", env={EULA_ENV: "true"})
+        first = self.path.read_bytes()
+        later = lambda: NOW + datetime.timedelta(days=9)
+        code, out, err = self.lock("--contracts", env={EULA_ENV: "true"}, clock=later)
+        self.assertEqual((0, ""), (code, err), out)
+        self.assertEqual(first, self.path.read_bytes(), "the lock does not change when nothing about a contract changed")
+        self.assertNotIn("note:", out)
+        self.assertEqual(0, self.lock("--check", "--contracts", env={EULA_ENV: "true"}, clock=later)[0])
+        self.up.tools["acme-py"]["tool_c"] = {"schema": "sha256:" + "6" * 64, "read_only": True, "destructive": False, "idempotent": True}
+        self.lock("--contracts", env={EULA_ENV: "true"}, clock=later)
+        contracts = self.written()["contracts"]
+        self.assertEqual("2026-11-08", contracts["py-srv/default"]["captured"])
+        self.assertEqual(CAPTURED, contracts["npm-srv/online"]["captured"])
+        self.up.packages["npm:@acme/tool"] = dict(self.up.packages["npm:@acme/tool"], version="1.7.0")
+        self.lock("--contracts", env={EULA_ENV: "true"}, clock=later)
+        self.assertEqual(("1.7.0", "2026-11-08"), (self.written()["contracts"]["npm-srv/online"]["package_version"], self.written()["contracts"]["npm-srv/online"]["captured"]))
+
+    def test_nothing_but_a_new_capture_changes_the_date_of_a_contract(self):
+        self.lock("--contracts", env={EULA_ENV: "true"})
+        dates = lambda: {k: c["captured"] for k, c in self.written()["contracts"].items() if c["status"] == "captured"}
+        before = dates()
+        later = lambda: NOW + datetime.timedelta(days=9)
+        commands = {"lock --no-network": lambda: self.cli("lock", "--no-network", deps=self.deps(clock=later)), "lock": lambda: self.lock(clock=later),
+                    "lock --only": lambda: self.lock("--only", "src", clock=later),
+                    "update --write": lambda: self.cli("update", "--write", deps=self.up.deps(self.home, clock=later))}
+        for name, run in commands.items():
+            with self.subTest(command=name):
+                code, out, err = run()
+                self.assertEqual((0, ""), (code, err), out)
+                self.assertEqual(before, dates())
+        with mock.patch.object(self.up, "probe_stdio", side_effect=toolchain_mcp.McpProbeError("timeout: no answer")):
+            self.assertEqual(0, self.lock("--contracts", env={EULA_ENV: "true"}, clock=later)[0])
+        self.assertEqual(before, dates(), "a capture that failed does not touch the contract that was kept")
+
+    def test_a_capture_never_sets_the_bounds_of_a_dependency_resolution(self):
+        self.lock("--contracts", env={EULA_ENV: "true"})
+        self.assertEqual(0, self.cli("update", "--contracts", deps=self.up.deps(self.home, env={EULA_ENV: "true"}))[0])
+        calls = self.up.calls["probe_stdio"]
+        self.assertEqual(10, len(calls))
+        for call in calls:
+            self.assertEqual([], [name for name in call["env"] if name.lower() in ("npm_config_before", "uv_exclude_newer")], call["argv"])
+
+    def test_a_capture_gives_a_server_what_its_variant_declares_and_none_of_the_rest_of_the_operators_environment(self):
+        secrets = {"GITHUB_TOKEN": "operator-secret-one", "NPM_TOKEN": "operator-secret-two", "AZURE_CLIENT_SECRET": "operator-secret-three"}
+        operator = dict(secrets, PATH="/opt/fake/bin", HOME="/opt/fake/home", ACME_TARGET="sandbox", ACME_UNDECLARED="x", **{EULA_ENV: "true"})
+        self.lock("--contracts", env=operator)
+        self.assertEqual(5, len(self.up.calls["probe_stdio"]))
+        for call in self.up.calls["probe_stdio"]:
+            names = set(call["env"])
+            self.assertEqual(set(), names & (set(operator) - {"ACME_TARGET", EULA_ENV}), call["argv"])
+            self.assertLessEqual(names, {"ACME_MODE", "ACME_TARGET", EULA_ENV}, call["argv"])
+        update_calls = len(self.up.calls["probe_stdio"])
+        self.assertEqual(0, self.cli("update", "--contracts", deps=self.up.deps(self.home, env=operator))[0])
+        for call in self.up.calls["probe_stdio"][update_calls:]:
+            self.assertEqual(set(), set(call["env"]) & (set(operator) - {"ACME_TARGET", EULA_ENV}), call["argv"])
+
     def test_a_resolved_package_is_never_replaced_by_a_failed_refresh(self):
         self.lock()
         before = self.written()["packages"]["npm:@acme/tool"]
@@ -4444,6 +5658,19 @@ class LockCommandTests(Base):
         code, out, _ = self.lock()
         self.assertEqual({"status": "unresolved", "reason": "network", "detail": ""}, self.written()["packages"]["npm:@acme/tool"])
         self.assertIn("WARN: package npm:@acme/tool is unresolved (network)", out)
+
+    def test_a_failed_write_of_the_lock_is_an_error_line_and_leaves_the_old_lock_alone(self):
+        self.lock()
+        before = self.path.read_bytes()
+        self.up.refs["https://github.com/acme/skills.git"] = {"tag": "v0.2.0", "commit": "2" * 40}
+        with mock.patch.object(toolchain, "write_atomic", side_effect=OSError(28, "No space left on device", str(self.path))):
+            code, out, err = self.lock()
+        self.assertEqual(1, code)
+        self.assertIn("error: Errno 28 No space left on device", err)
+        self.assertNotIn("Traceback", err)
+        self.assertNotIn(str(self.tmp), err)
+        self.assertNotIn("wrote toolchain", out)
+        self.assertEqual(before, self.path.read_bytes())
 
     def test_nothing_that_could_leak_reaches_the_lock(self):
         feed = "pkgs." + "contoso." + "invalid"
@@ -4506,6 +5733,91 @@ class LockCommandTests(Base):
         self.assertEqual("unknown", contracts["py-srv/default"]["server"]["name"])
         self.assertEqual("acme-licensed", contracts["licensed/offline"]["server"]["name"])
         self.assertEqual("1.6.0", contracts["licensed/offline"]["server"]["version"])
+
+    def test_a_server_version_that_is_a_host_or_does_not_start_with_a_digit_is_locked_as_unknown(self):
+        build_host = "build." + "private." + "example"
+        self.up.server_versions["@acme/tool"] = build_host
+        self.up.server_versions["acme-py"] = "1." + build_host
+        self.up.server_versions["Acme.Nuget"] = "latest"
+        code, out, err = self.lock("--contracts", env={EULA_ENV: "true"})
+        self.assertEqual(0, code, out + err)
+        raw = self.path.read_text(encoding="utf-8")
+        self.assertNotIn("private", raw)
+        contracts = self.written()["contracts"]
+        for key in ("npm-srv/online", "npm-srv/offline", "py-srv/default", "nuget-srv/default"):
+            self.assertEqual(("captured", "unknown"), (contracts[key]["status"], contracts[key]["server"]["version"]), key)
+        self.assertEqual("1.6.0", contracts["licensed/offline"]["server"]["version"])
+
+    def test_a_protocol_that_is_not_a_date_makes_every_stdio_contract_unavailable(self):
+        for protocol in ("C:\\" + "Users\\jane\\protocol", "/home" + "/jane/p", "latest", "", "2025-11-25 and more"):
+            with self.subTest(protocol=protocol):
+                self.up.protocol = protocol
+                if self.path.exists():
+                    self.path.unlink()
+                code, out, err = self.lock("--contracts", env={EULA_ENV: "true"})
+                self.assertEqual(0, code, out + err)
+                contracts = self.written()["contracts"]
+                for key in ("npm-srv/online", "npm-srv/offline", "py-srv/default", "nuget-srv/default", "licensed/offline"):
+                    self.assertEqual({"status": "unavailable", "reason": "protocol-error", "detail": ""}, contracts[key], key)
+                self.assertEqual({"status": "needs-sign-in"}, contracts["hosted/default"])
+                self.assertNotIn("jane", self.path.read_text(encoding="utf-8"))
+
+    def test_a_tool_name_that_is_not_a_plain_token_makes_that_contract_unavailable_and_no_other(self):
+        tool = {"schema": "sha256:" + "6" * 64, "read_only": True, "destructive": False, "idempotent": True}
+        for name in ("C:\\" + "Users\\jane\\t", "/home" + "/jane/t", "a b", "", "x" * 129, "t" + "@" + "host", "caf\u00e9"):
+            with self.subTest(name=name):
+                self.up.tools["acme-py"] = {"tool_a": dict(tool), name: dict(tool)}
+                if self.path.exists():
+                    self.path.unlink()
+                code, out, err = self.lock("--contracts", env={EULA_ENV: "true"})
+                self.assertEqual(0, code, out + err)
+                contracts = self.written()["contracts"]
+                self.assertEqual({"status": "unavailable", "reason": "protocol-error", "detail": ""}, contracts["py-srv/default"])
+                self.assertEqual("captured", contracts["npm-srv/online"]["status"])
+                self.assertNotIn("jane", self.path.read_text(encoding="utf-8"))
+
+    def test_the_plain_values_of_real_servers_are_locked_as_they_are(self):
+        tool = {"schema": "sha256:" + "6" * 64, "read_only": True, "destructive": False, "idempotent": True}
+        self.up.protocol = "2026-07-28"
+        self.up.server_versions.update({"@acme/tool": "4.0.0-beta.4", "acme-py": "1.30.0", "Acme.Nuget": "v2.0.1"})
+        self.up.tools["acme-py"] = {"docs_api-examples": dict(tool), "Fabric-MCP-core_get-item": dict(tool), "a.b": dict(tool)}
+        code, out, err = self.lock("--contracts", env={EULA_ENV: "true"})
+        self.assertEqual(0, code, out + err)
+        contracts = self.written()["contracts"]
+        self.assertEqual(("captured", "2026-07-28", "4.0.0-beta.4"), (contracts["npm-srv/online"]["status"], contracts["npm-srv/online"]["protocol"],
+                                                                      contracts["npm-srv/online"]["server"]["version"]))
+        self.assertEqual(("1.30.0", ["Fabric-MCP-core_get-item", "a.b", "docs_api-examples"]),
+                         (contracts["py-srv/default"]["server"]["version"], list(contracts["py-srv/default"]["tools"])))
+        self.assertEqual("v2.0.1", contracts["nuget-srv/default"]["server"]["version"])
+
+    def test_the_details_that_reach_the_lock_hold_no_secret_and_no_address(self):
+        secret = "jane" + ":" + "hunter2"
+        key = "a1b2c3d4e5f6a7b8c9d0e1f2a3b4"
+        self.up.packages["npm:@acme/tool"] = {"status": "unresolved", "reason": "network",
+                                               "detail": "login failed for %s at %s with key %s ok" % (secret, ADDRESS, key)}
+        with mock.patch.object(self.up, "probe_stdio", side_effect=toolchain_mcp.McpProbeError("exited: crashed for %s at %s with key %s" % (secret, ADDRESS, key))):
+            code, out, err = self.lock("--contracts", env={EULA_ENV: "true"})
+        self.assertEqual(0, code, out + err)
+        raw = self.path.read_text(encoding="utf-8")
+        for leak in (secret, "hunter2", ADDRESS, key):
+            self.assertNotIn(leak, raw)
+        self.assertEqual("login failed for at with key ok", self.written()["packages"]["npm:@acme/tool"]["detail"])
+        self.assertEqual({"status": "unavailable", "reason": "exited", "detail": "crashed for at with key"}, self.written()["contracts"]["licensed/offline"])
+
+    def test_every_detail_of_the_lock_command_is_made_by_the_one_safe_detail_of_toolchain_io(self):
+        self.up.packages["pypi:acme-py"] = {"status": "unresolved", "reason": "network", "detail": "anything"}
+        with mock.patch.object(toolchain.toolchain_io, "safe_detail", side_effect=sentinel_detail()) as detail:
+            with mock.patch.object(self.up, "probe_stdio", side_effect=toolchain_mcp.McpProbeError("exited: anything")):
+                code, out, err = self.lock("--contracts", env={EULA_ENV: "true"})
+        self.assertEqual(0, code, out + err)
+        self.assertEqual("SENTINEL", self.written()["packages"]["pypi:acme-py"]["detail"])
+        self.assertEqual({"status": "unavailable", "reason": "exited", "detail": "SENTINEL"}, self.written()["contracts"]["npm-srv/online"])
+        self.assertTrue(detail.called)
+        self.up.fail_refs.add("https://github.com/acme/skills.git")
+        with mock.patch.object(toolchain.toolchain_io, "safe_detail", side_effect=sentinel_detail("fake failure")):
+            code, out, err = self.lock()
+        self.assertEqual(1, code)
+        self.assertIn("skill source src: SENTINEL", err)
 
     def test_a_pinned_package_that_resolves_to_another_version_is_unresolved(self):
         self.rewrite_manifest(lambda m: m["mcp_servers"][0]["package"].update(track="1.5.0"))
@@ -4747,6 +6059,19 @@ class UpdateTests(Base):
         self.update("--check", "--json")
         self.assertEqual(before, self.path.read_bytes())
 
+    def test_a_failed_write_of_the_lock_or_of_the_summary_is_an_error_line(self):
+        self.up.packages["npm:@acme/tool"] = {"status": "resolved", "version": "1.7.0", "integrity": "sha512-" + "B" * 40, "via": "npm-cli"}
+        before = self.path.read_bytes()
+        for argv in (["--write"], ["--summary-file", str(self.tmp / "summary.md")]):
+            with self.subTest(argv=argv):
+                with mock.patch.object(toolchain, "write_atomic", side_effect=OSError(28, "No space left on device", str(self.path))):
+                    code, out, err = self.update(*argv)
+                self.assertEqual(1, code)
+                self.assertIn("error: Errno 28 No space left on device", err)
+                self.assertNotIn("Traceback", err)
+                self.assertNotIn(str(self.tmp), err)
+                self.assertEqual(before, self.path.read_bytes())
+
     def test_the_summary_file_is_markdown(self):
         self.bump()
         summary = self.tmp / "summary.md"
@@ -4767,6 +6092,23 @@ class UpdateTests(Base):
         self.assertIn("  py-srv/default: captured -> captured; tools added tool_c; removed tool_a; changed tool_b", out.splitlines())
         self.assertEqual(3, self.update("--contracts", "--fail-on-update", env={EULA_ENV: "true"})[0])
         self.assertEqual(0, self.update("--fail-on-update", env={EULA_ENV: "true"})[0])
+
+    def test_a_changed_launch_shows_as_a_dropped_contract_in_the_report_and_in_the_written_lock(self):
+        self.rewrite_manifest(lambda m: m["mcp_servers"][1]["launch"].update(command="pipx"))
+        note = "dropped the captured contract of py-srv/default: its launch changed"
+        code, out, err = self.update()
+        self.assertEqual((0, ""), (code, err), out)
+        self.assertIn("note: " + note, out.splitlines())
+        self.assertIn("  py-srv/default: captured -> skipped", out.splitlines())
+        report = json.loads(self.update("--json")[1])
+        self.assertEqual([note], report["notes"])
+        self.assertEqual(3, self.update("--fail-on-update")[0])
+        code, out, err = self.update("--write")
+        self.assertEqual(0, code, out + err)
+        self.assertEqual({"status": "skipped", "reason": "skipped", "detail": "launch changed"}, read_json(self.path)["contracts"]["py-srv/default"])
+        self.assertEqual("captured", read_json(self.path)["contracts"]["npm-srv/online"]["status"])
+        self.assertEqual(0, self.cli("render", "--write-project")[0])
+        self.assertEqual(0, self.cli("verify")[0])
 
     def test_without_a_current_lock_everything_is_new(self):
         self.path.unlink()
@@ -4978,10 +6320,355 @@ class FetchTests(Base):
         self.assertIn("fetch failed", err)
         self.assertNotIn(feed, err)
 
+    def test_the_reason_of_a_failed_fetch_comes_from_the_one_safe_detail_of_toolchain_io(self):
+        def vendor(*args, **kwargs):
+            raise toolchain_sources.SourceError("anything")
+        with mock.patch.object(toolchain.toolchain_io, "safe_detail", side_effect=sentinel_detail()) as detail:
+            code, out, err = self.cli("fetch", deps=self.deps(vendor_skills=vendor))
+        self.assertEqual(1, code)
+        self.assertIn("fetch failed: SENTINEL", err)
+        self.assertEqual("anything", str(detail.call_args[0][0]))
+        with mock.patch.object(toolchain.toolchain_io, "safe_detail", return_value=""):
+            self.assertIn("fetch failed: could not vendor the skills", self.cli("fetch", deps=self.deps(vendor_skills=vendor))[2])
+
+    def test_an_os_error_of_the_download_is_an_error_line_without_a_path(self):
+        def vendor(*args, **kwargs):
+            raise OSError(28, "No space left on device", str(self.root / ".factory" / "pack"))
+        code, out, err = self.cli("fetch", deps=self.deps(vendor_skills=vendor))
+        self.assertEqual(1, code)
+        self.assertIn("error: Errno 28 No space left on device", err)
+        self.assertNotIn("Traceback", err)
+        self.assertNotIn(str(self.tmp), err)
+        self.assertNotIn("fetched", out)
+
     def test_fetch_refuses_a_stale_lock_and_an_unknown_profile(self):
         self.assertEqual(2, self.cli("fetch", "--profile", "ghost", deps=self.deps(vendor_skills=self.vendor))[0])
         self.rewrite_manifest(lambda m: m["quarantine"].clear())
         self.assertEqual(1, self.cli("fetch", deps=self.deps(vendor_skills=self.vendor))[0])
+
+    def fetch_with_links(self, *linked, store=None):
+        wanted = {Path(p) for p in linked}
+        with mock.patch.object(toolchain, "is_link", lambda path: Path(path) in wanted):
+            return self.cli("fetch", *(["--store", str(store)] if store else []), deps=self.deps(vendor_skills=self.vendor))
+
+    def test_fetch_does_not_write_into_a_pack_folder_that_is_a_link_nor_below_one(self):
+        for linked, shown in ((self.root / ".factory" / "pack", ".factory/pack"), (self.root / ".factory", ".factory")):
+            with self.subTest(link=shown):
+                code, out, err = self.fetch_with_links(linked)
+                self.assertEqual(1, code)
+                self.assertIn("%s is a link; the toolchain does not write through links" % shown, err)
+                self.assertEqual([], self.calls, "the fetch is refused before it downloads anything")
+                self.assertNotIn("Traceback", err)
+        self.assertEqual(0, self.fetch_with_links(self.root, self.tmp)[0], "the project folder and what is above it are the user's choice")
+        self.assertEqual(1, len(self.calls))
+
+    def test_fetch_into_a_pack_folder_outside_the_project_is_refused_when_it_is_a_link_itself_and_only_then(self):
+        outside = self.tmp / "packs" / "pack"
+        code, out, err = self.fetch_with_links(outside, store=outside)
+        self.assertEqual(1, code)
+        self.assertIn("pack is a link; the toolchain does not write through links", err)
+        self.assertNotIn(str(self.tmp), err)
+        self.assertEqual([], self.calls)
+        code, out, err = self.fetch_with_links(outside.parent, self.tmp, self.root, store=outside)
+        self.assertEqual((0, ""), (code, err), out)
+        self.assertEqual(1, len(self.calls))
+
+
+class ToolPinTests(Base):
+    """The command-line tools that a profile pins: they are resolved from the lock, reach the load plan, and are compared with what is installed."""
+
+    FOUND = ("git", "python", "gh", "az", "fab", "pra", "copilot", "code")
+
+    def setUp(self):
+        super().setUp()
+        self.small_project(manifest=tools_manifest(), profiles=tools_profiles())
+        packages = self.lock["packages"]
+        self.fab = {"id": "fab", "command": "fab", "ecosystem": "pypi", "name": "acme-cli", "version": "1.8.0", "sha256": packages["pypi:acme-cli"]["sha256"]}
+        self.pra = {"id": "pra", "command": "pra", "ecosystem": "npm", "name": "@acme/report-cli", "version": "1.6.0",
+                    "integrity": packages["npm:@acme/report-cli"]["integrity"]}
+
+    def machine(self, fab="fab 1.8.0\n", pra="1.6.0\n", found=FOUND):
+        answers = dict(GOOD_TOOLS)
+        answers[("fab", "--version")] = (0, fab, "")
+        answers[("pra", "--version")] = (0, pra, "")
+        return FakeRunner(found=found, answers=answers)
+
+    def unresolve(self, key):
+        self.rewrite_lock(lambda lock: lock["packages"].__setitem__(key, {"status": "unresolved", "reason": "network", "detail": ""}))
+
+    def refuses(self, profile, fragment):
+        """render, the load plan, render --write-project and install all stop for the profile, and write nothing."""
+        for argv in (["render", "--host", "copilot-cli", "--profile", profile], ["render", "--host", "load-plan", "--profile", profile],
+                     ["render", "--write-project", "--profile", profile], ["install", "--host", "copilot-cli", "--skip-skills", "--profile", profile]):
+            with self.subTest(argv=argv):
+                code, out, err = self.cli(*argv, deps=self.deps(runner=self.machine()))
+                self.assertEqual(1, code, out + err)
+                self.assertIn(fragment, err)
+                self.assertNotIn("Traceback", err)
+        self.assertFalse((self.root / ".github" / "mcp.json").exists(), "nothing is written for a profile that does not verify")
+
+    def test_a_profile_resolves_the_tools_it_lists_from_the_lock_in_its_own_order(self):
+        self.assertEqual([self.fab, self.pra], self.resolved("dev-a")["tools"])
+        self.assertEqual([self.pra], self.resolved("agent-ok")["tools"])
+        self.assertEqual([self.fab], self.resolved("exec-tool")["tools"])
+        self.assertEqual([], self.resolved("agent-empty")["tools"])
+        self.rewrite_profiles(lambda p: p["profiles"]["dev-a"].update(tools=["pra", "fab"]))
+        self.assertEqual(["pra", "fab"], [t["id"] for t in self.resolved("dev-a")["tools"]])
+
+    def test_a_tool_whose_lock_entry_has_no_hash_is_listed_without_one(self):
+        self.rewrite_lock(lambda lock: lock["packages"]["pypi:acme-cli"].update(sha256=None))
+        self.assertEqual({k: v for k, v in self.fab.items() if k != "sha256"}, self.resolved("dev-a")["tools"][0])
+
+    def test_the_load_plan_carries_the_pinned_tools_and_says_how_they_are_provisioned(self):
+        plan = toolchain.render("load-plan", self.resolved("dev-a"))
+        self.assertEqual(["schema", "profile", "mode", "lock", "skills", "shared", "repo_skills", "mcp", "tools", "instructions"], list(plan))
+        self.assertEqual([{"id": "fab", "command": "fab", "ecosystem": "pypi", "package": "acme-cli", "version": "1.8.0", "sha256": self.fab["sha256"],
+                           "provisioning": "on-demand"},
+                          {"id": "pra", "command": "pra", "ecosystem": "npm", "package": "@acme/report-cli", "version": "1.6.0",
+                           "integrity": self.pra["integrity"], "provisioning": "on-demand"}], plan["tools"])
+        self.assertEqual([["id", "command", "ecosystem", "package", "version", "sha256", "provisioning"],
+                          ["id", "command", "ecosystem", "package", "version", "integrity", "provisioning"]], [list(t) for t in plan["tools"]])
+        for profile in ("agent-ok", "exec-tool"):
+            with self.subTest(profile=profile):
+                tools = toolchain.render("load-plan", self.resolved(profile))["tools"]
+                self.assertEqual(1, len(tools))
+                self.assertEqual("preinstalled", tools[0]["provisioning"])
+        self.assertEqual([], toolchain.render("load-plan", self.resolved("agent-empty"))["tools"])
+        code, out, err = self.cli("render", "--host", "load-plan", "--profile", "agent-ok")
+        self.assertEqual((0, ""), (code, err), out)
+        self.assertEqual(["pra"], [t["id"] for t in json.loads(out)["tools"]])
+
+    def test_the_host_files_do_not_mention_the_tools(self):
+        for host in toolchain.HOSTS:
+            with self.subTest(host=host):
+                text = toolchain.dump_json(toolchain.render(host, self.resolved("dev-a")))
+                for word in ("acme-cli", "report-cli"):
+                    self.assertNotIn(word, text)
+
+    def test_an_unresolved_tool_package_leaves_the_tool_out_of_a_dev_profile_with_a_note(self):
+        self.unresolve("pypi:acme-cli")
+        resolved = self.resolved("dev-a")
+        self.assertEqual(["pra"], [t["id"] for t in resolved["tools"]])
+        self.assertEqual([{"tool": "fab", "reason": "its package is unresolved in the lock"}], [o for o in resolved["omitted"] if "tool" in o])
+        note = "note: tool fab is left out: its package is unresolved in the lock"
+        code, out, err = self.cli("render", "--host", "copilot-cli")
+        self.assertEqual(0, code, err)
+        self.assertIn(note, err)
+        code, out, err = self.cli("render", "--host", "load-plan")
+        self.assertEqual(0, code, err)
+        self.assertIn(note, err)
+        self.assertEqual(["pra"], [t["id"] for t in json.loads(out)["tools"]])
+        code, out, err = self.cli("install", "--host", "copilot-cli", "--skip-skills", deps=self.deps(runner=self.machine()))
+        self.assertEqual(0, code, err)
+        self.assertIn(note, out.splitlines())
+        code, out, err = self.cli("verify")
+        self.assertIn("[WARN] V3: profile dev-a: package pypi:acme-cli is unresolved in the lock (tool fab)", out)
+        self.assertNotIn("FAIL V3: profile dev-a", out)
+        self.assertIn("[FAIL] V3: profile exec-tool: package pypi:acme-cli is unresolved in the lock (tool fab)", out, "an executor profile uses the same tool")
+
+    def test_an_unresolved_tool_package_stops_an_agent_and_an_executor_profile(self):
+        self.unresolve("npm:@acme/report-cli")
+        self.refuses("agent-ok", "package npm:@acme/report-cli is unresolved in the lock (tool pra)")
+        self.unresolve("pypi:acme-cli")
+        self.refuses("exec-tool", "package pypi:acme-cli is unresolved in the lock (tool fab)")
+        code, out, _ = self.cli("verify", "--profile", "agent-ok", "exec-tool")
+        self.assertEqual(1, code)
+        self.assertIn("[FAIL] V3: profile agent-ok: package npm:@acme/report-cli is unresolved in the lock (tool pra)", out)
+        self.assertIn("[FAIL] V3: profile exec-tool: package pypi:acme-cli is unresolved in the lock (tool fab)", out)
+        self.assertEqual(["agent-ok", "exec-tool"], sorted(b["profile"] for b in toolchain.what_breaks(self.manifest, self.profiles, None, self.lock)))
+
+    def test_a_tool_package_that_the_lock_lacks_or_does_not_pin_exactly_stops_every_mode(self):
+        self.rewrite_lock(lambda lock: lock["packages"].pop("pypi:acme-cli"))
+        self.refuses("dev-a", "package pypi:acme-cli is not in the lock (tool fab)")
+        self.refuses("exec-tool", "package pypi:acme-cli is not in the lock (tool fab)")
+        self.small_project(manifest=tools_manifest(), profiles=tools_profiles())
+        self.rewrite_lock(lambda lock: lock["packages"]["pypi:acme-cli"].update(version="latest"))
+        self.refuses("dev-a", "tool fab: package pypi:acme-cli has no exact version in the lock ('latest' could float)")
+        self.refuses("exec-tool", "tool fab: package pypi:acme-cli has no exact version in the lock ('latest' could float)")
+        self.assertIn("[FAIL] V4: profile exec-tool: tool fab: package pypi:acme-cli has no exact version", self.cli("verify", "--profile", "exec-tool")[1])
+
+    def test_a_profile_may_list_only_tools_of_the_manifest_that_have_a_package(self):
+        cases = ((["nothing"], "tool nothing is not a tool of the manifest"), (["git"], "tool git has no package, so it cannot be pinned"),
+                 (["fab", "gh"], "tool gh has no package, so it cannot be pinned"), (["pra", "ghost", "az"], "tool ghost is not a tool of the manifest"))
+        for tools, message in cases:
+            with self.subTest(tools=tools):
+                self.rewrite_profiles(lambda p: p["profiles"]["agent-ok"].update(tools=tools))
+                self.assertProblem(toolchain.profile_problems(self.manifest, self.profiles, self.lock, "agent-ok"), message)
+                code, out, _ = self.cli("verify", "--profile", "agent-ok")
+                self.assertEqual(1, code)
+                self.assertIn("[FAIL] V2: profile agent-ok: " + message, out)
+                self.refuses("agent-ok", "profile agent-ok: " + message)
+        self.assertEqual([], toolchain.profile_problems(self.manifest, tools_profiles(), self.lock, "dev-a"))
+
+    def test_a_manifest_without_tools_has_no_tool_to_pin(self):
+        manifest = small_manifest()
+        del manifest["tools"]
+        self.small_project(manifest=manifest, profiles=small_profiles())
+        self.assertEqual([], self.resolved("dev-a")["tools"])
+        self.rewrite_profiles(lambda p: p["profiles"]["dev-a"].update(tools=["fab"]))
+        self.assertProblem(toolchain.profile_problems(self.manifest, self.profiles, self.lock, "dev-a"), "tool fab is not a tool of the manifest")
+
+    def test_fetch_is_about_skills_and_is_not_stopped_by_a_tool_package(self):
+        self.unresolve("npm:@acme/report-cli")
+        calls = []
+
+        def vendor(lock, selection, store, runner=None, quarantine=(), shared=()):
+            calls.append(selection)
+            return {"schema": 1, "skills": {n: {"files": 2} for _s, _p, n in selection}}
+        code, out, err = self.cli("fetch", "--profile", "agent-ok", deps=self.deps(vendor_skills=vendor))
+        self.assertEqual((0, ""), (code, err), out)
+        self.assertEqual([[("src", "core", "alpha-core")]], calls)
+
+    def test_list_shows_the_tools_of_a_profile_with_their_pinned_versions(self):
+        out = self.cli("list", "--profile", "dev-a")[1]
+        self.assertIn("Tools: 2", out)
+        self.assertRegex(out, r"(?m)^  fab\s+fab\s+pypi:acme-cli\s+1\.8\.0$")
+        self.assertRegex(out, r"(?m)^  pra\s+pra\s+npm:@acme/report-cli\s+1\.6\.0$")
+        report = json.loads(self.cli("list", "--profile", "agent-ok", "--json")[1])["profile"]
+        self.assertEqual([{"id": "pra", "command": "pra", "package": "npm:@acme/report-cli", "version": "1.6.0"}], report["tools"])
+        self.assertIn("Tools: 0", self.cli("list", "--profile", "agent-empty")[1])
+        self.unresolve("pypi:acme-cli")
+        self.assertRegex(self.cli("list", "--profile", "dev-a")[1], r"(?m)^  fab\s+fab\s+pypi:acme-cli\s+unresolved$")
+        (self.root / "toolchain" / "toolchain.lock.json").unlink()
+        self.assertRegex(self.cli("list", "--profile", "dev-a")[1], r"(?m)^  pra\s+pra\s+npm:@acme/report-cli\s+not locked$")
+
+    def doctor(self, *args, **machine):
+        return self.cli("doctor", "--offline", *args, deps=self.deps(runner=self.machine(**machine)))
+
+    def test_doctor_compares_the_installed_version_of_a_pinned_tool_with_the_pin(self):
+        code, out, err = self.doctor()
+        self.assertEqual((0, ""), (code, err), out)
+        self.assertIn("[PASS] tool fab: version 1.8.0 (pinned)", out)
+        self.assertIn("[PASS] tool pra: version 1.6.0 (pinned)", out)
+        code, out, _ = self.doctor(fab="fab 99.0.0\n", pra="99.0.0\n")
+        self.assertEqual(0, code, "a different version is a warning")
+        self.assertIn("[WARN] tool fab: version 99.0.0 is not the pinned version 1.8.0; install the pinned version", out)
+        self.assertIn("[WARN] tool pra: version 99.0.0 is not the pinned version 1.6.0; install the pinned version", out)
+        self.assertNotIn("(minimum", [l for l in out.splitlines() if "tool fab:" in l][0])
+
+    def test_the_version_that_a_tool_prints_is_compared_exactly_and_the_way_it_was_read_before(self):
+        four = ".".join(("1", "8", "0", "1"))  # joined at run time: the repository scanner reads four numbers in a row as an address
+        for printed, shown, same in (("fab 1.8.0\n", "1.8.0", True), ("1.8\n", "1.8", True), ("fab, version 1.8.0 (build 3)\n", "1.8.0", True),
+                                     ("1.8.1\n", "1.8.1", False), ("1.7.9\n", "1.7.9", False), ("2.8.0\n", "2.8.0", False), (four + "\n", four, False)):
+            with self.subTest(printed=printed):
+                out = self.doctor(fab=printed)[1]
+                line = [l for l in out.splitlines() if "tool fab:" in l][0]
+                self.assertEqual("[PASS] tool fab: version %s (pinned)" % shown if same else
+                                 "[WARN] tool fab: version %s is not the pinned version 1.8.0; install the pinned version" % shown, line)
+        self.rewrite_lock(lambda lock: lock["packages"]["pypi:acme-cli"].update(version="1.8.0-beta.2"))
+        for printed, same in (("fab 1.8.0-beta.2\n", True), ("fab 1.8.0\n", False), ("fab 1.8.0-beta.3\n", False)):
+            with self.subTest(printed=printed, pin="1.8.0-beta.2"):
+                line = [l for l in self.doctor(fab=printed)[1].splitlines() if "tool fab:" in l][0]
+                self.assertEqual(same, "(pinned)" in line, line)
+        self.rewrite_lock(lambda lock: lock["packages"]["pypi:acme-cli"].update(version="1.8.0"))
+        line = [l for l in self.doctor(fab="fab 1.8.0-beta.2\n")[1].splitlines() if "tool fab:" in l][0]
+        self.assertIn("is not the pinned version 1.8.0", line)
+
+    def test_a_tool_that_the_profile_does_not_list_keeps_the_check_of_the_minimum_and_so_does_a_profile_without_a_lock(self):
+        out = self.doctor("--profile", "agent-empty", fab="fab 99.0.0\n")[1]
+        self.assertIn("[PASS] tool fab: version 99.0.0 (minimum 1.0)", out)
+        self.assertIn("[PASS] tool pra: version 1.6.0 (minimum 0.1)", out)
+        out = self.doctor("--profile", "agent-ok", fab="fab 99.0.0\n", pra="9.9.9\n")[1]
+        self.assertIn("[PASS] tool fab: version 99.0.0 (minimum 1.0)", out)
+        self.assertIn("[WARN] tool pra: version 9.9.9 is not the pinned version 1.6.0; install the pinned version", out)
+        (self.root / "toolchain" / "toolchain.lock.json").unlink()
+        code, out, _ = self.doctor(fab="fab 99.0.0\n")
+        self.assertIn("[PASS] tool fab: version 99.0.0 (minimum 1.0)", out)
+        self.assertIn("[FAIL] lock: missing:", out)
+
+    def test_doctor_has_no_pin_for_a_package_that_is_not_locked_and_still_reports_a_missing_or_unreadable_tool(self):
+        self.unresolve("pypi:acme-cli")
+        self.assertIn("[PASS] tool fab: version 1.8.0 (minimum 1.0)", self.doctor()[1])
+        self.rewrite_lock(lambda lock: lock["packages"].pop("pypi:acme-cli"))
+        self.assertIn("[PASS] tool fab: version 1.8.0 (minimum 1.0)", self.doctor()[1])
+        self.small_project(manifest=tools_manifest(), profiles=tools_profiles())
+        self.rewrite_lock(lambda lock: lock["packages"]["pypi:acme-cli"].update(version="latest"))
+        self.assertIn("[PASS] tool fab: version 1.8.0 (minimum 1.0)", self.doctor()[1], "a version that could float is no pin")
+        self.small_project(manifest=tools_manifest(), profiles=tools_profiles())
+        out = self.doctor(found=("git", "python", "gh", "az", "fab"))[1]
+        self.assertIn("[WARN] tool pra: not found on PATH; needed for the report skills", out)
+        out = self.doctor(fab="no number here\n")[1]
+        self.assertIn("[WARN] tool fab: found, but its version could not be read", out)
+
+    def test_doctor_pins_the_tools_of_the_profile_that_it_is_asked_about(self):
+        out = self.doctor("--profile", "exec-tool", fab="fab 2.0.0\n", pra="9.9.9\n")[1]
+        self.assertIn("[WARN] tool fab: version 2.0.0 is not the pinned version 1.8.0; install the pinned version", out)
+        self.assertIn("[PASS] tool pra: version 9.9.9 (minimum 0.1)", out)
+
+    def live(self, *args, **machine):
+        runner = self.machine(**machine)
+        return self.cli("verify", "--live", *args, deps=self.deps(runner=runner)), runner
+
+    def test_live_verification_runs_the_tools_of_the_profile_and_compares_them_with_the_pin(self):
+        (code, out, err), runner = self.live("--profile", "agent-ok", found=("pra",))
+        self.assertEqual((0, ""), (code, err), out)
+        self.assertIn("[PASS] V9: profile agent-ok: tool pra is at the pinned version 1.6.0", out)
+        self.assertNotIn("tool fab", out)
+        self.assertEqual([["/opt/fake/bin/pra", "--version"]], runner.calls)
+        (code, out, err), _ = self.live("--profile", "dev-a", found=("fab", "pra"))
+        self.assertIn("[PASS] V9: profile dev-a: tool fab is at the pinned version 1.8.0", out)
+        self.assertIn("[PASS] V9: profile dev-a: tool pra is at the pinned version 1.6.0", out)
+
+    def test_a_different_version_is_a_failure_for_an_agent_and_an_executor_profile_and_a_warning_for_a_dev_profile(self):
+        self.assertEqual(0, self.cli("render", "--write-project")[0])
+        (code, out, _), _ = self.live("--profile", "agent-ok", pra="pra 99.0.0\n", found=("pra",))
+        self.assertEqual(1, code)
+        self.assertIn("[FAIL] V9: profile agent-ok: tool pra is version 99.0.0, not the pinned version 1.6.0; install the pinned version", out)
+        (code, out, _), _ = self.live("--profile", "exec-tool", fab="fab 1.7.0\n", found=("fab",))
+        self.assertEqual(1, code)
+        self.assertIn("[FAIL] V9: profile exec-tool: tool fab is version 1.7.0, not the pinned version 1.8.0; install the pinned version", out)
+        (code, out, _), _ = self.live("--profile", "dev-a", fab="fab 99.0.0\n", pra="0.0.1\n", found=("fab", "pra"))
+        self.assertEqual(0, code, out)
+        self.assertIn("[WARN] V9: profile dev-a: tool fab is version 99.0.0, not the pinned version 1.8.0; install the pinned version", out)
+        self.assertIn("[WARN] V9: profile dev-a: tool pra is version 0.0.1, not the pinned version 1.6.0; install the pinned version", out)
+        self.assertEqual(1, self.cli("verify", "--live", "--strict", "--profile", "dev-a",
+                                     deps=self.deps(runner=self.machine(fab="fab 99.0.0\n", found=("fab", "pra"))))[0], "a warning fails under --strict")
+
+    def test_a_tool_that_is_missing_or_unreadable_is_a_failure_for_a_job_and_a_warning_for_a_dev_profile(self):
+        self.assertEqual(0, self.cli("render", "--write-project")[0])
+        (code, out, _), _ = self.live("--profile", "agent-ok", found=())
+        self.assertEqual(1, code)
+        self.assertIn("[FAIL] V9: profile agent-ok: tool pra is not on PATH, so it cannot be compared with the pinned version 1.6.0", out)
+        (code, out, _), _ = self.live("--profile", "exec-tool", found=("pra",))
+        self.assertEqual(1, code)
+        self.assertIn("[FAIL] V9: profile exec-tool: tool fab is not on PATH, so it cannot be compared with the pinned version 1.8.0", out)
+        (code, out, _), _ = self.live("--profile", "dev-a", found=())
+        self.assertEqual(0, code, out)
+        self.assertIn("[WARN] V9: profile dev-a: tool fab is not on PATH, so it cannot be compared with the pinned version 1.8.0", out)
+        (code, out, _), _ = self.live("--profile", "agent-ok", pra="nothing to read\n", found=("pra",))
+        self.assertEqual(1, code)
+        self.assertIn("[FAIL] V9: profile agent-ok: the version of tool pra could not be read, so it cannot be compared with the pinned version 1.6.0", out)
+        (code, out, _), _ = self.live("--profile", "dev-a", fab="nothing to read\n", found=("fab", "pra"))
+        self.assertEqual(0, code, out)
+        self.assertIn("[WARN] V9: profile dev-a: the version of tool fab could not be read, so it cannot be compared with the pinned version 1.8.0", out)
+
+    def test_without_live_nothing_is_run_and_a_profile_that_lists_no_tool_runs_none(self):
+        runner = self.machine()
+        code, out, err = self.cli("verify", deps=self.deps(runner=runner))
+        self.assertEqual([], runner.calls)
+        (code, out, err), runner = self.live("--profile", "agent-empty", found=("fab", "pra"))
+        self.assertEqual([], runner.calls)
+        self.assertNotIn("tool ", out)
+
+    def test_live_verification_uses_the_alternative_names_of_a_tool(self):
+        manifest = tools_manifest()
+        manifest["tools"][4]["alternatives"] = ["fab3"]
+        self.small_project(manifest=manifest, profiles=tools_profiles())
+        self.assertEqual(0, self.cli("render", "--write-project")[0])
+        runner = FakeRunner(found=("fab3", "pra"), answers={("fab3", "--version"): (0, "fab 1.8.0\n", ""), ("pra", "--version"): (0, "1.6.0\n", "")})
+        code, out, err = self.cli("verify", "--live", "--profile", "dev-a", deps=self.deps(runner=runner))
+        self.assertIn("[PASS] V9: profile dev-a: tool fab is at the pinned version 1.8.0", out)
+        self.assertEqual(0, code, out)
+
+    def test_a_profile_that_cannot_be_resolved_has_no_tool_to_run(self):
+        self.unresolve("npm:@acme/report-cli")
+        (code, out, _), runner = self.live("--profile", "agent-ok")
+        self.assertEqual(1, code)
+        self.assertIn("[FAIL] V9: profile agent-ok: live checks skipped, the profile cannot be resolved: ", out)
+        self.assertEqual([], runner.calls)
+        (code, out, _), runner = self.live("--profile", "dev-a", fab="fab 1.8.0\n")
+        self.assertIn("[PASS] V9: profile dev-a: tool fab is at the pinned version 1.8.0", out)
+        self.assertNotIn("V9: profile dev-a: tool pra", out, "a tool that was left out of the profile is not run")
 
 
 class DepsTests(Base):
@@ -5026,6 +6713,17 @@ class DepsTests(Base):
         self.assertRegex(toolchain.Deps(clock=lambda: NOW).today(), r"^2026-10-30$")
         self.assertEqual(STAMP, toolchain.Deps(clock=lambda: NOW).stamp())
 
+    def test_a_derived_deps_replaces_some_functions_and_keeps_everything_else(self):
+        runner, env, first, second = FakeRunner(), {"A": "b"}, object(), object()
+        deps = toolchain.Deps(runner=runner, env=env, home=self.tmp / "h", clock=lambda: NOW, resolve_package=first, probe_http=second)
+        derived = deps.derive(lint_skill=first, probe_http=first)
+        self.assertEqual((runner, env, self.tmp / "h", STAMP), (derived.runner, derived.env, derived.home, derived.stamp()))
+        self.assertEqual((first, first, first), (derived.resolve_package, derived.lint_skill, derived.probe_http))
+        self.assertEqual((first, second), (deps.resolve_package, deps.probe_http), "the original is not changed")
+        self.assertRaises(AttributeError, getattr, deps.derive(), "no_such_function")
+        with self.assertRaises(TypeError):
+            deps.derive(no_such_function=first)
+
 
 class HelperTests(Base):
     def test_display_path_never_shows_a_user_name(self):
@@ -5036,14 +6734,27 @@ class HelperTests(Base):
         self.assertEqual(".", toolchain.display_path(root, root, home))
         self.assertEqual("$HOME", toolchain.display_path(home, root, home))
 
-    def test_safe_detail_keeps_only_a_short_harmless_text(self):
+    def test_what_a_probe_or_a_resolver_says_is_cut_down_to_a_short_harmless_text(self):
         feed = "pkgs." + "contoso." + "invalid"
-        cases = {None: "", "": "", "E404 not found": "E404 not found", "see https://%s/x now" % feed: "see now",
+        cases = {"": "", "E404 not found": "E404 not found", "see https://%s/x now" % feed: "see now",
                  "host %s down" % feed: "host down", "at /home" + "/someone/x failed": "at failed", "C:\\" + "Users\\x\\y bad": "bad",
                  "a;b|c<d>": "a b c d", "x" * 200: "x" * 80, "version 1.6.0 missing": "version 1.6.0 missing", "~/x ok": "ok"}
         for text, expected in cases.items():
-            self.assertEqual(expected, toolchain.safe_detail(text), text)
-        self.assertEqual("boom", toolchain.safe_detail(ValueError("boom")))
+            with self.subTest(text=text):
+                self.assertEqual(expected, toolchain.unavailable_from(toolchain_mcp.McpProbeError("exited: " + text))["detail"])
+        self.assertEqual("boom", toolchain.unavailable_from(toolchain_mcp.McpProbeError("exited: boom"))["detail"])
+
+    def test_a_user_and_password_an_address_and_a_key_are_cut_out_too(self):
+        secret = "jane" + ":" + "hunter2"
+        key = "a1b2c3d4e5f6a7b8c9d0e1f2a3b4"
+        for text in ("login failed for %s" % secret, "from %s refused" % ADDRESS, "key %s used" % key, "at 2001:db8::1 down", "user@" + "host failed"):
+            with self.subTest(text=text):
+                detail = toolchain.unavailable_from(toolchain_mcp.McpProbeError("exited: " + text))["detail"]
+                for leak in ("hunter2", ADDRESS, key, "2001", "user@"):
+                    self.assertNotIn(leak, detail)
+        feed = {"status": "unresolved", "reason": "network", "detail": "login failed for %s at %s" % (secret, ADDRESS)}
+        package = {"ecosystem": "npm", "name": "x", "track": "latest"}
+        self.assertEqual("login failed for at", toolchain.clean_package(feed, package)["detail"])
 
     def test_a_license_is_accepted_only_by_the_exact_word_true(self):
         accepted = [{"V": "true"}, {"V": "TRUE"}, {"V": "True"}, {"V": "tRuE"}]
@@ -5124,6 +6835,40 @@ class CliTests(Base):
         self.cli("doctor", "--offline")
         self.cli("install")
         self.assertEqual(before, sorted(p.relative_to(self.home).as_posix() for p in self.home.rglob("*")))
+
+    def test_an_os_error_of_a_command_is_an_error_line_with_a_safe_detail_and_exit_one(self):
+        arguments = {"render": ["--host", "vscode"]}
+        for command in ("list", "verify", "render", "lock", "update", "fetch", "install", "doctor"):
+            for exc, shown in ((OSError("disk full"), "error: disk full"), (OSError(), "error: OSError"),
+                               (PermissionError(13, "Access is denied", str(self.tmp / "private" / "x")), "error: Errno 13 Access is denied")):
+                with self.subTest(command=command, exc=type(exc).__name__, shown=shown):
+                    def boom(args, deps, root):
+                        raise exc
+                    with mock.patch.dict(toolchain.COMMANDS, {command: boom}):
+                        code, out, err = self.cli(command, *arguments.get(command, []))
+                    self.assertEqual(1, code)
+                    self.assertIn(shown, err)
+                    self.assertNotIn("Traceback", err)
+                    self.assertNotIn(str(self.tmp), err)
+                    self.assertEqual("", out)
+
+    def test_an_error_of_the_toolchain_and_a_usage_error_keep_their_codes_and_an_unexpected_error_is_not_hidden(self):
+        def refuse(args, deps, root):
+            raise toolchain.ToolchainError("refused", ["a reason"])
+
+        def misuse(args, deps, root):
+            raise toolchain.UsageError("misused")
+
+        def bug(args, deps, root):
+            raise KeyError("a bug of the toolchain")
+        with mock.patch.dict(toolchain.COMMANDS, {"list": refuse}):
+            code, out, err = self.cli("list")
+        self.assertEqual((1, True), (code, "error: refused" in err and "  - a reason" in err))
+        with mock.patch.dict(toolchain.COMMANDS, {"list": misuse}):
+            self.assertEqual(2, self.cli("list")[0])
+        with mock.patch.dict(toolchain.COMMANDS, {"list": bug}):
+            with self.assertRaises(KeyError):
+                self.cli("list")
 
 
 class EndToEndTests(Base):

@@ -43,7 +43,7 @@ class ValidatorTests(unittest.TestCase):
             # What the toolchain generates for a machine (all ignored by Git) is not part of the project that these tests copy.
             skipped = {n for n in names if n in ("__pycache__", "private", ".pytest_cache", ".factory", ".claude", ".mcp.json")}
             if Path(folder) == PROJECT / ".github":
-                skipped.add("skills")
+                skipped.update(("skills", "common"))
             return skipped
         shutil.copytree(PROJECT, self.root, ignore=skip)
 
@@ -639,6 +639,71 @@ class ValidatorTests(unittest.TestCase):
         (nested / ".gitignore").write_bytes(b"[ab]*\n")
         self.assertFalse(self.validate().has("ERROR", "gitignore"))
 
+    GENERATED = (".github/skills/a-skill/SKILL.md", ".github/common/COMMON-CLI.md", ".claude/skills/a-skill/SKILL.md",
+                 ".claude/common/COMMON-CLI.md", ".factory/pack/common/NOTE.md", ".factory/pack/skills/a-skill/SKILL.md")
+
+    def seed_generated(self):
+        """What `toolchain.py install` and `fetch` put into the project: upstream text that Git ignores and that would be errors in a document."""
+        for rel in self.GENERATED:
+            path = self.root / rel
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text("# Note\n\nDone \u2705 and a [broken link](../../missing/target.md).\n", encoding="utf-8")
+        (self.root / ".github" / "skills" / "a-skill" / ".gitignore").write_text("*.tmp\n", encoding="utf-8")
+        (self.root / ".factory" / "pack" / "skills" / "a-skill" / ".gitignore").write_text("*.tmp\n", encoding="utf-8")
+
+    def test_what_the_toolchain_installs_for_a_machine_is_not_read_as_a_document(self):
+        # After `install --apply` the project holds thousands of upstream files that Git ignores. The validator must read what
+        # would be published and nothing else, or a maintainer who has installed the skills can no longer validate or publish.
+        self.seed_generated()
+        report = self.validate()
+        self.assertEqual([], report.findings, report.render(quiet=True))
+
+    def test_the_same_text_in_a_file_that_would_be_published_is_still_refused(self):
+        # The exemption is the ignore rules and nothing broader: the text above is an error in any file that Git would add.
+        self.seed_generated()
+        path = self.root / "docs" / "reviews" / "installed-copy.md"
+        path.write_text((self.root / ".github" / "common" / "COMMON-CLI.md").read_text(encoding="utf-8"), encoding="utf-8")
+        report = self.validate()
+        self.assert_flagged(report, "hygiene")
+        self.assert_flagged(report, "link")
+
+    def test_an_ignored_folder_that_is_itself_a_link_is_not_flagged(self):
+        # A rule that ends in a slash matches folders only, so the folder has to be tried as a folder, through a name inside it.
+        outside = Path(self.tmp.name) / "outside"
+        outside.mkdir()
+        link = self.root / ".factory"
+        if link.exists():
+            shutil.rmtree(link)
+        if sys.platform == "win32":
+            made = subprocess.run(["cmd", "/c", "mklink", "/J", str(link), str(outside)], capture_output=True, encoding="utf-8", errors="replace")
+            if made.returncode != 0:
+                self.skipTest("could not create a junction: " + made.stdout.strip()[:80])
+            self.addCleanup(lambda: os.path.lexists(link) and os.rmdir(link))
+        else:
+            try:
+                os.symlink(outside, link, target_is_directory=True)
+            except (OSError, NotImplementedError):
+                self.skipTest("symbolic links are not available here")
+            self.addCleanup(lambda: os.path.lexists(link) and os.unlink(link))
+        self.assertEqual([], [f for f in self.validate().findings if f[1] == "link"])
+
+    @unittest.skipUnless(sys.platform == "win32", "junctions exist only on Windows")
+    def test_a_junction_in_generated_material_is_not_flagged_and_one_elsewhere_is(self):
+        outside = Path(self.tmp.name) / "outside"
+        outside.mkdir()
+        (self.root / ".factory").mkdir(exist_ok=True)
+        ignored = self.root / ".factory" / "pack-link"
+        made = subprocess.run(["cmd", "/c", "mklink", "/J", str(ignored), str(outside)], capture_output=True, encoding="utf-8", errors="replace")
+        if made.returncode != 0:
+            self.skipTest("could not create a junction: " + made.stdout.strip()[:80])
+        self.addCleanup(lambda: os.path.lexists(ignored) and os.rmdir(ignored))
+        self.assertEqual(0, len([f for f in self.validate().findings if f[1] == "link"]))
+        published = self.root / "docs" / "junction-elsewhere"
+        made = subprocess.run(["cmd", "/c", "mklink", "/J", str(published), str(outside)], capture_output=True, encoding="utf-8", errors="replace")
+        self.assertEqual(0, made.returncode, made.stdout)
+        self.addCleanup(lambda: os.path.lexists(published) and os.rmdir(published))
+        self.assert_flagged(self.validate(), "link")
+
 
 class CharacterTests(unittest.TestCase):
     """Which characters a document may hold, judged on the functions themselves."""
@@ -766,6 +831,16 @@ class IgnoreFileTests(unittest.TestCase):
     def test_a_nested_ignore_file_in_a_skipped_folder_is_not_a_problem(self):
         folder = self.project(b"", ["private/clone/.gitignore", "scripts/__pycache__/.gitignore"])
         self.assertEqual([], validate_docs.ignore_rules(folder))
+
+    def test_a_nested_ignore_file_inside_a_folder_that_the_rules_ignore_is_not_a_problem(self):
+        # Git does not read an ignore file inside a folder that is ignored as a whole, such as the folders that `install` generates.
+        folder = self.project(b".factory/\n.github/skills/\n", [".factory/pack/skills/x/.gitignore", ".github/skills/x/.gitignore"])
+        self.assertEqual(2, len(validate_docs.ignore_rules(folder)))
+
+    def test_a_nested_ignore_file_next_to_an_ignored_folder_is_still_refused(self):
+        for rel in (".github/.gitignore", ".github/other/.gitignore", ".factory-notes/.gitignore"):
+            with self.subTest(rel), self.assertRaises(validate_docs.UnsupportedIgnore):
+                validate_docs.ignore_rules(self.project(b".factory/\n.github/skills/\n", [rel]))
 
     def test_a_nested_ignore_file_elsewhere_is_still_refused(self):
         for rel in ("docs/.gitignore", "docs/research/other/.gitignore", "docs/research/local-notes/.gitignore"):

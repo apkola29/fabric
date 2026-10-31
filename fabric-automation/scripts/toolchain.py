@@ -91,7 +91,10 @@ BRANCH_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._/-]*")
 HEADER_NAME_RE = re.compile(r"[A-Za-z0-9-]+")
 DETAIL_RE = re.compile(r"[A-Za-z0-9 ._:=/-]{0,80}")
 SERVER_NAME_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9 ._-]{0,63}")
-SERVER_VERSION_RE = re.compile(r"[0-9A-Za-z][0-9A-Za-z.+_~-]{0,63}")
+# What a server calls its version: a digit first (after an optional v), at most 64 characters, and no run of two or more dotted
+# alphabetic labels, which would be a host name. "unknown" stands for what a probe said that is not plain.
+SERVER_VERSION_RE = re.compile(r"unknown|(?=.{1,64}\Z)(?!.*[A-Za-z]{2,}(?:\.[A-Za-z]{2,})+)v?[0-9][0-9A-Za-z.+_~-]*")
+TOOL_NAME_RE = re.compile(r"[A-Za-z0-9_.-]{1,128}")
 NPM_INTEGRITY_RE = re.compile(r"sha512-[A-Za-z0-9+/]{16,}={0,2}")
 NUGET_INTEGRITY_RE = re.compile(r"sha256-[A-Za-z0-9+/]{16,}={0,2}")
 HEX64_RE = re.compile(r"[0-9a-f]{64}")
@@ -100,7 +103,6 @@ INTEGRITY_FORM = {"npm": NPM_INTEGRITY_RE, "pypi": HEX64_RE, "nuget": NUGET_INTE
 INTEGRITY_WORDS = {"npm": "a sha512 integrity string", "pypi": "64 lower-case hex digits or null", "nuget": "a sha256 integrity string or null"}
 PACKAGE_REASONS = ("network", "unresolved")
 CONTROL_RE = re.compile(r"[\x00-\x1f\x7f]")
-HOSTLIKE_RE = re.compile(r"(?i)\b(?:[a-z0-9-]+\.){2,}[a-z][a-z-]+\b")
 SECRET_HEADERS = {"authorization", "proxy-authorization", "cookie", "set-cookie", "x-api-key", "api-key",
                   "ocp-apim-subscription-key", "x-functions-key"}
 
@@ -183,7 +185,7 @@ def write_atomic(path, text):
     try:
         with os.fdopen(handle, "w", encoding="utf-8", newline="\n") as out:
             out.write(text)
-        os.replace(temp, path)
+        toolchain_io.replace_retrying(temp, path)
     except BaseException:
         try:
             os.unlink(temp)
@@ -204,11 +206,12 @@ def write_stdout(text):
 
 
 def remove_tree(path):
+    """Remove a folder, also one with read-only files, and wait for what Windows refuses to delete for a moment."""
     def retry(function, target, _info):
         os.chmod(target, stat.S_IWRITE)
         function(target)
 
-    shutil.rmtree(path, onerror=retry)
+    toolchain_io.retrying(lambda: shutil.rmtree(path, onerror=retry))
 
 
 def display_path(path, root, home):
@@ -225,14 +228,6 @@ def display_path(path, root, home):
 
 def expand_home(value, home):
     return value.replace("$HOME", str(home), 1) if value.startswith("$HOME/") else value
-
-
-def safe_detail(text):
-    """At most 80 characters from [A-Za-z0-9 ._:=/-]. Host names and every word that holds a slash (URLs, paths) are taken out."""
-    text = HOSTLIKE_RE.sub(" ", str(text or ""))
-    text = re.sub(r"[^A-Za-z0-9 ._:=/\\~-]", " ", text)
-    words = [w for w in text.split() if "/" not in w and "\\" not in w and not w.startswith("~")]
-    return " ".join(words)[:80].strip()
 
 
 def license_accepted(env, name):
@@ -275,6 +270,10 @@ class Deps:
 
     def stamp(self):
         return self.clock().astimezone(datetime.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+
+    def derive(self, **functions):
+        """The same outside world with some of its functions replaced."""
+        return Deps(runner=self._runner, env=self.env, home=self._home, clock=self.clock, **dict(self._functions, **functions))
 
     def __getattr__(self, name):
         functions = self.__dict__.get("_functions", {})
@@ -321,6 +320,18 @@ def _text(value, where, out, pattern=None, limit=2000):
 def _enum(value, where, out, vocabulary):
     if not isinstance(value, str) or value not in vocabulary:
         out.append("%s: '%s' is not one of: %s" % (where, _shown(value), ", ".join(vocabulary)))
+        return False
+    return True
+
+
+def _date(value, where, out):
+    """A YYYY-MM-DD text that names a real day."""
+    if not _text(value, where, out, DATE_RE):
+        return False
+    try:
+        datetime.date.fromisoformat(value)
+    except ValueError:
+        out.append("%s: '%s' is not a real date" % (where, _shown(value)))
         return False
     return True
 
@@ -412,8 +423,8 @@ def _url_list(value, where, out):
 def _detail(value, where, out):
     if not isinstance(value, str) or not DETAIL_RE.fullmatch(value):
         out.append("%s: must be at most 80 characters from [A-Za-z0-9 ._:=/-]" % where)
-    elif "://" in value or HOSTLIKE_RE.search(value):
-        out.append("%s: must not hold a URL or a host name" % where)
+    elif toolchain_io.safe_detail(value) != " ".join(value.split()):  # a text that the shared filter would have cut something out of
+        out.append("%s: must not hold a URL or a host name, a path, an address or a secret" % where)
 
 
 def _check_modes(modes, out):
@@ -807,12 +818,14 @@ def validate_profiles(data):
         where = "profiles.%s" % name
         if not ID_RE.fullmatch(name):
             out.append("profiles: '%s' is not a valid profile name" % _shown(name))
-        if not _keys(profile, where, out, ("mode", "skills", "mcp", "instructions"), ("title", "design", "summary")):
+        if not _keys(profile, where, out, ("mode", "skills", "mcp", "instructions"), ("title", "design", "summary", "tools")):
             continue
         _enum(profile.get("mode"), where + ".mode", out, MODES)
         for key in ("title", "design", "summary"):
             if key in profile:
                 _text(profile[key], "%s.%s" % (where, key), out)
+        if "tools" in profile:
+            _text_list(profile["tools"], where + ".tools", out, ID_RE)
         if _list(profile.get("skills"), where + ".skills", out):
             for index, selector in enumerate(profile["skills"]):
                 sw = "%s.skills[%d]" % (where, index)
@@ -853,7 +866,9 @@ def _check_tools_map(tools, where, out):
         out.append("%s: must be an object" % where)
         return
     for name, tool in tools.items():
-        _check_tool_entry(tool, "%s.%s" % (where, name), out)
+        if not isinstance(name, str) or not TOOL_NAME_RE.fullmatch(name):
+            out.append("%s: '%s' is not a valid tool name" % (where, _shown(name)))
+        _check_tool_entry(tool, "%s.%s" % (where, _shown(name)), out)
 
 
 def _check_contract(contract, where, out):
@@ -864,13 +879,15 @@ def _check_contract(contract, where, out):
     if not _enum(status, where + ".status", out, CONTRACT_STATUSES):
         return
     if status == "captured":
-        if _keys(contract, where, out, ("status", "era", "protocol", "server", "package_version", "tools")):
+        if _keys(contract, where, out, ("status", "era", "protocol", "server", "package_version", "launch", "captured", "tools")):
             _enum(contract.get("era"), where + ".era", out, ("legacy", "modern"))
-            _text(contract.get("protocol"), where + ".protocol", out, limit=40)
+            _text(contract.get("protocol"), where + ".protocol", out, DATE_RE)
             if _keys(contract.get("server"), where + ".server", out, ("name", "version")):
                 _text(contract["server"].get("name"), where + ".server.name", out, SERVER_NAME_RE)
                 _text(contract["server"].get("version"), where + ".server.version", out, SERVER_VERSION_RE)
             _text(contract.get("package_version"), where + ".package_version", out, LOCK_VERSION_RE)
+            _text(contract.get("launch"), where + ".launch", out, SHA256_RE)
+            _date(contract.get("captured"), where + ".captured", out)
             _check_tools_map(contract.get("tools"), where + ".tools", out)
     elif status == "needs-sign-in":
         _keys(contract, where, out, ("status",))
@@ -1137,6 +1154,23 @@ def server_launch(manifest, lock, server_id, variant):
             "env": env, "url": None, "headers": {}}
 
 
+def launch_digest(launch):
+    """The digest of how a stdio variant starts: its command, its arguments (with the exact package version) and its declared environment.
+
+    A captured contract carries it, so that it describes the server as it was launched when it was captured and nothing else."""
+    body = {"command": launch["command"], "args": launch["args"], "env": launch["env"]}
+    return digest_text(json.dumps(body, sort_keys=True, separators=(",", ":"), ensure_ascii=True))
+
+
+def current_launch(manifest, packages, server_id, variant):
+    """launch_digest of a stdio variant under the given locked packages, or None when there is no launch to compare (a hosted server, a package that cannot be pinned)."""
+    try:
+        launch = server_launch(manifest, {"packages": packages}, server_id, variant)
+    except ToolchainError:
+        return None
+    return launch_digest(launch) if launch["transport"] == "stdio" else None
+
+
 # ---------------------------------------------------------------- the rules of the modes
 
 def mode_violations(mode, mode_def, server_id, variant_name, variant):
@@ -1264,6 +1298,12 @@ def profile_problems(manifest, profiles, lock, name, base=None, instructions=Tru
             problems.append("server '%s' has no variant '%s'" % (entry["server"], entry["variant"]))
         elif mode_def is not None:
             problems.extend(mode_violations(profile["mode"], mode_def, entry["server"], entry["variant"], variant))
+    tools = {tool["id"]: tool for tool in manifest.get("tools", [])}
+    for tool_id in profile.get("tools", []):
+        if tool_id not in tools:
+            problems.append("tool %s is not a tool of the manifest" % tool_id)
+        elif "package" not in tools[tool_id]:
+            problems.append("tool %s has no package, so it cannot be pinned" % tool_id)
     entries, skill_problems = select_skills(manifest, lock, profile)
     problems.extend(skill_problems)
     if lock is not None:
@@ -1304,7 +1344,8 @@ def bundled_names(lock):
 
 
 def profile_findings(manifest, profiles, lock, name, base=None):
-    """[(level, check, message)] for one profile: V2 rules, V3 packages and contracts, V4 launch lines, V6 files, V8 skill findings, V12 names."""
+    """[(level, check, message)] for one profile: V2 rules, V3 packages (of its servers and its tools) and contracts, V4 launch lines, V6 files,
+    V8 skill findings, V10 and V11 contracts of the variants it uses, V12 names, V13 read-only promises."""
     profile = profiles["profiles"][name]
     mode = profile["mode"]
     base = base if base is not None else getattr(profiles, "base", None)
@@ -1324,9 +1365,14 @@ def profile_findings(manifest, profiles, lock, name, base=None):
         if clash:
             out.append(("FAIL", "V12", "server %s has the name of an MCP server that the plugin %s bundles, and a host lets the plugin's "
                                        "server replace a project server of the same name (rename it in toolchain.json)" % (item["server"], clash)))
+        if mode != "dev" and server["transport"] == "stdio" and server["launch"]["command"] not in OFFLINE_LAUNCHERS:
+            out.append(("FAIL", "V4", "server %s launches through %s, which has no offline form; agent and executor profiles may launch only through %s"
+                                      % (item["server"], _shown(server["launch"]["command"]), " or ".join(OFFLINE_LAUNCHERS))))
         contract = (lock.get("contracts") or {}).get(label) or {}
         if mode != "dev" and server["transport"] == "stdio" and contract and contract.get("status") != "captured":
             out.append(("WARN", "V10", "contract %s is %s: a change of its tools cannot be noticed before a job starts" % (label, contract.get("status"))))
+        if contract.get("status") == "captured" and not contract.get("tools"):
+            out.append(("FAIL", "V11", "contract %s is captured but lists no tool" % label))
         if server["variants"][item["variant"]].get("tools_read_only") is True and contract.get("status") == "captured":
             loud = sorted(t for t, info in contract["tools"].items() if info.get("read_only") is not True)
             if loud:
@@ -1346,9 +1392,28 @@ def profile_findings(manifest, profiles, lock, name, base=None):
                         "server %s: package %s is unresolved in the lock (%s)" % (item["server"], key, entry.get("reason"))))
         else:
             try:
-                server_launch(manifest, lock, item["server"], item["variant"])
+                launch = server_launch(manifest, lock, item["server"], item["variant"])
             except ToolchainError as exc:
                 out.append(("FAIL", "V4", "server %s: %s" % (label, exc)))
+            else:
+                if contract.get("status") == "captured" and contract.get("launch") != launch_digest(launch):
+                    out.append(("FAIL", "V10", "contract %s was captured for another launch; capture it again (python scripts/toolchain.py lock --contracts)" % label))
+    tools = {tool["id"]: tool for tool in manifest.get("tools", [])}
+    for tool_id in profile.get("tools", []):
+        tool = tools.get(tool_id)
+        if tool is None or "package" not in tool:
+            continue  # profile_problems names it
+        key = package_key(tool["package"])
+        entry = (lock.get("packages") or {}).get(key)
+        if entry is None:
+            out.append(("FAIL", "V3", "package %s is not in the lock (tool %s)" % (key, tool_id)))
+        elif entry.get("status") != "resolved":
+            out.append(("WARN" if mode == "dev" else "FAIL", "V3", "package %s is unresolved in the lock (tool %s)" % (key, tool_id)))
+        else:
+            try:
+                package_spec(tool["package"], lock)
+            except ToolchainError as exc:
+                out.append(("FAIL", "V4", "tool %s: %s" % (tool_id, exc)))
     for entry in select_skills(manifest, lock, profile)[0]:
         locked = lock["skill_sources"][entry["source"]]["plugins"][entry["plugin"]]["skills"][entry["name"]]
         label = "%s/%s/%s" % (entry["source"], entry["plugin"], entry["name"])
@@ -1359,19 +1424,34 @@ def profile_findings(manifest, profiles, lock, name, base=None):
     return out
 
 
+def repo_skill_findings(folders, deps):
+    """[(skill name, finding)]: what the linter says about each repo-owned skill folder ({name: folder}). We own their text, so a finding fails in every mode."""
+    return [(name, finding) for name, folder in folders.items() for finding in deps.lint_skill(folder).get("findings") or ()]
+
+
 def resolve_profile(manifest, profiles, lock, name, base=None, deps=None):
     """Everything a host or a loader needs for one profile. Raises ToolchainError for every failure that `verify` reports for it.
 
-    In dev mode a server whose package is unresolved is a warning in verify, so it is left out of the result and named in `omitted`:
-    an unpinned launch is never rendered."""
+    That includes the lint findings of the repo-owned skills that the profile loads. In dev mode a server whose package is
+    unresolved is a warning in verify, so it is left out of the result and named in `omitted`: an unpinned launch is never rendered."""
     if name not in profiles["profiles"]:
         raise UsageError("profile '%s' does not exist" % name)
     if lock is None:
         raise ToolchainError("there is no lock (%s)" % LOCK_HINT)
+    deps = deps or Deps()
+    profile = profiles["profiles"][name]
+    base = base if base is not None else getattr(profiles, "base", None)
+    folder = Path(base) if base is not None else DEFAULT_ROOT / "toolchain"
     failures = [message for level, _check, message in profile_findings(manifest, profiles, lock, name, base) if level == "FAIL"]
+    owned = {}
+    if profile["skills"] or profile["mcp"]:
+        try:
+            owned = repo_skill_folders(folder)
+        except ToolchainError as exc:
+            failures.extend(m for m in exc.problems if m not in failures)
+    failures.extend("repo-owned skill %s: %s" % pair for pair in repo_skill_findings(owned, deps))
     if failures:
         raise ToolchainError("profile %s does not verify" % name, ["profile %s: %s" % (name, m) for m in failures])
-    profile = profiles["profiles"][name]
     entries = select_skills(manifest, lock, profile)[0]
     skills, seen = [], set()
     for entry in entries:
@@ -1390,23 +1470,34 @@ def resolve_profile(manifest, profiles, lock, name, base=None, deps=None):
         package = package_info(server["package"], lock) if "package" in server else None
         contract = copy.deepcopy((lock.get("contracts") or {}).get("%s/%s" % (item["server"], item["variant"])))
         mcp.append({"id": item["server"], "variant": item["variant"], **launch, "package": package, "contract": contract})
-    base = base if base is not None else getattr(profiles, "base", None)
-    folder = Path(base) if base is not None else DEFAULT_ROOT / "toolchain"
+    declared = {tool["id"]: tool for tool in manifest.get("tools", [])}
+    tools = []
+    for tool_id in profile.get("tools", []):
+        tool = declared[tool_id]
+        if ((lock.get("packages") or {}).get(package_key(tool["package"])) or {}).get("status") != "resolved":
+            omitted.append({"tool": tool_id, "reason": "its package is unresolved in the lock"})
+            continue
+        tools.append({"id": tool_id, "command": tool["command"], **package_info(tool["package"], lock)})
     repo = []
-    if profile["skills"] or profile["mcp"]:
-        measure = (deps or Deps()).digest_tree
-        for repo_name, repo_folder in repo_skill_folders(folder).items():
-            measured = measure(repo_folder)
-            repo.append({"name": repo_name, "path": "toolchain/skills/" + repo_name, "digest": measured["digest"],
-                         "files": measured["files"], "bytes": measured["bytes"]})
+    for repo_name, repo_folder in owned.items():
+        measured = deps.digest_tree(repo_folder)
+        repo.append({"name": repo_name, "path": "toolchain/skills/" + repo_name, "digest": measured["digest"],
+                     "files": measured["files"], "bytes": measured["bytes"]})
     instructions = []
     for rel in profile["instructions"]:
         instructions.append({"path": rel, "digest": digest_text(read_text_lf(folder / rel, rel))})
-    return {"name": name, "mode": profile["mode"], "skills": skills, "shared": shared, "repo_skills": repo, "mcp": mcp, "omitted": omitted,
+    return {"name": name, "mode": profile["mode"], "skills": skills, "shared": shared, "repo_skills": repo, "mcp": mcp, "tools": tools, "omitted": omitted,
             "instructions": instructions, "lock": lock_digest(lock)}
 
 
 # ---------------------------------------------------------------- renderings
+
+def omitted_note(item):
+    """The note for a server or a tool that a dev profile leaves out, because its package is unresolved in the lock."""
+    if "tool" in item:
+        return "note: tool %s is left out: %s" % (item["tool"], item["reason"])
+    return "note: server %s is not rendered: %s" % (item["server"], item["reason"])
+
 
 def _env_value(host, spec):
     if host == "vscode":
@@ -1443,20 +1534,30 @@ def _load_plan(resolved):
         "repo_skills": [{"name": r["name"], "path": r["path"], "digest": r["digest"], "files": r["files"], "bytes": r["bytes"]}
                         for r in resolved["repo_skills"]],
         "mcp": [_plan_server(m, resolved["mode"]) for m in resolved["mcp"]],
+        "tools": [_plan_tool(t, resolved["mode"]) for t in resolved["tools"]],
         "instructions": [dict(i) for i in resolved["instructions"]],
     }
+
+
+def _plan_tool(t, mode):
+    """One pinned command-line tool of a load plan. A job installs the pinned version before it starts; a developer's machine fetches it when needed."""
+    entry = {"id": t["id"], "command": t["command"], "ecosystem": t["ecosystem"], "package": t["name"], "version": t["version"]}
+    entry.update({key: t[key] for key in ("integrity", "sha256") if key in t})
+    entry["provisioning"] = "on-demand" if mode == "dev" else "preinstalled"
+    return entry
 
 
 def _plan_server(m, mode):
     """One server of a load plan. A job (any mode but dev) must not download at launch: the launcher is told to use what is on disk."""
     args = list(m["args"])
-    if m["package"] is not None and mode != "dev" and m["command"] in OFFLINE_LAUNCHERS and args[:1] != ["--offline"]:
+    offline = m["package"] is not None and mode != "dev" and m["command"] in OFFLINE_LAUNCHERS
+    if offline and args[:1] != ["--offline"]:
         args.insert(0, "--offline")
     entry = {"id": m["id"], "variant": m["variant"], "transport": m["transport"], "command": m["command"], "args": args,
              "env": [{"name": n, "from_env": spec["from_env"], "default": spec.get("default")} for n, spec in m["env"].items()],
              "url": m["url"], "headers": dict(m["headers"]), "package": m["package"]}
     if m["package"] is not None:
-        entry["provisioning"] = "on-demand" if mode == "dev" else "preinstalled"
+        entry["provisioning"] = "preinstalled" if offline else "on-demand"  # preinstalled is claimed only where the launcher was told to stay offline
     entry["contract"] = m["contract"]
     return entry
 
@@ -1480,6 +1581,7 @@ def render(host, resolved):
 # ---------------------------------------------------------------- the lock: resolve, merge, compare
 
 PROBE_TIMEOUT = 120
+BOUND_VARIABLES = ("npm_config_before", "uv_exclude_newer")  # how npm and uv are told not to take a version that is newer than a date
 SKILL_KEYS = ("path", "digest", "files", "bytes", "description_chars", "install_hints", "findings")
 TOOL_KEYS = ("schema", "read_only", "destructive", "idempotent")
 
@@ -1515,7 +1617,7 @@ def clean_package(result, package):
         return {"status": "unresolved", "reason": "unresolved", "detail": "unexpected version"}
     reason = result.get("reason") if isinstance(result, dict) else None
     detail = result.get("detail") if isinstance(result, dict) else ""
-    return {"status": "unresolved", "reason": reason if reason in PACKAGE_REASONS else "unresolved", "detail": safe_detail(detail)}
+    return {"status": "unresolved", "reason": reason if reason in PACKAGE_REASONS else "unresolved", "detail": toolchain_io.safe_detail(detail)}
 
 
 def plugin_entry(plugin, info):
@@ -1599,13 +1701,16 @@ def resolve_source(source, deps, store):
 
 
 def probe_environment(spec, base, eula, license_envs=()):
-    """The environment of a probe: the operator's own, plus the declared defaults.
+    """The variables that a probe declares to the server it starts: the ones the variant names, each from the operator's environment
+    or else its default, and the license variable of this server when the operator set it.
 
+    Nothing else of the operator's environment is in it. The probe adds the few variables that every process needs and the registry
+    settings (toolchain_mcp.capture_env), and a token or a password of the operator's shell never reaches a server.
     The kit never sets a license variable. It is handed on only to the server that declares it, and only when the operator set it."""
     own = eula["env"] if eula else None
-    env = {k: v for k, v in dict(base).items() if k == own or k not in license_envs}
+    env = {own: base[own]} if own is not None and own in base else {}
     for name, item in spec.items():
-        if name == own:
+        if name == own or name in license_envs:
             continue
         value = base.get(item["from_env"], item.get("default"))
         if value is not None:
@@ -1652,6 +1757,8 @@ def capture_contract(manifest, packages, server, variant, deps):
         "server": {"name": _server_label((probe.get("server") or {}).get("name"), SERVER_NAME_RE),
                    "version": _server_label((probe.get("server") or {}).get("version"), SERVER_VERSION_RE)},
         "package_version": packages[package_key(server["package"])]["version"],
+        "launch": launch_digest(launch),
+        "captured": deps.today(),
         "tools": {name: {key: tool.get(key) for key in TOOL_KEYS} for name, tool in sorted((probe.get("tools") or {}).items())},
     }
     problems = []
@@ -1661,27 +1768,53 @@ def capture_contract(manifest, packages, server, variant, deps):
     return contract
 
 
+def bounded_environment(env, captured):
+    """`env` with the resolution of dependencies bounded by the day of the capture: npm and uv refuse a version published after the bound.
+
+    The bound is midnight, UTC, at the start of the day after `captured`, so everything that existed on the day of the capture is allowed.
+    An entry of the operator's environment under either name, in any case, gives way to it."""
+    bound = (datetime.date.fromisoformat(captured) + datetime.timedelta(days=1)).isoformat() + "T00:00:00Z"
+    bounded = {name: value for name, value in env.items() if name.lower() not in BOUND_VARIABLES}
+    bounded.update({"npm_config_before": bound, "UV_EXCLUDE_NEWER": bound})
+    return bounded
+
+
 def unavailable_from(error):
     """An unavailable contract from a probe error: the reason code comes first in the message, the rest is sanitised."""
     message = str(error)
     match = re.match(r"[a-z-]+", message)
     reason = match.group(0) if match and match.group(0) in REASONS else "protocol-error"
     rest = message[len(match.group(0)):].lstrip(" :-") if match else ""
-    return {"status": "unavailable", "reason": reason, "detail": safe_detail(rest)}
+    return {"status": "unavailable", "reason": reason, "detail": toolchain_io.safe_detail(rest)}
 
 
-def merge_contract(old, new, version):
-    """Keep what was captured unless the package changed. `new` is None when no capture was attempted."""
+def merge_contract(old, new, version, launch=None):
+    """Keep what was captured unless the package or the way it is launched changed. `new` is None when no capture was attempted.
+
+    `launch` is the digest of how the variant launches now; a captured contract that was bound to another launch describes another server.
+    A contract that is captured again with nothing else changed keeps the date of its first capture, so the lock stays as it was."""
     status = old.get("status") if isinstance(old, dict) else None
     if new is not None and new["status"] == "captured":
+        if status == "captured" and without_date(old) == without_date(new):
+            return old
         return new
-    if status == "captured" and version is not None and old.get("package_version") == version:
+    if status == "captured" and version is not None and old.get("package_version") == version and launch is not None and old.get("launch") == launch:
         return old
     if new is not None:
         return old if status in ("needs-sign-in", "open") and new["status"] == "unavailable" else new
     if status == "captured":
-        return skipped("package version changed")
+        return skipped("package version changed" if old.get("package_version") != version else "launch changed")
     return old if status is not None else skipped("contracts not captured")
+
+
+def without_date(contract):
+    return {key: value for key, value in contract.items() if key != "captured"}
+
+
+def launch_changed(old, merged, version, launch):
+    """Whether `merge_contract` let go of a captured contract of the same package version because the variant launches differently now."""
+    return (isinstance(old, dict) and old.get("status") == "captured" and merged.get("status") != "captured" and version is not None
+            and old.get("package_version") == version and launch is not None and old.get("launch") != launch)
 
 
 def strip_generated(lock):
@@ -1689,17 +1822,26 @@ def strip_generated(lock):
 
 
 def refresh_digest(manifest, old, deps):
-    """`lock --no-network`: the old lock with the digest of the edited manifest, and nothing else changed.
+    """`lock --no-network`: (lock, notes). The old lock with the digest of the edited manifest and nothing else changed, except that a
+    captured contract is dropped when its variant launches differently now.
 
-    That is only honest when the lock still agrees with the manifest about where the skills come from."""
+    That is only honest when the lock still agrees with the manifest about where the skills come from, and a captured contract
+    stays only while its variant launches the way it did when the contract was captured."""
     missing, differs = lock_source_problems(manifest, old)
     if missing or differs:
         raise ToolchainError("a changed source or plugin path needs a lock with the network",
                              ["the lock has no entry for %s" % m for m in missing] + differs)
     lock = copy.deepcopy(dict(old))
     lock["inputs_digest"] = inputs_digest(manifest)
+    notes = []
+    for key, contract in lock["contracts"].items():
+        sid, _, variant = key.partition("/")
+        launch = current_launch(manifest, lock["packages"], sid, variant)
+        if contract.get("status") == "captured" and launch is not None and contract.get("launch") != launch:
+            lock["contracts"][key] = skipped("launch changed")
+            notes.append("dropped the captured contract of %s: its launch changed" % key)
     lock["generated"] = deps.today() if strip_generated(lock) != strip_generated(old) else old["generated"]
-    return Lock(lock)
+    return Lock(lock), notes
 
 
 def build_lock(manifest, profiles, old, deps, store, contracts=False, only=None):
@@ -1737,7 +1879,7 @@ def build_lock(manifest, profiles, old, deps, store, contracts=False, only=None)
         try:
             sources[sid] = resolve_source(source, deps, store)
         except toolchain_sources.SourceError as exc:
-            failures.append("skill source %s: %s" % (sid, safe_detail(exc) or "could not be resolved"))
+            failures.append("skill source %s: %s" % (sid, toolchain_io.safe_detail(exc) or "could not be resolved"))
         except ToolchainError as exc:
             failures.append("skill source %s: %s" % (sid, exc))
 
@@ -1769,9 +1911,13 @@ def build_lock(manifest, profiles, old, deps, store, contracts=False, only=None)
         version = packages[pkg_key].get("version") if pkg_key else None
         in_scope = contracts and (not only or pkg_key in only_packages)
         new = capture_contract(manifest, packages, server, variant, deps) if in_scope else None
-        merged[key] = merge_contract(old_contracts.get(key), new, version)
-        if new is not None and merged[key] is not new:
+        launch = current_launch(manifest, packages, sid, variant)
+        old_contract = old_contracts.get(key)
+        merged[key] = merge_contract(old_contract, new, version, launch)
+        if new is not None and new["status"] != "captured" and merged[key] is not new:
             notes.append("kept the captured contract of %s: the new capture is %s" % (key, new["status"]))
+        if launch_changed(old_contract, merged[key], version, launch):
+            notes.append("dropped the captured contract of %s: its launch changed" % key)
     for key, contract in old_contracts.items():
         sid, _, variant = key.partition("/")
         server = servers.get(sid)
@@ -1779,6 +1925,10 @@ def build_lock(manifest, profiles, old, deps, store, contracts=False, only=None)
             continue
         pkg_key = package_key(server["package"]) if "package" in server else None
         if pkg_key and packages.get(pkg_key, {}).get("version") == contract.get("package_version"):
+            launch = current_launch(manifest, packages, sid, variant)
+            if launch is not None and contract.get("launch") != launch:
+                notes.append("dropped the captured contract of %s: its launch changed" % key)
+                continue
             merged[key] = copy.deepcopy(contract)
 
     lock = {"schema": SCHEMA, "generated": deps.today(), "inputs_digest": inputs_digest(manifest),
@@ -2238,7 +2388,7 @@ def _check_skills_dir(project, deps, lock, resolved, directory, label, required,
         f.add("FAIL", "V9", "shared folder %s %s" % (where, detail))
 
 
-def _check_precedence(project, manifest, resolved, name, f):
+def _check_precedence(project, manifest, resolved, name, f, check="V9", hint=CLAUDE_HINT):
     """Copilot CLI reads a project .mcp.json before .github/mcp.json, so one that is not the rendering of the profile hides the pinned servers."""
     claude, copilot = manifest["hosts"].get("claude-code"), manifest["hosts"].get("copilot-cli")
     if not claude or not copilot:
@@ -2251,13 +2401,52 @@ def _check_precedence(project, manifest, resolved, name, f):
     except ToolchainError:
         same = False
     if not same:
-        f.add("FAIL", "V9", "%s takes precedence over %s for Copilot CLI and differs from the rendering of profile %s (%s, or delete it)"
-              % (claude["mcp_project"], copilot["mcp_project"], name, CLAUDE_HINT))
+        f.add("FAIL", check, "%s takes precedence over %s for Copilot CLI and differs from the rendering of profile %s (%s, or delete it)"
+              % (claude["mcp_project"], copilot["mcp_project"], name, hint))
 
 
-def mcp_hint(host):
-    """What to run for a project MCP file that is missing or differs: install writes the .mcp.json of Claude Code, render the other two."""
+def install_command(profile, default, hosts=()):
+    """The install command that puts `profile` in place for `hosts`: --host for a host that install does not pick on its own (Claude Code),
+    --profile unless the profile is the default one, because that is what install and render --write-project do without it."""
+    command = INSTALL_HINT
+    if any(host not in DEFAULT_HOSTS for host in hosts):
+        command += " --host " + " ".join(hosts)
+    if profile != default:
+        command += " --profile " + profile
+    return command
+
+
+def mcp_hint(host, profile=None, default=None):
+    """What to run for a project MCP file that is missing or differs: render --write-project writes the Copilot CLI and VS Code files of the
+    default profile, and install writes the .mcp.json of Claude Code and every other profile."""
+    if profile is not None and profile != default:
+        return install_command(profile, default, [host])
     return CLAUDE_HINT if host == "claude-code" else RENDER_HINT
+
+
+def _check_tool_pins(manifest, deps, resolved, f):
+    """Run each pinned command-line tool of a profile and compare what it prints with the pin. A difference, a missing tool or an
+    unreadable version fails a job (agent and executor profiles) and only warns for a developer."""
+    level = "WARN" if resolved["mode"] == "dev" else "FAIL"
+    declared = {tool["id"]: tool for tool in manifest.get("tools", [])}
+    name = resolved["name"]
+    for pinned in resolved["tools"]:
+        tool = declared[pinned["id"]]
+        path = find_tool(tool, deps)
+        if path is None:
+            f.add(level, "V9", "profile %s: tool %s is not on PATH, so it cannot be compared with the pinned version %s" % (name, pinned["id"], pinned["version"]))
+            continue
+        result = deps.runner.run([path] + tool["version_args"], timeout=30)
+        printed = "%s %s" % (result.stdout or "", result.stderr or "")
+        read = read_version(printed)
+        if result.returncode != 0 or read is None:
+            f.add(level, "V9", "profile %s: the version of tool %s could not be read, so it cannot be compared with the pinned version %s"
+                  % (name, pinned["id"], pinned["version"]))
+        elif at_pin(printed, pinned["version"]):
+            f.add("PASS", "V9", "profile %s: tool %s is at the pinned version %s" % (name, pinned["id"], pinned["version"]))
+        else:
+            f.add(level, "V9", "profile %s: tool %s is version %s, not the pinned version %s; install the pinned version"
+                  % (name, pinned["id"], show_version(read), pinned["version"]))
 
 
 def _check_live(project, deps, manifest, profiles, lock, f, hosts, names, store):
@@ -2271,6 +2460,7 @@ def _check_live(project, deps, manifest, profiles, lock, f, hosts, names, store)
             level = "WARN" if profiles["profiles"][name]["mode"] == "dev" else "FAIL"
             f.add(level, "V9", "profile %s: live checks skipped, the profile cannot be resolved: %s" % (name, "; ".join(exc.problems)))
             continue
+        _check_tool_pins(manifest, deps, resolved, f)
         has = has_skills(resolved)
         folders = {}
         for host in hosts:
@@ -2332,7 +2522,7 @@ def _check_contracts(manifest, profiles, lock, deps, names, f):
                 continue
             try:
                 live = deps.probe_stdio([launch["command"]] + launch["args"],
-                                        env=probe_environment(launch["env"], deps.env, eula, license_variables(manifest)),
+                                        env=bounded_environment(probe_environment(launch["env"], deps.env, eula, license_variables(manifest)), contract["captured"]),
                                         timeout=PROBE_TIMEOUT)
             except toolchain_mcp.McpProbeError as exc:
                 f.add("FAIL", "V10", "contract %s could not be checked: %s" % (key, unavailable_from(exc)["reason"]))
@@ -2355,13 +2545,25 @@ def _check_repo_skills(project, deps, profiles, names, f):
         for problem in exc.problems:
             f.add("FAIL", "V8", problem)
         return
-    for name, folder in owned.items():
-        for finding in deps.lint_skill(folder).get("findings") or ():
-            f.add("FAIL", "V8", "repo-owned skill %s: %s" % (name, finding))
+    for name, finding in repo_skill_findings(owned, deps):
+        f.add("FAIL", "V8", "repo-owned skill %s: %s" % (name, finding))
+
+
+def _lint_once(lint):
+    """`lint` that answers from memory for a folder it has linted already, so that one verify run lints each skill once."""
+    done = {}
+
+    def once(folder):
+        key = str(folder)
+        if key not in done:
+            done[key] = lint(folder)
+        return done[key]
+    return once
 
 
 def run_verify(project, deps, profile_names=None, mode=None, live=False, hosts=None, contracts=False, store=None):
     f = Findings()
+    deps = deps.derive(lint_skill=_lint_once(deps.lint_skill))
     manifest = profiles = lock = None
     try:
         manifest = load_manifest(project.dir / "toolchain.json")
@@ -2487,10 +2689,21 @@ def cmd_list(args, deps, root):
                 owned.append({"name": repo_name, "path": "toolchain/skills/" + repo_name, "digest": measured["digest"],
                               "files": measured["files"], "bytes": measured["bytes"]})
         servers = servers_by_id(manifest)
+        declared = {tool["id"]: tool for tool in manifest.get("tools", [])}
+        tool_rows = []
+        for tool_id in profile.get("tools", []):
+            tool = declared.get(tool_id)
+            if tool is None or "package" not in tool:
+                continue
+            key = package_key(tool["package"])
+            entry = lock["packages"].get(key) if lock else None
+            version = entry.get("version") if entry and entry["status"] == "resolved" else ("unresolved" if entry else "not locked")
+            tool_rows.append([tool_id, tool["command"], key, version])
         result["profile"] = {"name": name, "mode": profile["mode"], "title": profile.get("title"), "problems": problems,
                              "skills": unique, "repo_skills": owned,
                              "shared": [{"folder": s["folder"], "source": s["source"], "plugin": s["plugin"]} for s in shared],
-                             "mcp": [{"server": m["server"], "variant": m["variant"]} for m in profile["mcp"]]}
+                             "mcp": [{"server": m["server"], "variant": m["variant"]} for m in profile["mcp"]],
+                             "tools": [dict(zip(("id", "command", "package", "version"), r)) for r in tool_rows]}
         lines.append("Profile %s (mode %s): %s" % (name, profile["mode"], profile.get("title", "")))
         lines.append("Skills: %d%s" % (len(unique) + len(owned), "" if not problems else " (%s)" % "; ".join(problems)))
         lines.extend("  %s/%s/%s  %s" % (e["source"], e["plugin"], e["name"], e["digest"][7:19]) for e in unique)
@@ -2500,6 +2713,8 @@ def cmd_list(args, deps, root):
                 for m in profile["mcp"] if m["server"] in servers and m["variant"] in servers[m["server"]]["variants"]]
         lines.append("Servers: %d" % len(rows))
         lines.extend("  " + t for t in _table(["SERVER", "VARIANT", "TRANSPORT", "STATUS", "NETWORK", "CREDENTIALS", "ACCESS", "UNATTENDED", "PACKAGE"], rows)[1:])
+        lines.append("Tools: %d" % len(tool_rows))
+        lines.extend("  " + t for t in _table(["TOOL", "COMMAND", "PACKAGE", "VERSION"], tool_rows)[1:])
     if args.skills:
         if lock is None:
             raise ToolchainError("lock file missing: " + LOCK_HINT)
@@ -2536,7 +2751,7 @@ def cmd_render(args, deps, root):
     name = project.profile_name(args.profile)
     resolved = resolve_profile(project.manifest, project.profiles, project.lock, name, deps=deps)
     for item in resolved["omitted"]:
-        print("note: server %s is not rendered: %s" % (item["server"], item["reason"]), file=sys.stderr)
+        print(omitted_note(item), file=sys.stderr)
     if args.write_project:
         targets = []
         for host in PROJECT_HOSTS:
@@ -2578,7 +2793,7 @@ def cmd_lock(args, deps, root):
     if args.no_network:
         if old is None:
             raise ToolchainError("--no-network needs an existing lock: " + LOCK_HINT)
-        new, notes = refresh_digest(project.manifest, old, deps), []
+        new, notes = refresh_digest(project.manifest, old, deps)
     else:
         new, notes = build_lock(project.manifest, project.profiles, old, deps, project.store(), args.contracts, args.only)
     for note in notes:
@@ -2634,22 +2849,29 @@ def cmd_fetch(args, deps, root):
     manifest, profiles, lock = project.manifest, project.profiles, project.lock
     names = [project.profile_name(n) for n in args.profile] if args.profile else [n for n, p in profiles["profiles"].items() if p["skills"]]
     selection, shared = set(), set()
+    repo_lint = None
     for name in names:
         entries, problems = select_skills(manifest, lock, profiles["profiles"][name])
         folders, folder_problems = select_shared(manifest, lock, entries)
-        if problems or folder_problems:
-            raise ToolchainError("profile %s cannot load its skills" % name, ["profile %s: %s" % (name, p) for p in problems + folder_problems])
+        problems = problems + folder_problems
+        if profiles["profiles"][name]["skills"]:
+            if repo_lint is None:  # the skills of this repository are skills of the profile too, and a finding in their text fails in every mode
+                repo_lint = repo_skill_findings(repo_skill_folders(project.dir), deps)
+            problems.extend("repo-owned skill %s: %s" % pair for pair in repo_lint)
+        if problems:
+            raise ToolchainError("profile %s cannot load its skills" % name, ["profile %s: %s" % (name, p) for p in problems])
         selection.update((e["source"], e["plugin"], e["name"]) for e in entries)
         shared.update((s["source"], s["folder"]) for s in folders)
     if not selection:
         print("nothing to fetch: the selected profiles load no skill")
         return 0
     store = project.store(args.store)
+    refuse_store_links(project, deps, store)
     quarantined = tuple(sorted({q["skill"] for q in manifest.get("quarantine", [])}))
     try:
         pack = deps.vendor_skills(lock, sorted(selection), store, deps.runner, quarantine=quarantined, **({"shared": sorted(shared)} if shared else {}))
     except toolchain_sources.SourceError as exc:
-        raise ToolchainError("fetch failed: %s" % (safe_detail(exc) or "could not vendor the skills"))
+        raise ToolchainError("fetch failed: %s" % (toolchain_io.safe_detail(exc) or "could not vendor the skills"))
     skills = pack.get("skills", {})
     print("fetched %d skill(s), %d file(s)%s, into %s" % (len(skills), sum(s.get("files", 0) for s in skills.values()),
                                                          ", %d shared folder(s)" % len(shared) if shared else "", project.shown(store, deps)))
@@ -2658,8 +2880,20 @@ def cmd_fetch(args, deps, root):
 
 # ---------------------------------------------------------------- install
 
-def make_op(action, text, extra=(), apply=None):
-    return {"action": action, "text": text, "extra": list(extra), "apply": apply}
+def make_op(action, text, extra=(), apply=None, label=None):
+    """One step of an install plan. `text` is the line the plan prints, `label` names a step that prints none (an error says which step failed)."""
+    return {"action": action, "text": text, "extra": list(extra), "apply": apply, "label": label}
+
+
+def apply_op(op):
+    """Carry out one step. Whatever the toolchain refuses keeps its own words; any other failure (a full disk, a locked file) is named with the step."""
+    try:
+        op["apply"]()
+    except ToolchainError:
+        raise
+    except Exception as exc:
+        raise ToolchainError("install failed while applying %s: %s" % (op["text"] or op["label"] or op["action"],
+                                                                       toolchain_io.safe_detail(exc) or type(exc).__name__)) from None
 
 
 def copy_tree(source, target):
@@ -2712,6 +2946,13 @@ def refuse_links(path, boundary, root, home):
         current = current.parent
 
 
+def refuse_store_links(project, deps, store):
+    """The pack folder and the folders between it and the project folder must not be links. A pack elsewhere (--store) is refused
+    when the folder itself is a link: what lies above it is the user's choice."""
+    store, root = Path(os.path.abspath(store)), Path(os.path.abspath(project.root))
+    refuse_links(store, root if root in store.parents else store.parent, project.root, deps.home)
+
+
 def _copier(source, dest, digest, deps, what, guard):
     """Copy a folder next to its target, check the copy, and only then swap it in. The old folder is put back when the swap fails."""
     def run():
@@ -2728,12 +2969,12 @@ def _copier(source, dest, digest, deps, what, guard):
                 raise ToolchainError("%s: the copy does not match its locked digest" % what)
             if os.path.lexists(dest):
                 backup = dest.parent / (".toolchain-old-%s-%s" % (dest.name, secrets.token_hex(6)))
-                os.replace(dest, backup)
+                toolchain_io.replace_retrying(dest, backup)
             try:
-                os.replace(staging, dest)
+                toolchain_io.replace_retrying(staging, dest)
             except BaseException:
                 if backup is not None:
-                    os.replace(backup, dest)
+                    toolchain_io.replace_retrying(backup, dest)
                     backup = None
                 raise
             if backup is not None:
@@ -2759,6 +3000,7 @@ def _marker_writer(path, marker, guard):
 
 
 def store_op(project, deps, resolved, store):
+    refuse_store_links(project, deps, store)
     problems = store_problems(store, resolved["skills"], project.lock, deps, resolved["shared"])
     label = project.shown(store, deps)
     if not problems:
@@ -2768,14 +3010,23 @@ def store_op(project, deps, resolved, store):
     shared = sorted({(s["source"], s["folder"]) for s in resolved["shared"]})
 
     def run():
+        refuse_store_links(project, deps, store)
         try:
             deps.vendor_skills(project.lock, selection, store, deps.runner, quarantine=quarantined, **({"shared": shared} if shared else {}))
         except toolchain_sources.SourceError as exc:
-            raise ToolchainError("fetch failed: %s" % (safe_detail(exc) or "could not vendor the skills"))
+            raise ToolchainError("fetch failed: %s" % (toolchain_io.safe_detail(exc) or "could not vendor the skills"))
         remaining = store_problems(store, resolved["skills"], project.lock, deps, resolved["shared"])
         if remaining:
             raise ToolchainError("the local pack is still not usable after the fetch", [m for _level, m in remaining])
     return make_op("add", "+ store %s: fetch %d skill(s) (%s)" % (label, len(selection), sorted({m for _l, m in problems})[0]), apply=run)
+
+
+def _has_content(deps, folder, digest):
+    """Whether a folder that the kit did not install holds exactly the pinned content. A folder that cannot be measured does not."""
+    try:
+        return deps.digest_tree(folder)["digest"] == digest
+    except toolchain_sources.SourceError:
+        return False
 
 
 def _managed_ops(kind, wanted, managed, base, base_label, force, deps, guard):
@@ -2794,7 +3045,11 @@ def _managed_ops(kind, wanted, managed, base, base_label, force, deps, guard):
             ops.append(make_op("add", "+ %s %s -> %s/%s" % (kind, name, base_label, name), apply=copier))
             target[name] = item["digest"]
         elif name not in managed:
-            if force:
+            if _has_content(deps, dest, item["digest"]):
+                # What an install that stopped before it wrote its marker, or a copy made by hand, leaves: exactly what the lock pins.
+                ops.append(make_op("same", "= %s %s" % (kind, name)))
+                target[name] = item["digest"]
+            elif force:
                 ops.append(make_op("change", "~ %s %s: replace %s/%s (forced)" % (kind, name, base_label, name), apply=copier))
                 target[name] = item["digest"]
             else:
@@ -2932,7 +3187,7 @@ def mcp_user_ops(project, deps, resolved, host, spec, force):
         merged.setdefault(container, {}).update(copy.deepcopy(writes))
         write_atomic(path, dump_json(merged))
     if writes:
-        ops.append(make_op("write", None, apply=run))
+        ops.append(make_op("write", None, apply=run, label="write " + label))
     return ops
 
 
@@ -2968,7 +3223,7 @@ def cmd_install(args, deps, root):
             ops.extend(skill_ops(project, deps, resolved, directory, owners, args.force, store, boundary))
     if not args.skip_mcp:
         for item in resolved["omitted"]:
-            ops.append(make_op("note", "note: server %s is not rendered: %s" % (item["server"], item["reason"])))
+            ops.append(make_op("note", omitted_note(item)))
         if "claude-code" in hosts and len(hosts) > 1:
             ops.append(make_op("note", "note: claude-code writes %s, which Copilot CLI reads before %s"
                                % (manifest["hosts"]["claude-code"]["mcp_project"], manifest["hosts"]["copilot-cli"]["mcp_project"])))
@@ -2986,13 +3241,14 @@ def cmd_install(args, deps, root):
             for line in op["extra"]:
                 print("    " + line)
     counts = {a: sum(1 for o in ops if o["action"] == a and o["text"]) for a in ("add", "change", "same", "conflict")}
-    print("%s: profile %s, %d to add, %d to change, %d unchanged, %d conflict(s)"
-          % ("applied" if args.apply else "plan", name, counts["add"], counts["change"], counts["same"], counts["conflict"]))
+    summary = "profile %s, %d to add, %d to change, %d unchanged, %d conflict(s)" % (name, counts["add"], counts["change"], counts["same"], counts["conflict"])
     if args.apply:
         for op in ops:
             if op["apply"] and op["action"] in ("add", "change", "write"):
-                op["apply"]()
+                apply_op(op)
+        print("applied: " + summary)
     else:
+        print("plan: " + summary)
         print("nothing was changed: add --apply to carry out the plan")
     return 1 if counts["conflict"] else 0
 
@@ -3010,18 +3266,62 @@ def at_least(found, minimum):
     return found + (0,) * (size - len(found)) >= wanted + (0,) * (size - len(wanted))
 
 
-def _doctor_tools(manifest, deps, f):
+def read_version(text):
+    """(numbers, suffix) of the first version that a text holds: ((4, 0, 0), '-beta.4') for 'tool 4.0.0-beta.4'; None when it holds no number."""
+    match = re.search(r"(\d+(?:\.\d+)+)([-+][0-9A-Za-z][0-9A-Za-z.+-]*)?", text) or re.search(r"(\d+)()", text)
+    return (tuple(int(part) for part in match.group(1).split(".")), match.group(2) or "") if match else None
+
+
+def show_version(read):
+    return ".".join(map(str, read[0])) + read[1]
+
+
+def at_pin(printed, pinned):
+    """Whether what a tool printed is the pinned version: the same numbers (1.8 is 1.8.0) and the same pre-release or build suffix."""
+    found, wanted = read_version(printed), read_version(pinned)
+    if found is None or wanted is None:
+        return False
+    size = max(len(found[0]), len(wanted[0]))
+    return found[0] + (0,) * (size - len(found[0])) == wanted[0] + (0,) * (size - len(wanted[0])) and found[1] == wanted[1]
+
+
+def find_tool(tool, deps):
+    """The path of a manifest tool on PATH, trying its alternative names; None when it is not there."""
+    return next((p for p in (deps.runner.which(c) for c in [tool["command"]] + tool.get("alternatives", [])) if p), None)
+
+
+def tool_pins(manifest, lock, profile):
+    """{tool id: pinned version} for the tools of a profile whose package the lock resolves to an exact version."""
+    declared = {tool["id"]: tool for tool in manifest.get("tools", [])}
+    pins = {}
+    for tool_id in profile.get("tools", []):
+        tool = declared.get(tool_id)
+        entry = ((lock.get("packages") or {}).get(package_key(tool["package"])) if tool and "package" in tool else None) or {}
+        if entry.get("status") == "resolved" and exact_version(tool["package"]["ecosystem"], entry.get("version")):
+            pins[tool_id] = entry["version"]
+    return pins
+
+
+def _doctor_tools(manifest, deps, f, pins=None):
+    """The tools of the manifest on this machine. A tool that the selected profile pins is compared with its pin, the others with their minimum."""
+    pins = pins or {}
     for tool in manifest.get("tools", []):
-        path = next((p for p in (deps.runner.which(c) for c in [tool["command"]] + tool.get("alternatives", [])) if p), None)
+        path = find_tool(tool, deps)
         level = "FAIL" if tool["required"] else "WARN"
         check = "tool %s" % tool["id"]
         if path is None:
             f.add(level, check, "not found on PATH; needed for %s" % tool["needed_for"])
             continue
         result = deps.runner.run([path] + tool["version_args"], timeout=30)
-        version = parse_version("%s %s" % (result.stdout or "", result.stderr or ""))
+        printed = "%s %s" % (result.stdout or "", result.stderr or "")
+        version = parse_version(printed)
         if result.returncode != 0 or version is None:
             f.add("WARN", check, "found, but its version could not be read")
+        elif tool["id"] in pins:
+            if at_pin(printed, pins[tool["id"]]):
+                f.add("PASS", check, "version %s (pinned)" % show_version(read_version(printed)))
+            else:
+                f.add("WARN", check, "version %s is not the pinned version %s; install the pinned version" % (show_version(read_version(printed)), pins[tool["id"]]))
         elif not at_least(version, tool["min"]):
             f.add(level, check, "version %s is older than the minimum %s; needed for %s" % (".".join(map(str, version)), tool["min"], tool["needed_for"]))
         else:
@@ -3050,14 +3350,14 @@ def _doctor_lock(project, manifest, profiles, name, f):
     return lock
 
 
-def _doctor_skills(project, deps, resolved, rel, owners, f):
-    """The managed skills of one skills folder, printed once for the hosts that share it."""
+def _doctor_skills(project, deps, resolved, rel, owners, f, hint=INSTALL_HINT):
+    """The managed skills of one skills folder, printed once for the hosts that share it. `hint` is the install command that puts them right."""
     directory = project.root / rel
     check = "host %s skills" % ", ".join(owners)
     marker_path = directory / MARKER
     if not marker_path.is_file():
         if has_skills(resolved):
-            f.add("WARN", check, "no skills are installed in %s (%s)" % (rel, "run: python scripts/toolchain.py install --apply"))
+            f.add("WARN", check, "no skills are installed in %s (%s)" % (rel, hint))
         return
     try:
         marker = read_marker(marker_path)
@@ -3068,32 +3368,35 @@ def _doctor_skills(project, deps, resolved, rel, owners, f):
     for problem in skills:
         f.add("FAIL", check, problem)
     if marker["lock"] != resolved["lock"]:
-        f.add("WARN", check, "the managed skills in %s were installed from another lock (run install --apply)" % rel)
+        f.add("WARN", check, "the managed skills in %s were installed from another lock (%s)" % (rel, hint))
     elif not skills:
         f.add("PASS", check, "the managed skills in %s match the lock" % rel)
     check = "host %s shared" % ", ".join(owners)
     for where, detail in shared:
-        f.add("FAIL", check, "%s %s; %s" % (where, detail, INSTALL_HINT))
+        f.add("FAIL", check, "%s %s; %s" % (where, detail, hint))
     if not shared:
         for item in resolved["shared"]:
             f.add("PASS", check, "%s equals the lock" % project.shown(directory.parent / item["folder"], deps))
 
 
 def _doctor_hosts(project, deps, manifest, resolved, hosts, f):
+    name, default = resolved["name"], manifest["default_profile"]
     for host in hosts:
         spec = manifest["hosts"][host]
         path = project.root / spec["mcp_project"]
         if not path.is_file():
-            f.add("WARN", "host %s mcp" % host, "%s is missing (%s)" % (spec["mcp_project"], mcp_hint(host)))
+            f.add("WARN", "host %s mcp" % host, "%s is missing (%s)" % (spec["mcp_project"], mcp_hint(host, name, default)))
         elif read_text_lf(path, spec["mcp_project"]) != dump_json(render(host, resolved)):
-            f.add("WARN", "host %s mcp" % host, "%s differs from the rendering of profile %s (%s)" % (spec["mcp_project"], resolved["name"], mcp_hint(host)))
+            f.add("WARN", "host %s mcp" % host, "%s differs from the rendering of profile %s (%s)" % (spec["mcp_project"], name, mcp_hint(host, name, default)))
         else:
-            f.add("PASS", "host %s mcp" % host, "%s equals the rendering of profile %s" % (spec["mcp_project"], resolved["name"]))
+            f.add("PASS", "host %s mcp" % host, "%s equals the rendering of profile %s" % (spec["mcp_project"], name))
+        if host == "copilot-cli":
+            _check_precedence(project, manifest, resolved, name, f, "host copilot-cli mcp", install_command(name, default, ["claude-code"]))
     folders = {}
     for host in hosts:
         folders.setdefault(manifest["hosts"][host]["skills_project"], []).append(host)
     for rel, owners in folders.items():
-        _doctor_skills(project, deps, resolved, rel, owners, f)
+        _doctor_skills(project, deps, resolved, rel, owners, f, install_command(name, default, owners))
 
 
 def cmd_doctor(args, deps, root):
@@ -3101,7 +3404,13 @@ def cmd_doctor(args, deps, root):
     manifest, profiles = project.manifest, project.profiles
     name = project.profile_name(args.profile)
     f = Findings()
-    _doctor_tools(manifest, deps, f)
+    pins = {}
+    if project.lock_path.is_file():
+        try:
+            pins = tool_pins(manifest, load_lock(project.lock_path), profiles["profiles"][name])
+        except ToolchainError:
+            pass  # the lock check below says what is wrong with it; without a usable lock the tools keep the check of their minimum
+    _doctor_tools(manifest, deps, f, pins)
     for host, spec in manifest["hosts"].items():
         found = deps.runner.which(spec["binary"])
         f.add("PASS" if found else "INFO", "host %s" % host, "found on PATH" if found else "not found on PATH (%s)" % spec["binary"])
@@ -3255,6 +3564,9 @@ def main(argv=None, deps=None):
             if problem != str(exc):
                 print("  - %s" % problem, file=sys.stderr)
         return 2 if isinstance(exc, UsageError) else 1
+    except OSError as exc:  # a full disk or a locked file: a sentence without paths, never a traceback
+        print("error: %s" % (toolchain_io.safe_detail(exc) or type(exc).__name__), file=sys.stderr)
+        return 1
 
 
 if __name__ == "__main__":

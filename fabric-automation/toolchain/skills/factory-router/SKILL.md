@@ -42,7 +42,7 @@ The table names the usual owners, not every pinned skill: `python scripts/toolch
 ## 3. Run it
 
 1. Follow the skill's surface. Where it calls an MCP tool, use the tool of the server your profile loaded. Where the skill's own procedure is a CLI or REST workflow, run it as written in the dev mode, and have the person approve anything that changes a tenant. In the agent and executor modes no live CLI or REST step runs: the agent plane has no credentials and no network, and the executor plane acts only through the read-only tools of its profile and its own typed operations. Say that the step needs a dev-mode session or an executor operation, and stop it.
-2. Some pinned skills tell you to fall back to another route when their MCP tool is missing, or to install a tool (`winget install`, `pip install`, `npm install -g`, an `npx` package). The rules here are stricter on purpose. If a tool is missing, say what is missing and ask the person before another route. Never install anything: the person installs tools with `python scripts/toolchain.py doctor` and `install`.
+2. Some pinned skills tell you to fall back to another route when their MCP tool is missing, or to install a tool (`winget install`, `pip install`, `npm install -g`, an `npx` package). The rules here are stricter on purpose. If a tool is missing, say what is missing and ask the person before another route. Never install anything: `python scripts/toolchain.py doctor` lists what the machine lacks and what each piece is for, and the person installs it.
 3. A read-only request stays read-only. A tool listing or a connection test is not permission to write.
 4. A skill step that asks for a confirmation means escalate when no person is there.
 

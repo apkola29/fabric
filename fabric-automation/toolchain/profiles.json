@@ -22,6 +22,7 @@
       "mcp": [
         {"server": "fabric-local", "variant": "docs"}
       ],
+      "tools": ["powerbi-report-author"],
       "instructions": ["instructions/factory-preamble.md"]
     },
     "agent-test-author": {
@@ -35,6 +36,7 @@
       "mcp": [
         {"server": "fabric-local", "variant": "docs"}
       ],
+      "tools": ["powerbi-report-author"],
       "instructions": ["instructions/factory-preamble.md"]
     },
     "agent-implementer": {
@@ -49,6 +51,7 @@
         {"server": "fabric-local", "variant": "docs"},
         {"server": "powerbi-authoring-local", "variant": "offline-readonly"}
       ],
+      "tools": ["powerbi-report-author"],
       "instructions": ["instructions/factory-preamble.md"]
     },
     "agent-verifier": {
@@ -113,6 +116,7 @@
         {"server": "fabric-sql", "variant": "default"},
         {"server": "microsoft-learn", "variant": "default"}
       ],
+      "tools": ["fab", "powerbi-report-author"],
       "instructions": ["instructions/factory-preamble.md"]
     },
     "dev-powerbi": {
@@ -130,6 +134,7 @@
         {"server": "fabric-local", "variant": "docs"},
         {"server": "microsoft-learn", "variant": "default"}
       ],
+      "tools": ["powerbi-report-author"],
       "instructions": ["instructions/factory-preamble.md"]
     },
     "dev-powerbi-hosted": {
@@ -147,6 +152,7 @@
         {"server": "fabric-local", "variant": "docs"},
         {"server": "microsoft-learn", "variant": "default"}
       ],
+      "tools": ["powerbi-report-author"],
       "instructions": ["instructions/factory-preamble.md"]
     },
     "dev-realtime": {
@@ -202,6 +208,7 @@
         {"server": "azure-arm-cost", "variant": "default"},
         {"server": "microsoft-learn", "variant": "default"}
       ],
+      "tools": ["fab", "powerbi-report-author"],
       "instructions": ["instructions/factory-preamble.md"]
     }
   }

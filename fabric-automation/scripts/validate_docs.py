@@ -69,11 +69,6 @@ def ignore_rules(folder):
     reading with Git itself.
     """
     folder = Path(folder)
-    for nested in sorted(folder.rglob(".gitignore")):
-        rel = nested.relative_to(folder).as_posix()
-        if (rel != ".gitignore" and not any(part in SKIP_DIRS for part in rel.split("/")[:-1])
-                and not any(rel.startswith(p + "/") for p in SKIP_PATHS)):
-            raise UnsupportedIgnore("%s: only the .gitignore at the top of the project is modelled" % ascii(rel))
     rules = []
     path = folder / ".gitignore"
     if path.exists():
@@ -94,6 +89,13 @@ def ignore_rules(folder):
             regex = "".join("[^/]*" if c == "*" else "[^/]" if c == "?" else re.escape(c) for c in body.lstrip("/"))
             pattern = "^" + ("" if anchored else "(?:.*/)?") + regex + "$"
             rules.append((negated, re.compile(pattern), re.compile(pattern, FOLD), directory_only))
+    # Git does not read an ignore file inside a folder that the rules above ignore as a whole (the folders that `install`
+    # and `fetch` generate), so such a file is not a layout to refuse.
+    for nested in sorted(folder.rglob(".gitignore")):
+        rel = nested.relative_to(folder).as_posix()
+        if (rel != ".gitignore" and not any(part in SKIP_DIRS for part in rel.split("/")[:-1])
+                and not any(rel.startswith(p + "/") for p in SKIP_PATHS) and not is_ignored(rel, rules)):
+            raise UnsupportedIgnore("%s: only the .gitignore at the top of the project is modelled" % ascii(rel))
     return rules
 
 
@@ -493,6 +495,13 @@ class Context:
         self.defs = {fam: set() for fam in FAMILIES}
         self.defs["NP"] = set()
         self.defs["GN"] = set()
+        # Read what Git would publish and nothing else: what `install` and `fetch` generate is ignored and is upstream text.
+        # An ignore file that is not modelled is reported by the checks of the publishable files, and reading everything is
+        # the safe direction until it is fixed.
+        try:
+            rules = ignore_rules(root)
+        except UnsupportedIgnore:
+            rules = None
         for path in sorted(root.rglob("*")):
             if not path.is_file():
                 continue
@@ -501,6 +510,8 @@ class Context:
             if any(part in SKIP_DIRS for part in relative.parts[:-1]):
                 continue
             if any(rel == p or rel.startswith(p + "/") for p in SKIP_PATHS):
+                continue
+            if rules is not None and is_ignored(rel, rules):
                 continue
             if path.suffix in TEXT_SUFFIXES or path.name in TEXT_NAMES:
                 self.docs[rel] = Doc(root, path)
@@ -1255,12 +1266,19 @@ def is_link(path):
 def check_links_in_tree(ctx):
     """A link can point outside the folder, so the leak scan and the mirror could read something that is not here."""
     found = 0
+    try:
+        rules = ignore_rules(ctx.root)
+    except UnsupportedIgnore:
+        rules = None  # reported by the check of the publishable files; looking at every path is the safe direction
     for path in sorted(ctx.root.rglob("*")):
         relative = path.relative_to(ctx.root)
         rel = relative.as_posix()
         if any(part in SKIP_DIRS for part in relative.parts):
             continue
         if any(rel == p or rel.startswith(p + "/") for p in SKIP_PATHS):
+            continue
+        # An ignored folder is tried through a name inside it, because a rule that ends in a slash matches folders only.
+        if rules is not None and is_ignored(rel + "/x" if path.is_dir() else rel, rules):
             continue
         if is_link(path):
             found += 1

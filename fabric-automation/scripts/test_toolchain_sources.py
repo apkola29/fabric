@@ -9,6 +9,7 @@ table, so no network and no npm are used. Run from the project folder:
 """
 
 import base64
+import contextlib
 import hashlib
 import json
 import os
@@ -32,6 +33,73 @@ WINDOWS = os.name == "nt"
 ADDRESS = "tester" + "@" + "example.test"
 GIT_ENV = {"GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_NOSYSTEM": "1", "GIT_TERMINAL_PROMPT": "0"}
 HAS_GIT = shutil.which("git") is not None
+MINIMAL_CONFIG = b"[core]\n\trepositoryformatversion = 0\n\tbare = true\n"
+REPOSITORY_VARIABLES = ("GIT_DIR", "GIT_WORK_TREE", "GIT_COMMON_DIR", "GIT_INDEX_FILE", "GIT_OBJECT_DIRECTORY",
+                        "GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_NAMESPACE", "GIT_EXEC_PATH", "GIT_TEMPLATE_DIR")
+
+
+@contextlib.contextmanager
+def in_folder(folder):
+    """Make `folder` the current directory for the length of the block."""
+    previous = os.getcwd()
+    os.chdir(str(folder))
+    try:
+        yield
+    finally:
+        os.chdir(previous)
+
+
+def make_folder_link(link, target):
+    """A symbolic link (POSIX) or a junction (Windows) at `link` that points to the folder `target`. False when this account cannot make one."""
+    try:
+        if WINDOWS:
+            made = subprocess.run(["cmd", "/c", "mklink", "/J", str(link), str(target)], capture_output=True, check=False)
+            return made.returncode == 0 and os.path.lexists(link)
+        os.symlink(str(target), str(link), target_is_directory=True)
+        return True
+    except (OSError, NotImplementedError):
+        return False
+
+
+def remove_folder_link(link):
+    """Remove what make_folder_link made, never what it points to."""
+    if os.path.lexists(link):
+        try:
+            os.unlink(link)
+        except OSError:
+            os.rmdir(link)
+
+
+def is_any_link(path):
+    """A symbolic link, or on Windows a junction. Written here on its own so that the tests do not lean on the module they test."""
+    if os.path.islink(path):
+        return True
+    if WINDOWS:
+        try:
+            info = os.lstat(path)
+        except OSError:
+            return False
+        return bool(getattr(info, "st_file_attributes", 0) & 0x400) and getattr(info, "st_reparse_tag", 0) == 0xA0000003
+    return False
+
+
+def tree_listing(root):
+    """{relative path: bytes of a file, "<folder>" or "<link>"} of everything below `root`. A link is listed and never followed."""
+    listing = {}
+
+    def visit(folder, prefix):
+        for name in sorted(os.listdir(folder)):
+            path = os.path.join(folder, name)
+            if is_any_link(path):
+                listing[prefix + name] = "<link>"
+            elif os.path.isdir(path):
+                listing[prefix + name] = "<folder>"
+                visit(path, prefix + name + "/")
+            else:
+                with open(path, "rb") as handle:
+                    listing[prefix + name] = handle.read()
+    visit(str(root), "")
+    return listing
 
 
 class IsolatedRunner(toolchain_io.SystemRunner):
@@ -151,6 +219,8 @@ def final_files():
         "plugins/iota/common/a.md": b"a\n",
         "plugins/iota/common/b.md": b"b\n",
         "plugins/iota/common/c.md": b"c\n",
+        "plugins/kappa/skills/hint-link/SKILL.md": b"---\nname: hint-link\ndescription: A link that holds an install command.\n---\n# Hint\n",
+        "plugins/kappa/skills/hint-link/setup": ("120000", b"pip install demo-package"),
         "plugins/beta/skills/good-skill/scripts/run.sh": ("100755", GOOD_FILES["scripts/run.sh"]),
     })
     files["plugins/alpha/skills/good-skill/scripts/run.sh"] = ("100755", GOOD_FILES["scripts/run.sh"])
@@ -785,6 +855,72 @@ class LintTests(unittest.TestCase):
         self.assertFalse(result["frontmatter_ok"])
         self.assertIn("frontmatter line 4: duplicate key", result["findings"])
 
+    # ---- a link is a file that holds its target, as it is in the digest and in the git tree ----
+
+    SKILL = b"---\nname: demo-skill\ndescription: d\n---\nbody\n"
+
+    def linted(self, files, links, name="demo-skill"):
+        """lint_skill of a folder whose walk reports `links` ({relative path: target text}) as links; no real link is needed."""
+        root = Path(self.tmp.name) / name
+        write_tree(root, files)
+        entries = sorted([(rel, str(root / rel), False) for rel in files] + [(rel, str(root / rel), True) for rel in links])
+
+        def readlink(path):
+            return links[os.path.relpath(path, str(root)).replace(os.sep, "/")]
+        with mock.patch.object(ts, "_walk", return_value=iter(entries)), mock.patch.object(os, "readlink", side_effect=readlink):
+            return ts.lint_skill(root)
+
+    def test_a_link_is_linted_as_a_file_that_holds_its_target(self):
+        result = self.linted({"SKILL.md": self.SKILL}, {"scripts/setup": "pip install demo-package"})
+        self.assertEqual(1, result["install_hints"])
+        in_git = ts._lint_files({"SKILL.md": self.SKILL, "scripts/setup": b"pip install demo-package"}, "demo-skill")
+        self.assertEqual(in_git, result, "the lint of a folder and the lint of git objects do not agree on a link")
+
+    def test_the_target_text_of_every_link_is_read_and_nothing_behind_a_link_is(self):
+        result = self.linted({"SKILL.md": self.SKILL}, {"missing-folder": "../elsewhere", "other": "npm install elsewhere"})
+        self.assertEqual(1, result["install_hints"])
+        self.assertEqual([], result["findings"])
+
+    def test_a_link_counts_toward_the_limit_of_files(self):
+        with mock.patch.object(ts, "MAX_TREE_FILES", 2):
+            result = self.linted({"SKILL.md": self.SKILL, "a.txt": b"x"}, {"z-link": "a.txt"})
+        self.assertEqual(["skill too large to scan from: z-link"], result["findings"])
+        with mock.patch.object(ts, "MAX_TREE_FILES", 3):
+            result = self.linted({"SKILL.md": self.SKILL, "a.txt": b"x"}, {"z-link": "a.txt"})
+        self.assertEqual([], result["findings"])
+
+    def test_a_link_counts_toward_the_limit_of_bytes_with_the_length_of_its_target_text(self):
+        total = len(self.SKILL) + len(b"x") + len("a.txt")
+        with mock.patch.object(ts, "MAX_TREE_BYTES", total - 1):
+            result = self.linted({"SKILL.md": self.SKILL, "a.txt": b"x"}, {"z-link": "a.txt"})
+        self.assertEqual(["skill too large to scan from: z-link"], result["findings"])
+        with mock.patch.object(ts, "MAX_TREE_BYTES", total):
+            result = self.linted({"SKILL.md": self.SKILL, "a.txt": b"x"}, {"z-link": "a.txt"})
+        self.assertEqual([], result["findings"])
+
+    def test_a_link_whose_target_cannot_be_read_is_a_source_error(self):
+        root = Path(self.tmp.name) / "demo-skill"
+        write_tree(root, {"SKILL.md": self.SKILL})
+        entries = [("SKILL.md", str(root / "SKILL.md"), False), ("current", str(root / "current"), True)]
+        with mock.patch.object(ts, "_walk", return_value=iter(entries)), mock.patch.object(os, "readlink", side_effect=OSError("gone")):
+            with self.assertRaises(ts.SourceError) as caught:
+                ts.lint_skill(root)
+        self.assertEqual("unresolved: cannot read a file", str(caught.exception))
+
+    def test_a_real_link_is_linted_as_its_target_text_and_is_never_followed(self):
+        root = Path(self.tmp.name) / "demo-skill"
+        outside = Path(self.tmp.name) / "pip install demo-package"
+        write_tree(root, {"SKILL.md": self.SKILL})
+        write_tree(outside, {"inner.md": b"npm install behind-the-link\n"})
+        link = root / "scripts"
+        if not make_folder_link(link, outside):
+            self.skipTest("this account cannot make a link")
+        self.addCleanup(remove_folder_link, link)
+        result = ts.lint_skill(root)
+        target = os.readlink(link).encode("utf-8", "surrogateescape")
+        self.assertEqual(ts._lint_files({"SKILL.md": self.SKILL, "scripts": target}, "demo-skill"), result)
+        self.assertEqual(1, result["install_hints"], "the text of the target counts, the file behind the link does not")
+
 
 @unittest.skipUnless(HAS_GIT, "git is not installed")
 class ResolveGitRefTests(unittest.TestCase):
@@ -881,6 +1017,24 @@ class ResolveGitRefTests(unittest.TestCase):
             self.assertEqual("unresolved", caught.exception.code, url)
             self.assertEqual([], fake.calls, url)
 
+    def test_a_plain_http_address_in_any_case_never_reaches_git(self):
+        for url in ("http://github.com/x.git", "HTTP://github.com/x.git", "Http://github.com/x.git", "http://github.com:80/x.git", "http://127" + ".0.0.1/x.git"):
+            for call in (lambda fake: ts.resolve_git_ref(url, {"kind": "tag", "pattern": "v*"}, fake),
+                         lambda fake: ts.fetch_git(url, "ab" * 20, Path(TMP.name) / "never-created-http", fake)):
+                fake = FakeGit()
+                with self.assertRaises(ts.SourceError, msg=url) as caught:
+                    call(fake)
+                self.assertEqual("unresolved: unsupported repository url", str(caught.exception), url)
+                self.assertEqual([], fake.calls, url)
+            with self.assertRaises(ts.SourceError, msg=url):
+                ts._check_url(url)
+        self.assertFalse((Path(TMP.name) / "never-created-http").exists())
+
+    def test_https_in_any_case_is_accepted_and_is_not_a_file_address(self):
+        for url in ("https://github.com/x.git", "HTTPS://GITHUB.COM/x.git"):
+            self.assertIs(False, ts._check_url(url), url)
+        self.assertIs(True, ts._check_url("file:///some/where/r.git"))
+
     def test_a_file_url_with_a_host_is_a_network_path_and_never_reaches_git(self):
         urls = ("file://server/share/r.git", "file://localhost/r.git", "file://C:/r.git", "file:////server/share/r.git",
                 "file://///server/share/r.git", "file:relative/r.git", "file:///C:\\r.git", "file:///r.git?x=1", "file:///r.git#x")
@@ -937,20 +1091,38 @@ class GitFailureTests(unittest.TestCase):
 
 
 class FakeGit:
-    """A runner for git that answers from a script and records the argument lists and the environments."""
+    """A runner for git that answers from a script and records the argument lists, the environments, the working folders and what
+    the configuration of a cache folder held at the time of each call."""
 
     def __init__(self, fetch_works=True):
         self.calls = []
         self.envs = []
+        self.cwds = []
+        self.cwd_listings = []
+        self.configs = []
         self.fetched = False
         self.fetch_works = fetch_works
 
     def which(self, name):
         return name
 
+    @staticmethod
+    def git_dir_of(argv):
+        for index, word in enumerate(argv):
+            if word.startswith("--git-dir="):
+                return word[len("--git-dir="):]
+            if word == "--git-dir" and index + 1 < len(argv):
+                return argv[index + 1]
+        return None
+
     def run(self, argv, *, cwd=None, env=None, timeout=60, input=None):
         self.calls.append(list(argv))
         self.envs.append(dict(env or {}))
+        self.cwds.append(cwd)
+        self.cwd_listings.append(sorted(os.listdir(cwd)) if cwd and os.path.isdir(cwd) else None)
+        git_dir = self.git_dir_of(argv) or (argv[-1] if "init" in argv else None)
+        config = Path(git_dir) / "config" if git_dir else None
+        self.configs.append(config.read_bytes() if config is not None and config.is_file() else None)
         if "fetch" in argv:
             self.fetched = self.fetch_works
             return CommandResult(0 if self.fetch_works else 128, "", "" if self.fetch_works else "fatal: could not read from remote")
@@ -1098,13 +1270,13 @@ class PrivateGitSettingsTests(unittest.TestCase):
         network = self.runner.with_word("ls-remote") + self.runner.with_word("fetch")
         self.assertEqual(2, len(network))
         for argv, env in network:
-            label = argv[argv.index("--git-dir") + 2] if "--git-dir" in argv else argv[argv.index("ls-remote")]
+            label = "fetch" if "fetch" in argv else "ls-remote"
             self.check_private(env, label)
             self.assertEqual("https:file", env.get("GIT_ALLOW_PROTOCOL"), label)
             for name in NETWORK_DROPPED:
                 self.assertIn(name, env, "%s %s" % (label, name))
                 self.assertIsNone(env[name], "%s %s" % (label, name))
-            subcommand = min(argv.index(word) for word in ("ls-remote", "--git-dir") if word in argv)
+            subcommand = min(index for index, word in enumerate(argv) if word == "ls-remote" or word.startswith("--git-dir"))
             options = argv[1:subcommand]
             self.assertIn("protocol.ext.allow=never", options, label)
             self.assertIn("credential.helper=", options, label)
@@ -1258,6 +1430,374 @@ class ExtHelperTests(_HostileConfigBase):
             with self.assertRaises(ts.SourceError):
                 ts.fetch_git(self.URL, "ab" * 20, self.dir / "ext-cache", RecordingRunner())
         self.assertFalse(self.marker.exists(), "the ext helper was run")
+
+
+class CwdRecordingRunner(RecordingRunner):
+    """RecordingRunner that also notes the working folder of each call and what it held when git started."""
+
+    def __init__(self):
+        super().__init__()
+        self.where = []
+
+    def run_bytes(self, argv, *, cwd=None, env=None, timeout=60, input=None):
+        self.where.append((cwd, sorted(os.listdir(cwd)) if cwd and os.path.isdir(cwd) else None))
+        return super().run_bytes(argv, cwd=cwd, env=env, timeout=timeout, input=input)
+
+
+class GitIsolationTests(unittest.TestCase):
+    """Git is told nothing about a repository of the operator: no variable names one, a call that has none of ours runs in an empty
+    folder of its own, and a cache folder holds the minimal configuration whatever it held before. No real git is needed."""
+
+    URL = "https://example.test/o/r.git"
+    TRACK = {"kind": "tag", "pattern": "v*"}
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.dir = Path(os.path.realpath(self.tmp.name))
+
+    def resolve_fails(self, fake):
+        with self.assertRaises(ts.SourceError):
+            ts.resolve_git_ref(self.URL, self.TRACK, fake)
+
+    @staticmethod
+    def calls_with(fake, word):
+        return [(argv, fake.envs[index], fake.cwds[index], fake.cwd_listings[index], fake.configs[index])
+                for index, argv in enumerate(fake.calls) if word in argv]
+
+    def assertEmptyFolderOfItsOwn(self, cwd, listing, env):
+        self.assertTrue(cwd and os.path.isabs(cwd), cwd)
+        self.assertEqual([], listing, "the folder was not empty when git started")
+        self.assertFalse(os.path.exists(cwd), "the folder was not removed")
+        self.assertEqual(os.path.realpath(cwd), cwd)
+        self.assertEqual(os.path.dirname(cwd), env.get("GIT_CEILING_DIRECTORIES"), "the ceiling is the parent of the folder")
+
+    def test_the_variables_that_name_a_repository_are_removed_from_every_call(self):
+        for network, file_url in ((False, False), (True, False), (True, True)):
+            env = ts._git_env(network, file_url)
+            for name in REPOSITORY_VARIABLES:
+                with self.subTest("%s for %s" % (name, (network, file_url))):
+                    self.assertIn(name, env)
+                    self.assertIsNone(env[name])
+        with mock.patch.dict(os.environ, {name: "hostile-" + name.lower() for name in REPOSITORY_VARIABLES}):
+            merged = toolchain_io.merged_env(ts._git_env())
+        for name in REPOSITORY_VARIABLES:
+            with self.subTest("%s is gone from the environment of the child" % name):
+                self.assertNotIn(name, merged)
+
+    def test_a_remote_query_runs_in_a_new_empty_folder_that_is_removed_afterwards(self):
+        fake = FakeGit()
+        self.resolve_fails(fake)
+        self.assertEqual(1, len(fake.calls))
+        self.assertEmptyFolderOfItsOwn(fake.cwds[0], fake.cwd_listings[0], fake.envs[0])
+
+    def test_every_call_gets_a_folder_of_its_own(self):
+        fake = FakeGit()
+        self.resolve_fails(fake)
+        self.resolve_fails(fake)
+        self.assertEqual(2, len(set(fake.cwds)))
+
+    def test_the_folder_is_removed_when_the_runner_fails(self):
+        class Boom:
+            def __init__(self):
+                self.cwds = []
+
+            def which(self, name):
+                return name
+
+            def run(self, argv, **kwargs):
+                self.cwds.append(kwargs.get("cwd"))
+                raise RuntimeError("boom")
+
+        boom = Boom()
+        with self.assertRaises(RuntimeError):
+            ts.resolve_git_ref(self.URL, self.TRACK, boom)
+        self.assertTrue(boom.cwds[0] and os.path.isabs(boom.cwds[0]))
+        self.assertFalse(os.path.exists(boom.cwds[0]))
+
+    def test_the_folder_is_made_in_the_temporary_folder_of_the_system(self):
+        with mock.patch.object(tempfile, "tempdir", str(self.dir)):
+            fake = FakeGit()
+            self.resolve_fails(fake)
+        self.assertEqual(str(self.dir), os.path.dirname(fake.cwds[0]))
+        self.assertEqual(str(self.dir), fake.envs[0]["GIT_CEILING_DIRECTORIES"])
+
+    def test_without_a_temporary_folder_the_call_is_a_source_error_and_git_is_not_run(self):
+        fake = FakeGit()
+        with mock.patch.object(tempfile, "mkdtemp", side_effect=OSError("disk full")):
+            with self.assertRaises(ts.SourceError) as caught:
+                ts.resolve_git_ref(self.URL, self.TRACK, fake)
+        self.assertEqual("unresolved", caught.exception.code)
+        self.assertEqual([], fake.calls)
+
+    def test_the_folder_and_its_ceiling_are_given_by_their_real_paths(self):
+        real, alias = self.dir / "real", self.dir / "alias"
+        real.mkdir()
+        if not make_folder_link(alias, real):
+            self.skipTest("this account cannot make a folder link")
+        self.addCleanup(remove_folder_link, alias)
+        with mock.patch.object(tempfile, "tempdir", str(alias)):
+            fake = FakeGit()
+            self.resolve_fails(fake)
+        self.assertEqual(str(real), os.path.dirname(fake.cwds[0]), "git compares real paths, so the folder is named by its real path")
+        self.assertEqual(str(real), fake.envs[0]["GIT_CEILING_DIRECTORIES"])
+
+    def test_a_new_cache_is_made_and_fetched_into_from_empty_folders_by_its_absolute_path(self):
+        fake = FakeGit()
+        dest = self.dir / "cache"
+        ts.fetch_git(self.URL, "ab" * 20, dest, fake)
+        (init_argv, init_env, init_cwd, init_listing, _), = self.calls_with(fake, "init")
+        (fetch_argv, fetch_env, fetch_cwd, fetch_listing, fetch_config), = self.calls_with(fake, "fetch")
+        self.assertEmptyFolderOfItsOwn(init_cwd, init_listing, init_env)
+        self.assertEmptyFolderOfItsOwn(fetch_cwd, fetch_listing, fetch_env)
+        self.assertNotEqual(init_cwd, fetch_cwd)
+        self.assertEqual(str(dest), init_argv[-1])
+        self.assertIn("--git-dir=" + str(dest), fetch_argv)
+        self.assertEqual(MINIMAL_CONFIG, fetch_config, "the new cache must hold the minimal configuration when it is fetched into")
+        self.assertEqual(MINIMAL_CONFIG, (dest / "config").read_bytes())
+
+    def test_a_relative_cache_path_reaches_git_as_an_absolute_one(self):
+        fake = FakeGit()
+        with in_folder(self.dir):
+            result = ts.fetch_git(self.URL, "ab" * 20, "relative-cache", fake)
+            absolute = os.path.abspath("relative-cache")
+        self.assertEqual(Path("relative-cache"), result, "the answer is the path that was given")
+        (init_argv, *_), = self.calls_with(fake, "init")
+        (fetch_argv, *_), = self.calls_with(fake, "fetch")
+        self.assertEqual(absolute, init_argv[-1])
+        self.assertIn("--git-dir=" + absolute, fetch_argv)
+        self.assertTrue(os.path.isfile(os.path.join(absolute, "config")))
+
+    def test_an_existing_cache_gets_the_minimal_configuration_before_anything_is_asked_of_it(self):
+        dest = self.dir / "old-cache"
+        dest.mkdir()
+        (dest / "config").write_text('[core]\n\tsshCommand = evil\n[url "elsewhere"]\n\tinsteadOf = %s\n' % self.URL, encoding="utf-8")
+        fake = FakeGit()
+        ts.fetch_git(self.URL, "ab" * 20, dest, fake)
+        self.assertIn("cat-file", fake.calls[0], "the first call asks whether the commit is there")
+        self.assertEqual(MINIMAL_CONFIG, fake.configs[0], "the first call already saw the old configuration")
+        self.assertEqual(MINIMAL_CONFIG, (dest / "config").read_bytes())
+
+    def test_a_cache_that_already_holds_the_commit_gets_the_minimal_configuration_too(self):
+        dest = self.dir / "full-cache"
+        dest.mkdir()
+        (dest / "config").write_text("[core]\n\tfsmonitor = evil\n", encoding="utf-8")
+        fake = FakeGit()
+        fake.fetched = True
+        ts.fetch_git(self.URL, "ab" * 20, dest, fake)
+        self.assertEqual(1, len(fake.calls))
+        self.assertEqual(MINIMAL_CONFIG, (dest / "config").read_bytes())
+
+    def test_the_cache_is_configured_again_right_after_git_made_it(self):
+        dest = self.dir / "made-cache"
+        written = []
+
+        class Writer(FakeGit):
+            def run(self, argv, **kwargs):
+                if "init" in argv:  # what git init leaves behind: its own configuration
+                    Path(argv[-1]).mkdir(parents=True, exist_ok=True)
+                    (Path(argv[-1]) / "config").write_text("[core]\n\trepositoryformatversion = 0\n\tfilemode = true\n\tbare = true\n[remote \"origin\"]\n\turl = x\n", encoding="utf-8")
+                result = super().run(argv, **kwargs)
+                written.append((argv, self.configs[-1]))
+                return result
+
+        ts.fetch_git(self.URL, "ab" * 20, dest, Writer())
+        (_, config), = [item for item in written if "fetch" in item[0]]
+        self.assertEqual(MINIMAL_CONFIG, config)
+
+    def test_a_configuration_that_is_a_folder_is_replaced_by_a_file(self):
+        dest = self.dir / "folder-config"
+        (dest / "config" / "inner").mkdir(parents=True)
+        ts.fetch_git(self.URL, "ab" * 20, dest, FakeGit())
+        self.assertTrue((dest / "config").is_file())
+        self.assertEqual(MINIMAL_CONFIG, (dest / "config").read_bytes())
+
+    def test_a_configuration_that_is_a_link_to_a_file_is_replaced_and_the_file_is_left_alone(self):
+        dest = self.dir / "link-config"
+        dest.mkdir()
+        outside = self.dir / "outside.cfg"
+        outside.write_text("keep me", encoding="utf-8")
+        try:
+            os.link(str(outside), str(dest / "config"))  # a second name of the same file: writing through it would change `outside`
+        except (OSError, NotImplementedError, AttributeError):
+            self.skipTest("this file system has no hard links")
+        ts.fetch_git(self.URL, "ab" * 20, dest, FakeGit())
+        self.assertEqual("keep me", outside.read_text(encoding="utf-8"))
+        self.assertEqual(MINIMAL_CONFIG, (dest / "config").read_bytes())
+        symlinked = self.dir / "symlink-config"
+        symlinked.mkdir()
+        try:
+            os.symlink(str(outside), str(symlinked / "config"))
+        except (OSError, NotImplementedError):
+            return
+        ts.fetch_git(self.URL, "ab" * 20, symlinked, FakeGit())
+        self.assertEqual("keep me", outside.read_text(encoding="utf-8"))
+        self.assertFalse((symlinked / "config").is_symlink())
+        self.assertEqual(MINIMAL_CONFIG, (symlinked / "config").read_bytes())
+
+    def test_a_cache_folder_that_is_a_link_is_refused_and_nothing_is_written_through_it(self):
+        outside = self.dir / "outside-cache"
+        outside.mkdir()
+        (outside / "config").write_text("keep me", encoding="utf-8")
+        link = self.dir / "cache-link"
+        if not make_folder_link(link, outside):
+            self.skipTest("this account cannot make a folder link")
+        self.addCleanup(remove_folder_link, link)
+        fake = FakeGit()
+        with self.assertRaises(ts.SourceError) as caught:
+            ts.fetch_git(self.URL, "ab" * 20, link, fake)
+        self.assertEqual("unresolved: the cache folder is a link", str(caught.exception))
+        self.assertEqual([], fake.calls)
+        self.assertEqual(["config"], os.listdir(outside))
+        self.assertEqual("keep me", (outside / "config").read_text(encoding="utf-8"))
+
+    def test_a_cache_folder_that_the_link_test_reports_as_a_link_is_refused_before_anything_is_written(self):
+        dest = self.dir / "plain-cache"
+        dest.mkdir()
+        (dest / "config").write_text("keep me", encoding="utf-8")
+        fake = FakeGit()
+        with mock.patch.object(ts, "_is_link", side_effect=lambda path: os.path.normcase(os.path.abspath(str(path))) == os.path.normcase(str(dest))):
+            with self.assertRaises(ts.SourceError) as caught:
+                ts.fetch_git(self.URL, "ab" * 20, dest, fake)
+        self.assertEqual("unresolved: the cache folder is a link", str(caught.exception))
+        self.assertEqual([], fake.calls)
+        self.assertEqual("keep me", (dest / "config").read_text(encoding="utf-8"))
+
+    def test_a_cache_whose_configuration_cannot_be_written_is_a_source_error(self):
+        dest = self.dir / "locked-cache"
+        dest.mkdir()
+        with mock.patch.object(ts, "_remove", side_effect=PermissionError("denied")):
+            with self.assertRaises(ts.SourceError) as caught:
+                ts.fetch_git(self.URL, "ab" * 20, dest, FakeGit())
+        self.assertEqual("unresolved", caught.exception.code)
+        self.assertNotIn(str(dest), str(caught.exception))
+
+
+@unittest.skipUnless(HAS_GIT, "git is not installed")
+class HostileRepositoryTests(unittest.TestCase):
+    """Hostile git configuration in the working folder of the operator, in the folders around the temporary folder and in the cache
+    folder itself: none of it may take effect. Real git. Each test first shows that plain git is affected, so that it cannot pass
+    for want of a vector."""
+
+    REWRITTEN = "file:///tc-rewritten-nowhere/"
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.dir = Path(os.path.realpath(self.tmp.name))
+
+    def git(self, *args, cwd=None, env=None):
+        merged = {name: value for name, value in os.environ.items() if name.upper() not in REPOSITORY_VARIABLES}
+        merged.update(GIT_ENV)
+        merged.update(env or {})
+        return subprocess.run(["git"] + list(args), cwd=str(cwd) if cwd else None, env=merged, capture_output=True, text=True, timeout=120, check=False)
+
+    def hostile_repository(self, name, config_text):
+        repo = self.dir / name
+        self.assertEqual(0, self.git("init", "--quiet", str(repo)).returncode)
+        (repo / ".git" / "config").write_text("[core]\n\trepositoryformatversion = 0\n" + config_text, encoding="utf-8", newline="\n")
+        return repo
+
+    def marker_command(self, name):
+        """A shell command for a setting that makes git run a program (git runs it with sh, on every system): it leaves a marker file."""
+        marker = self.dir / (name + "-ran.txt")
+        script = self.dir / (name + ".sh")
+        script.write_text("echo ran > '%s'\nexit 1\n" % marker.as_posix(), encoding="utf-8", newline="\n")
+        return marker, "sh '%s'" % script.as_posix()
+
+    def list_tags(self, cwd, env=None):
+        return self.git("-c", "protocol.file.allow=always", "ls-remote", "--tags", FX.url, cwd=cwd, env=env)
+
+    def resolve(self, runner=None):
+        return ts.resolve_git_ref(FX.url, {"kind": "tag", "pattern": "v*"}, runner or RecordingRunner())
+
+    def test_a_repository_as_the_working_folder_cannot_send_the_call_to_another_address(self):
+        repo = self.hostile_repository("rewrite", '[url "%s"]\n\tinsteadOf = %s\n' % (self.REWRITTEN, FX.url))
+        self.assertNotIn("refs/tags/v1.10.0", self.list_tags(repo).stdout, "premise: plain git reads the address rewrite of the repository it is in")
+        with in_folder(repo):
+            found = self.resolve()
+        self.assertEqual("v1.10.0", found["tag"])
+
+    def test_a_repository_as_the_working_folder_cannot_make_git_run_a_program_for_a_file_url(self):
+        marker, command = self.marker_command("uploadpack")
+        repo = self.hostile_repository("program", '[remote "%s"]\n\tuploadpack = %s\n' % (FX.url, command))
+        self.list_tags(repo)
+        self.assertTrue(marker.exists(), "premise: plain git runs the program that the repository names")
+        marker.unlink()
+        with in_folder(repo):
+            found = self.resolve()
+        self.assertEqual("v1.10.0", found["tag"])
+        self.assertFalse(marker.exists(), "git ran the program that the configuration of the working folder names")
+
+    def test_the_variables_of_the_operator_cannot_point_git_at_a_hostile_repository(self):
+        repo = self.hostile_repository("pointed", '[url "%s"]\n\tinsteadOf = %s\n' % (self.REWRITTEN, FX.url))
+        elsewhere = self.dir / "elsewhere"
+        elsewhere.mkdir()
+        hostile = {"GIT_DIR": str(repo / ".git")}
+        self.assertNotIn("refs/tags/v1.10.0", self.list_tags(elsewhere, hostile).stdout, "premise: plain git reads the repository that GIT_DIR names")
+        with in_folder(elsewhere), mock.patch.dict(os.environ, hostile):
+            found = self.resolve()
+            ts.fetch_git(FX.url, FX.commits[3], self.dir / "cache.git", RecordingRunner())
+        self.assertEqual("v1.10.0", found["tag"])
+        self.assertEqual(0, self.git("--git-dir=" + str(self.dir / "cache.git"), "cat-file", "-e", FX.commits[3] + "^{commit}").returncode)
+
+    def test_a_hostile_configuration_in_an_existing_cache_does_not_take_effect(self):
+        markers = {}
+        commands = {}
+        for name in ("uploadpack", "ssh", "fsmonitor", "origin"):
+            markers[name], commands[name] = self.marker_command("cache-" + name)
+        hostile = ("[core]\n\trepositoryformatversion = 0\n\tbare = true\n\tsshCommand = %(ssh)s\n\tfsmonitor = %(fsmonitor)s\n"
+                   '[url "%(nowhere)s"]\n\tinsteadOf = %(url)s\n[remote "origin"]\n\turl = %(url)s\n\tuploadpack = %(origin)s\n'
+                   '[remote "%(url)s"]\n\tuploadpack = %(uploadpack)s\n') % dict(commands, nowhere=self.REWRITTEN, url=FX.url)
+        cache = self.dir / "cache.git"
+        self.assertEqual(0, self.git("init", "--bare", "--quiet", str(cache)).returncode)
+        (cache / "config").write_text(hostile, encoding="utf-8", newline="\n")
+        copy = self.dir / "copy.git"
+        shutil.copytree(cache, copy)
+        plain = self.git("-c", "protocol.file.allow=always", "--git-dir=" + str(copy), "fetch", "--quiet", "--depth", "1", "--no-tags", FX.url, FX.commits[3])
+        self.assertNotEqual(0, plain.returncode, "premise: plain git does not get the commit with this configuration")
+        self.assertTrue(markers["uploadpack"].exists(), "premise: plain git runs the program that the cache configuration names")
+        markers["uploadpack"].unlink()
+        self.assertEqual(cache, ts.fetch_git(FX.url, FX.commits[3], cache, RecordingRunner()))
+        self.assertEqual(0, self.git("--git-dir=" + str(cache), "cat-file", "-e", FX.commits[3] + "^{commit}").returncode)
+        for name, marker in markers.items():
+            self.assertFalse(marker.exists(), "git ran the program of " + name)
+        self.assertEqual(MINIMAL_CONFIG, (cache / "config").read_bytes())
+
+    def test_the_template_variable_of_the_operator_cannot_give_a_new_cache_a_file_of_its_own(self):
+        template = self.dir / "template"
+        (template / "hooks").mkdir(parents=True)
+        (template / "hooks" / "tc-planted").write_text("#!/bin/sh\nexit 0\n", encoding="utf-8", newline="\n")
+        hostile = {"GIT_TEMPLATE_DIR": str(template)}
+        control = self.dir / "control.git"
+        self.assertEqual(0, self.git("init", "--bare", "--quiet", str(control), env=hostile).returncode)
+        self.assertTrue((control / "hooks" / "tc-planted").exists(), "premise: plain git copies the template that the variable names")
+        cache = self.dir / "cache.git"
+        with mock.patch.dict(os.environ, hostile):
+            ts.fetch_git(FX.url, FX.commits[3], cache, RecordingRunner())
+        self.assertTrue((cache / "HEAD").exists())
+        self.assertFalse((cache / "hooks" / "tc-planted").exists(), "the template of the operator was copied into the cache")
+
+    def test_a_repository_around_the_temporary_folder_is_not_read_because_the_ceiling_stops_the_search_at_its_parent(self):
+        marker, command = self.marker_command("outer")
+        outer = self.hostile_repository("outer", '[url "%s"]\n\tinsteadOf = %s\n[remote "%s"]\n\tuploadpack = %s\n' % (self.REWRITTEN, FX.url, FX.url, command))
+        probe = outer / "probe"
+        probe.mkdir()
+        found_without = self.git("rev-parse", "--git-dir", cwd=probe)
+        self.assertEqual(0, found_without.returncode, "premise: from a folder below it, plain git finds that repository")
+        stopped = self.git("rev-parse", "--git-dir", cwd=probe, env={"GIT_CEILING_DIRECTORIES": str(outer)})
+        self.assertNotEqual(0, stopped.returncode, "premise: the ceiling that names the parent of the folder stops the search")
+        self.assertNotIn("refs/tags/v1.10.0", self.list_tags(probe).stdout)
+        marker.unlink(missing_ok=True)
+        recorder = CwdRecordingRunner()
+        with mock.patch.object(tempfile, "tempdir", str(outer)):
+            found = self.resolve(recorder)
+        self.assertEqual("v1.10.0", found["tag"])
+        self.assertFalse(marker.exists(), "git read the repository around the temporary folder")
+        (cwd, listing), = recorder.where
+        self.assertEqual(outer, Path(cwd).parent)
+        self.assertEqual([], listing)
+        self.assertEqual(str(outer), recorder.calls[0][1]["GIT_CEILING_DIRECTORIES"])
 
 
 SHARED_FILES = {"shared.md": b"# Shared\nline two\n", "notebook-authoring/nb.md": b"# Notebook\n", "data.bin": b"\x00\x01\r\n\x02", "legacy.txt": b"caf\xe9\nsecond\n",
@@ -1885,6 +2425,429 @@ class VendorTests(unittest.TestCase):
         self.assertFalse((Path(self.tmp.name) / "escape").exists())
 
 
+@unittest.skipUnless(HAS_GIT, "git is not installed")
+class LintAgreementTests(unittest.TestCase):
+    """The lint of a skill is the same whether it is read from git objects, from a checkout or from the vendored copy, also when it holds a link."""
+
+    def setUp(self):
+        self.runner = IsolatedRunner()
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.base = Path(self.tmp.name)
+
+    @staticmethod
+    def kept(lint):
+        return {key: lint[key] for key in ("description_chars", "install_hints", "findings")}
+
+    def test_a_link_that_holds_an_install_command_is_counted_by_all_three(self):
+        in_git = ts.read_plugin(FX.git_dir, FX.commits[3], "plugins/kappa", self.runner)["skills"]["hint-link"]
+        self.assertEqual(1, in_git["install_hints"], "premise: the link entry of the git tree is a file that holds its target")
+        checkout = self.base / "checkout"
+        FX.clone(checkout, "false", FX.commits[3])
+        store = self.base / "pack"
+        ts.vendor_skills(lock_for(FX, self.runner, plugins=("kappa",)), [("fx", "kappa", "hint-link")], store, self.runner)
+        for label, folder in (("a checkout", checkout / "plugins" / "kappa" / "skills" / "hint-link"), ("the vendored copy", store / "skills" / "hint-link")):
+            with self.subTest(label):
+                self.assertEqual(self.kept(in_git), self.kept(ts.lint_skill(folder)))
+
+
+@unittest.skipUnless(HAS_GIT, "git is not installed")
+class VendorRetryTests(unittest.TestCase):
+    """The swap of a store waits for a folder that Windows refuses to move for a moment (a sync client or a scanner has it open), and
+    still gives up on a refusal that stays or that is a real one."""
+
+    def setUp(self):
+        self.runner = IsolatedRunner()
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.store = Path(self.tmp.name) / "pack"
+        self.lock = lock_for(FX, self.runner)
+
+    @staticmethod
+    def refusal():
+        error = PermissionError(13, "Access is denied")
+        error.winerror = 5
+        return error
+
+    def refused(self, times, transient=True, delays=(0, 0, 0)):
+        """The patches that make Windows refuse the first `times` moves of a folder into the skills folder of the store. (The test does not
+        change what system it runs on: only the answer to "is this refusal one that goes away" is given.)"""
+        real, seen = os.replace, []
+
+        def replace(src, dst, *args, **kwargs):
+            if Path(dst).parent.name == "skills" and len(seen) < times:
+                seen.append(1)
+                raise self.refusal()
+            return real(src, dst, *args, **kwargs)
+        stack = contextlib.ExitStack()
+        stack.enter_context(mock.patch.object(toolchain_io, "transient_refusal", side_effect=lambda exc: transient))
+        stack.enter_context(mock.patch.object(toolchain_io, "RETRY_DELAYS", delays))
+        stack.enter_context(mock.patch.object(os, "replace", side_effect=replace))
+        return stack, seen
+
+    def staging(self):
+        return [p.name for p in self.store.iterdir() if p.name.startswith(".staging")]
+
+    def test_a_skill_folder_that_windows_refuses_to_move_for_a_moment_is_moved_after_a_pause(self):
+        patches, seen = self.refused(2)
+        with patches:
+            ts.vendor_skills(self.lock, [("fx", "alpha", "good-skill")], self.store, self.runner)
+        self.assertEqual(2, len(seen))
+        entry = self.lock["skill_sources"]["fx"]["plugins"]["alpha"]["skills"]["good-skill"]
+        self.assertEqual(entry["digest"], ts.digest_tree(self.store / "skills" / "good-skill")["digest"])
+        self.assertEqual([], self.staging())
+
+    def test_a_refusal_that_stays_is_an_unresolved_error_after_the_last_pause_and_the_store_is_as_it_was(self):
+        patches, seen = self.refused(99, delays=(0, 0))
+        with patches, self.assertRaises(ts.SourceError) as caught:
+            ts.vendor_skills(self.lock, [("fx", "alpha", "good-skill")], self.store, self.runner)
+        self.assertEqual("unresolved", caught.exception.code)
+        self.assertEqual(3, len(seen), "once, and again after each of the two pauses")
+        self.assertFalse((self.store / "skills" / "good-skill").exists())
+        self.assertFalse((self.store / "MANIFEST.json").exists())
+        self.assertEqual([], self.staging())
+
+    def test_a_refusal_that_is_not_one_that_goes_away_is_not_waited_for(self):
+        patches, seen = self.refused(99, transient=False)
+        with patches, self.assertRaises(ts.SourceError):
+            ts.vendor_skills(self.lock, [("fx", "alpha", "good-skill")], self.store, self.runner)
+        self.assertEqual(1, len(seen))
+
+    def test_a_folder_that_is_removed_waits_for_a_refusal_too(self):
+        folder = Path(self.tmp.name) / "to-remove"
+        (folder / "inner").mkdir(parents=True)
+        (folder / "inner" / "file.txt").write_text("x", encoding="utf-8")
+        real, calls = shutil.rmtree, []
+
+        def rmtree(path, *args, **kwargs):
+            calls.append(1)
+            if len(calls) < 3:
+                raise self.refusal()
+            return real(path, *args, **kwargs)
+        with mock.patch.object(toolchain_io, "transient_refusal", side_effect=lambda exc: True), mock.patch.object(toolchain_io, "RETRY_DELAYS", (0, 0, 0)), \
+                mock.patch.object(shutil, "rmtree", side_effect=rmtree):
+            ts._remove(folder)
+        self.assertFalse(folder.exists())
+        self.assertEqual(3, len(calls))
+
+    def test_a_file_that_is_removed_waits_for_a_refusal_too(self):
+        path = Path(self.tmp.name) / "file.txt"
+        path.write_text("x", encoding="utf-8")
+        real, calls = os.unlink, []
+
+        def unlink(target, *args, **kwargs):
+            calls.append(1)
+            if len(calls) < 3:
+                raise self.refusal()
+            return real(target, *args, **kwargs)
+        with mock.patch.object(toolchain_io, "transient_refusal", side_effect=lambda exc: True), mock.patch.object(toolchain_io, "RETRY_DELAYS", (0, 0, 0)), \
+                mock.patch.object(os, "unlink", side_effect=unlink):
+            ts._remove(path)
+        self.assertFalse(path.exists())
+        self.assertEqual(3, len(calls))
+
+
+class VendorLinkTests(unittest.TestCase):
+    """vendor_skills never writes or deletes through a link (a symbolic link, or a junction on Windows). A pack folder that holds one
+    is refused before anything is staged or swapped. The real links are made with a junction on Windows and a symbolic link elsewhere;
+    the same rules are also run with the link test of the module reporting links where there are none."""
+
+    SELECTION = [("fx", "alpha", "good-skill"), ("fx", "beta", "other-skill")]
+    SHARED = [("fx", "common")]
+
+    @classmethod
+    def made_lock(cls, runner):
+        lock = lock_for(FX, runner)
+        info = ts.read_plugin(FX.git_dir, FX.commits[3], "plugins/alpha", runner, shared=("common",))["shared"]["common"]
+        lock["skill_sources"]["fx"]["shared"] = {"common": dict(info, plugin="alpha")}
+        return lock
+
+    @classmethod
+    def setUpClass(cls):
+        cls.template = tempfile.TemporaryDirectory()
+        runner = IsolatedRunner()
+        ts.vendor_skills(cls.made_lock(runner), cls.SELECTION, Path(cls.template.name) / "pack", runner, shared=cls.SHARED)
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.template.cleanup()
+
+    def setUp(self):
+        self.runner = IsolatedRunner()
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.store = Path(self.tmp.name) / "pack"
+        self.outside = Path(self.tmp.name) / "outside"
+        (self.outside / "victim").mkdir(parents=True)
+        (self.outside / "victim" / "keep.txt").write_bytes(b"keep\n")
+        (self.outside / "note.txt").write_bytes(b"note\n")
+        self.lock = self.made_lock(self.runner)
+        self.runner.calls.clear()
+
+    def prepare(self):
+        """A real pack: two skills, the shared folder and the git cache."""
+        shutil.copytree(str(Path(self.template.name) / "pack"), str(self.store))
+
+    def forget_shared(self):
+        """The MANIFEST no longer lists the shared folder, as if it had never been vendored."""
+        path = self.store / "MANIFEST.json"
+        manifest = json.loads(path.read_text(encoding="utf-8"))
+        manifest["shared"] = {}
+        path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    def vendor(self, selection=None, shared=None):
+        return ts.vendor_skills(self.lock, self.SELECTION if selection is None else selection, self.store, self.runner,
+                                shared=self.SHARED if shared is None else shared)
+
+    def link(self, path, target=None):
+        """Make `path` a link to `target` (the victim folder by default), in place of what is there. Skips the test when this account cannot."""
+        path = Path(path)
+        if is_any_link(path):
+            remove_folder_link(path)
+        elif path.is_dir():
+            ts._rmtree(str(path))
+        path.parent.mkdir(parents=True, exist_ok=True)
+        if not make_folder_link(path, target or self.outside / "victim"):
+            self.skipTest("this account cannot make a link")
+        self.addCleanup(remove_folder_link, path)
+
+    def reported_as_links(self, *paths):
+        """The link test of the module says yes for these paths (and what it really finds), so that a plain folder stands for a link."""
+        marked = {os.path.normcase(os.path.abspath(str(path))) for path in paths}
+        real = ts._is_link
+        return mock.patch.object(ts, "_is_link", side_effect=lambda path: os.path.normcase(os.path.abspath(str(path))) in marked or real(path))
+
+    def entries_reported_as_links(self, *paths):
+        """The same for the entries that a walk of a folder meets."""
+        marked = {os.path.normcase(os.path.abspath(str(path))) for path in paths}
+        real = ts._entry_is_link
+        return mock.patch.object(ts, "_entry_is_link", side_effect=lambda entry: os.path.normcase(os.path.abspath(entry.path)) in marked or real(entry))
+
+    def state(self):
+        return tree_listing(self.outside), tree_listing(self.store) if os.path.isdir(self.store) else None
+
+    def refused(self, selection=None, shared=None):
+        """vendor_skills refuses with `unresolved`; nothing was run, moved, created or deleted, inside the pack folder or outside it."""
+        before = self.state()
+        with mock.patch.object(ts, "_move", side_effect=AssertionError("a folder was moved before the links were checked")):
+            with self.assertRaises(ts.SourceError) as caught:
+                self.vendor(selection, shared)
+        self.assertEqual("unresolved", caught.exception.code)
+        self.assertIn("link", str(caught.exception))
+        self.assertEqual([], self.runner.calls, "git was used before the pack folder was checked")
+        self.assertEqual(before, self.state(), "something was created, changed or deleted")
+
+    # ---- real links ----
+
+    def test_a_link_as_the_pack_folder_is_refused(self):
+        self.link(self.store, self.outside)
+        self.refused()
+
+    def test_a_link_as_the_skills_folder_is_refused(self):
+        self.prepare()
+        self.link(self.store / "skills")
+        self.refused()
+
+    def test_a_link_as_a_selected_skill_folder_is_refused_even_when_it_points_to_a_valid_copy(self):
+        self.prepare()
+        shutil.copytree(str(self.store / "skills" / "good-skill"), str(self.outside / "copy"))
+        self.link(self.store / "skills" / "good-skill", self.outside / "copy")
+        self.refused()
+
+    def test_a_link_as_a_skill_folder_that_is_not_selected_is_refused(self):
+        self.prepare()
+        self.link(self.store / "skills" / "stale-skill")
+        self.refused([("fx", "alpha", "good-skill")])
+
+    def test_a_link_that_points_nowhere_is_refused_too(self):
+        self.prepare()
+        gone = self.outside / "gone"
+        gone.mkdir()
+        self.link(self.store / "skills" / "gone", gone)
+        gone.rmdir()
+        self.refused()
+
+    def test_a_link_as_a_wanted_shared_folder_is_refused(self):
+        self.prepare()
+        self.link(self.store / "common")
+        self.refused()
+
+    def test_a_link_as_a_shared_folder_that_left_the_selection_is_refused(self):
+        self.prepare()
+        self.link(self.store / "common")
+        self.refused(shared=[])
+
+    def test_a_link_as_a_shared_folder_that_the_manifest_does_not_list_is_refused_when_it_is_asked_for(self):
+        self.prepare()
+        self.forget_shared()
+        self.link(self.store / "common")
+        self.refused()
+
+    def test_a_link_inside_a_shared_folder_that_the_manifest_does_not_list_is_refused_when_it_is_asked_for(self):
+        self.prepare()
+        self.forget_shared()
+        self.link(self.store / "common" / "inner")
+        self.refused()
+
+    def test_nothing_is_staged_when_a_link_is_found(self):
+        self.prepare()
+        (self.store / "skills" / "good-skill" / "SKILL.md").write_bytes(b"damaged\n")
+        self.link(self.store / "common" / "inner")
+        self.refused()
+        self.assertEqual(b"damaged\n", (self.store / "skills" / "good-skill" / "SKILL.md").read_bytes())
+
+    def test_a_link_inside_a_skill_folder_is_refused(self):
+        self.prepare()
+        self.link(self.store / "skills" / "good-skill" / "references" / "inner")
+        self.refused()
+
+    def test_a_link_inside_a_skill_folder_that_is_not_selected_is_refused(self):
+        self.prepare()
+        (self.store / "skills" / "stale-skill").mkdir()
+        (self.store / "skills" / "stale-skill" / "x.txt").write_bytes(b"x\n")
+        self.link(self.store / "skills" / "stale-skill" / "deep" / "inner")
+        self.refused([("fx", "alpha", "good-skill")])
+
+    def test_a_link_named_dot_git_inside_a_skill_folder_is_refused(self):
+        self.prepare()
+        self.link(self.store / "skills" / "good-skill" / ".git")
+        self.refused()
+
+    def test_a_link_inside_a_shared_folder_is_refused(self):
+        self.prepare()
+        self.link(self.store / "common" / "notebook-authoring" / "inner")
+        self.refused()
+
+    def test_a_link_inside_a_shared_folder_that_left_the_selection_is_refused(self):
+        self.prepare()
+        self.link(self.store / "common" / "inner")
+        self.refused(shared=[])
+
+    def test_a_link_as_the_folder_of_the_git_caches_is_refused(self):
+        self.prepare()
+        self.link(self.store / ".cache")
+        self.refused()
+
+    def test_a_link_as_the_cache_of_a_commit_is_refused(self):
+        self.prepare()
+        self.link(self.store / ".cache" / FX.commits[3][:12])
+        self.refused()
+
+    def test_a_link_that_vendor_skills_never_touches_is_left_alone(self):
+        self.prepare()
+        self.link(self.store / "hand-made")
+        before = tree_listing(self.outside)
+        self.vendor()
+        self.assertTrue(is_any_link(self.store / "hand-made"))
+        self.assertEqual(before, tree_listing(self.outside))
+
+    def test_a_pack_folder_without_links_is_still_served(self):
+        self.prepare()
+        (self.store / "skills" / "good-skill" / "SKILL.md").write_bytes(b"damaged\n")
+        manifest = self.vendor()
+        self.assertEqual(["good-skill", "other-skill"], sorted(manifest["skills"]))
+        self.assertEqual(self.lock["skill_sources"]["fx"]["plugins"]["alpha"]["skills"]["good-skill"]["digest"],
+                         ts.digest_tree(self.store / "skills" / "good-skill")["digest"])
+
+    # ---- the same rules with a link test that finds links in plain folders (runs wherever no link can be made) ----
+
+    def test_every_place_that_is_reported_as_a_link_is_refused(self):
+        self.prepare()
+        cache = self.store / ".cache"
+        only_good = [("fx", "alpha", "good-skill")]
+        for label, path, arguments in (
+                ("pack folder", self.store, {}),
+                ("skills folder", self.store / "skills", {}),
+                ("selected skill", self.store / "skills" / "good-skill", {}),
+                ("skill that is not selected", self.store / "skills" / "other-skill", {"selection": only_good}),
+                ("wanted shared folder", self.store / "common", {}),
+                ("shared folder that left the selection", self.store / "common", {"shared": []}),
+                ("folder of the git caches", cache, {}),
+                ("cache of the commit", cache / FX.commits[3][:12], {})):
+            with self.subTest(label), self.reported_as_links(path):
+                self.refused(**arguments)
+
+    def test_a_skill_that_is_a_file_reported_as_a_link_is_refused(self):
+        self.prepare()
+        (self.store / "skills" / "notes.txt").write_bytes(b"notes\n")
+        with self.reported_as_links(self.store / "skills" / "notes.txt"):
+            self.refused()
+
+    def test_every_entry_inside_a_folder_that_is_reported_as_a_link_is_refused(self):
+        self.prepare()
+        only_good = [("fx", "alpha", "good-skill")]
+        (self.store / "skills" / "good-skill" / ".git").write_bytes(b"gitdir: elsewhere\n")
+        for label, path, arguments in (
+                ("file of a selected skill", self.store / "skills" / "good-skill" / "SKILL.md", {}),
+                ("folder deep in a selected skill", self.store / "skills" / "good-skill" / "references", {}),
+                ("file of a skill that is not selected", self.store / "skills" / "other-skill" / "SKILL.md", {"selection": only_good}),
+                ("top-level .git of a skill", self.store / "skills" / "good-skill" / ".git", {}),
+                ("file of a wanted shared folder", self.store / "common" / "shared.md", {}),
+                ("folder deep in a wanted shared folder", self.store / "common" / "notebook-authoring", {}),
+                ("file of a shared folder that left the selection", self.store / "common" / "shared.md", {"shared": []})):
+            with self.subTest(label), self.entries_reported_as_links(path):
+                self.refused(**arguments)
+
+    def test_a_link_is_refused_also_when_nothing_is_selected_and_nothing_is_shared(self):
+        self.prepare()
+        for label, path in (("pack folder", self.store), ("skills folder", self.store / "skills"), ("skill folder", self.store / "skills" / "good-skill")):
+            with self.subTest(label), self.reported_as_links(path):
+                self.refused([], [])
+
+    # ---- the fast path and the staging ----
+
+    def test_the_fast_path_is_not_taken_for_a_link(self):
+        self.prepare()
+        target = self.store / "skills" / "good-skill"
+        self.assertEqual(self.lock["skill_sources"]["fx"]["plugins"]["alpha"]["skills"]["good-skill"]["digest"], ts.digest_tree(target)["digest"])
+        self.vendor()
+        self.assertEqual([], self.runner.calls, "premise: a folder with the right digest needs no git")
+        # The check that comes first is switched off, to show that the fast path has a check of its own.
+        with mock.patch.object(ts, "_refuse_links"), self.reported_as_links(target):
+            self.vendor()
+        self.assertTrue(any("ls-tree" in argv for argv in self.runner.argvs()), "the folder that is a link was taken for a valid one")
+
+    def put_shared_in_lock(self, plugin, digest):
+        source = self.lock["skill_sources"]["fx"]
+        source["plugins"][plugin] = {"path": "plugins/" + plugin, "skills": {}}
+        source["shared"]["common"] = {"plugin": plugin, "digest": digest, "files": 2, "bytes": 11}
+
+    def test_a_link_in_a_shared_folder_of_the_git_tree_is_refused_by_the_staging(self):
+        # The digest is the one that the files have in git, where the link counts as a file that holds its target.
+        self.put_shared_in_lock("theta", ts.digest_git_tree(FX.git_dir, FX.commits[3], "plugins/theta/common", self.runner)["digest"])
+        with self.assertRaises(ts.SourceError) as caught:
+            self.vendor([("fx", "alpha", "good-skill")])
+        self.assertEqual("unresolved: a link inside a shared folder", str(caught.exception))
+        self.assertFalse((self.store / "common").exists())
+        self.assertFalse((self.store / "MANIFEST.json").exists())
+        self.assertEqual([], [p.name for p in self.store.iterdir() if p.name.startswith(".staging")])
+
+    def test_a_submodule_in_a_shared_folder_of_the_git_tree_is_refused_by_the_staging(self):
+        self.put_shared_in_lock("eta", "sha256:" + "7" * 64)
+        with self.assertRaises(ts.SourceError) as caught:
+            self.vendor([("fx", "alpha", "good-skill")])
+        self.assertEqual("unresolved: a submodule inside the tree", str(caught.exception))
+        self.assertFalse((self.store / "common").exists())
+
+    def test_a_shared_folder_that_the_commit_does_not_hold_is_refused_by_the_staging(self):
+        self.put_shared_in_lock("delta", "sha256:" + "8" * 64)
+        with self.assertRaises(ts.SourceError) as caught:
+            self.vendor([("fx", "alpha", "good-skill")])
+        self.assertEqual("unresolved: shared folder not found", str(caught.exception))
+        self.assertFalse((self.store / "common").exists())
+
+    def test_a_shared_folder_of_a_big_plugin_is_staged_because_only_the_folder_has_the_limit(self):
+        # The plugin around the folder has more files than the limit; the folder and the skill have fewer.
+        with mock.patch.object(ts, "MAX_TREE_FILES", 8):
+            self.vendor([("fx", "alpha", "good-skill")])
+        self.assertEqual(self.lock["skill_sources"]["fx"]["shared"]["common"]["digest"], ts.digest_tree(self.store / "common")["digest"])
+
+    def test_a_link_in_a_skill_of_the_git_tree_is_still_written_as_a_file_that_holds_its_target(self):
+        self.vendor([("fx", "alpha", "link-skill")], shared=[])
+        self.assertEqual(b"SKILL.md", (self.store / "skills" / "link-skill" / "current").read_bytes())
+        self.assertFalse(is_any_link(self.store / "skills" / "link-skill" / "current"))
+
+
 class FakeRunner:
     """Answers `npm` calls and HTTP requests from tables and records what was asked."""
 
@@ -1894,6 +2857,7 @@ class FakeRunner:
         self.calls = []
         self.cwds = []
         self.listings = []
+        self.files = []
 
     def which(self, name):
         return name
@@ -1902,6 +2866,7 @@ class FakeRunner:
         self.calls.append(("run", list(argv)))
         self.cwds.append(cwd)
         self.listings.append(sorted(os.listdir(cwd)) if cwd and os.path.isdir(cwd) else None)
+        self.files.append({name: Path(cwd, name).read_text(encoding="utf-8") for name in os.listdir(cwd)} if cwd and os.path.isdir(cwd) else None)
         if isinstance(self.npm, Exception):
             raise self.npm
         return self.npm(argv) if callable(self.npm) else (self.npm or CommandResult(127, "", "not found"))
@@ -1952,6 +2917,7 @@ INTERNAL_HOST = "pkgs." + "visual" + "studio.com"
 FEED_URL = "https://" + INTERNAL_HOST + "/org/_packaging/feed/npm/registry/@microsoft%2ffabric-mcp"
 NPM_ERROR = "npm error code E404\nnpm error 404 Not Found - GET " + FEED_URL + " - Not found\nnpm error 404\nnpm error host " + INTERNAL_HOST + "\n"
 NPM_ARGV = ["npm", "view", "@microsoft/fabric-mcp", "version", "dist.integrity", "--json"]
+BLOCKED = {NPM_URL: HttpResult(0, {}, b"", "tls")}  # the official registry cannot be reached
 
 
 def npm_ok(payload):
@@ -1976,20 +2942,20 @@ class NpmTests(unittest.TestCase):
         return ts.resolve_package("npm", "@microsoft/fabric-mcp", track, runner)
 
     def test_the_cli_answers_with_an_object(self):
-        runner = FakeRunner(npm=npm_ok({"version": "1.6.0", "dist.integrity": INTEGRITY}))
+        runner = FakeRunner(npm=npm_ok({"version": "1.6.0", "dist.integrity": INTEGRITY}), http=BLOCKED)
         self.assertEqual({"status": "resolved", "version": "1.6.0", "integrity": INTEGRITY, "via": "npm-cli"}, self.resolve(runner))
         self.assertEqual([("run", NPM_ARGV), ("http", NPM_URL)], runner.calls)
 
     def test_the_cli_answers_with_an_array_as_it_does_on_the_maintainers_machine(self):
-        runner = FakeRunner(npm=npm_ok([{"version": "1.6.0", "dist.integrity": INTEGRITY}]))
+        runner = FakeRunner(npm=npm_ok([{"version": "1.6.0", "dist.integrity": INTEGRITY}]), http=BLOCKED)
         self.assertEqual({"status": "resolved", "version": "1.6.0", "integrity": INTEGRITY, "via": "npm-cli"}, self.resolve(runner))
 
     def test_an_array_of_several_versions_gives_the_highest(self):
-        runner = FakeRunner(npm=npm_ok([{"version": "1.9.0", "dist.integrity": INTEGRITY}, {"version": "1.10.0", "dist.integrity": INTEGRITY}]))
+        runner = FakeRunner(npm=npm_ok([{"version": "1.9.0", "dist.integrity": INTEGRITY}, {"version": "1.10.0", "dist.integrity": INTEGRITY}]), http=BLOCKED)
         self.assertEqual("1.10.0", self.resolve(runner)["version"])
 
     def test_a_release_wins_over_a_higher_pre_release_in_an_array(self):
-        runner = FakeRunner(npm=npm_ok([{"version": "1.9.0", "dist.integrity": INTEGRITY}, {"version": "2.0.0-beta.1", "dist.integrity": INTEGRITY}]))
+        runner = FakeRunner(npm=npm_ok([{"version": "1.9.0", "dist.integrity": INTEGRITY}, {"version": "2.0.0-beta.1", "dist.integrity": INTEGRITY}]), http=BLOCKED)
         self.assertEqual("1.9.0", self.resolve(runner)["version"])
 
     def test_an_answer_that_was_cut_short_is_a_failure_of_that_stage(self):
@@ -2003,11 +2969,11 @@ class NpmTests(unittest.TestCase):
         self.assertEqual({"status": "unresolved", "reason": "unresolved", "detail": "no integrity"}, self.resolve(runner))
 
     def test_an_object_that_holds_a_nested_integrity_is_read_too(self):
-        runner = FakeRunner(npm=npm_ok({"version": "1.6.0", "dist": {"integrity": INTEGRITY}}))
+        runner = FakeRunner(npm=npm_ok({"version": "1.6.0", "dist": {"integrity": INTEGRITY}}), http=BLOCKED)
         self.assertEqual(INTEGRITY, self.resolve(runner)["integrity"])
 
     def test_an_exact_version_is_asked_for_by_name_and_version(self):
-        runner = FakeRunner(npm=npm_ok({"version": "1.5.0", "dist.integrity": INTEGRITY}))
+        runner = FakeRunner(npm=npm_ok({"version": "1.5.0", "dist.integrity": INTEGRITY}), http=BLOCKED)
         result = self.resolve(runner, "1.5.0")
         self.assertEqual("1.5.0", result["version"])
         self.assertEqual("@microsoft/fabric-mcp" + "@" + "1.5.0", runner.calls[0][1][2])
@@ -2115,14 +3081,53 @@ class NpmTests(unittest.TestCase):
             result = self.resolve(FakeRunner(npm=npm, http=table), track)
             self.assertEqual(mismatch, result, label)
 
-    def test_a_registry_that_cannot_be_asked_does_not_stop_the_command_line_answer(self):
-        document_without_integrity = {"dist-tags": {"latest": "1.6.0"}, "versions": {"1.6.0": {"dist": {}}}}
-        for label, answer in (("tls", failed("tls")), ("dns", failed("dns")), ("timeout", failed("timeout")), ("503", status_only(503)),
-                              ("404", status_only(404)), ("not json", HttpResult(200, {}, b"not json", None)), ("a list", json_answer([])),
-                              ("cut short", HttpResult(200, {}, b"{}", "too-large")), ("a document without the integrity", json_answer(document_without_integrity)),
-                              ("a document without versions", json_answer({"dist-tags": {"latest": "1.6.0"}}))):
+    def test_a_registry_that_cannot_be_reached_does_not_stop_the_command_line_answer(self):
+        # Only an official registry that gave no answer at all leaves the command line alone: the operator's own configuration may be the only way out.
+        wanted = {"status": "resolved", "version": "1.6.0", "integrity": INTEGRITY, "via": "npm-cli"}
+        for label, answer in (("tls", failed("tls")), ("dns", failed("dns")), ("timeout", failed("timeout")), ("500", status_only(500)),
+                              ("503", status_only(503)), ("429", status_only(429)), ("403", status_only(403)),
+                              ("cut short", HttpResult(200, {}, b"{}", "too-large"))):
             runner = FakeRunner(npm=npm_ok({"version": "1.6.0", "dist.integrity": INTEGRITY}), http={NPM_URL: answer})
-            self.assertEqual({"status": "resolved", "version": "1.6.0", "integrity": INTEGRITY, "via": "npm-cli"}, self.resolve(runner), label)
+            self.assertEqual(wanted, self.resolve(runner), label)
+
+    def test_a_registry_that_answers_with_not_found_beats_the_command_line(self):
+        # The command line may be pointed at another registry that serves a different package of the same name.
+        mismatch = {"status": "unresolved", "reason": "unresolved", "detail": "mismatch"}
+        for label, answer in (("404", status_only(404)), ("410", status_only(410))):
+            runner = FakeRunner(npm=npm_ok({"version": "9.9.9", "dist.integrity": INTEGRITY}), http={NPM_URL: answer})
+            self.assertEqual(mismatch, self.resolve(runner), label)
+        runner = FakeRunner(npm=npm_ok({"version": "9.9.9", "dist.integrity": INTEGRITY}))
+        self.assertEqual(mismatch, self.resolve(runner), "the table has no entry, which the fake answers with 404")
+
+    def test_a_registry_whose_answer_is_unusable_beats_the_command_line(self):
+        mismatch = {"status": "unresolved", "reason": "unresolved", "detail": "mismatch"}
+        listed_without_latest = {"dist-tags": {"latest": "1.6.0"}, "versions": {"1.5.0": {"dist": {"integrity": INTEGRITY}}}}
+        for label, answer in (("not json", HttpResult(200, {}, b"not json", None)), ("a list", json_answer([])), ("no latest tag", json_answer(packument(tags={"next": "2.0.0"}))),
+                              ("a latest tag that is not a version", json_answer(packument(tags={"latest": "x; y"}))),
+                              ("a document without versions", json_answer({"dist-tags": {"latest": "1.6.0"}})),
+                              ("a latest version that has no entry", json_answer(listed_without_latest)),
+                              ("an integrity that is not one", json_answer({"dist-tags": {"latest": "1.6.0"}, "versions": {"1.6.0": {"dist": {"integrity": "md5-x"}}}}))):
+            runner = FakeRunner(npm=npm_ok({"version": "1.6.0", "dist.integrity": INTEGRITY}), http={NPM_URL: answer})
+            self.assertEqual(mismatch, self.resolve(runner), label)
+
+    def test_a_registry_that_lists_no_integrity_beats_the_command_line(self):
+        mismatch = {"status": "unresolved", "reason": "unresolved", "detail": "mismatch"}
+        for label, versions in (("an empty dist", {"1.6.0": {"dist": {}}}), ("only a shasum", {"1.6.0": {"dist": {"shasum": "abc"}}}), ("no dist", {"1.6.0": {}})):
+            runner = FakeRunner(npm=npm_ok({"version": "1.6.0", "dist.integrity": INTEGRITY}), http={NPM_URL: json_answer({"dist-tags": {"latest": "1.6.0"}, "versions": versions})})
+            self.assertEqual(mismatch, self.resolve(runner), label)
+
+    def test_a_registry_that_does_not_list_the_pinned_version_beats_the_command_line(self):
+        mismatch = {"status": "unresolved", "reason": "unresolved", "detail": "mismatch"}
+        runner = FakeRunner(npm=npm_ok({"version": "9.9.9", "dist.integrity": INTEGRITY}), http={NPM_URL: json_answer(packument())})
+        self.assertEqual(mismatch, self.resolve(runner, "9.9.9"))
+
+    def test_the_command_line_and_the_registry_must_agree_on_the_version_and_on_the_integrity(self):
+        other = "sha512-" + "C" * 86 + "=="
+        agree = {NPM_URL: json_answer(packument())}
+        mismatch = {"status": "unresolved", "reason": "unresolved", "detail": "mismatch"}
+        self.assertEqual("npm-cli", self.resolve(FakeRunner(npm=npm_ok({"version": "1.6.0", "dist.integrity": INTEGRITY}), http=agree))["via"])
+        self.assertEqual(mismatch, self.resolve(FakeRunner(npm=npm_ok({"version": "1.6.0", "dist.integrity": other}), http=agree)))
+        self.assertEqual(mismatch, self.resolve(FakeRunner(npm=npm_ok({"version": "1.5.0", "dist.integrity": INTEGRITY}), http=agree)))
 
     def test_an_answer_without_an_integrity_is_never_accepted(self):
         no_integrity = {"dist-tags": {"latest": "1.6.0"}, "versions": {"1.6.0": {"dist": {"shasum": "abc"}}, "1.5.0": {"dist": {}}}}
@@ -2139,7 +3144,7 @@ class NpmTests(unittest.TestCase):
         runner = FakeRunner(npm=npm_ok("1.6.0"), http={NPM_URL: json_answer(packument())})
         self.assertEqual({"status": "resolved", "version": "1.6.0", "integrity": INTEGRITY, "via": "npm-registry"}, self.resolve(runner))
 
-    def test_the_command_line_runs_in_a_fresh_empty_folder_that_is_removed_afterwards(self):
+    def test_the_command_line_runs_in_a_fresh_folder_that_holds_only_its_own_project_files_and_is_removed_afterwards(self):
         seen = []
         for _ in range(2):
             runner = FakeRunner(npm=npm_ok({"version": "1.6.0", "dist.integrity": INTEGRITY}))
@@ -2147,7 +3152,8 @@ class NpmTests(unittest.TestCase):
             self.assertEqual(1, len(runner.cwds))
             cwd = runner.cwds[0]
             self.assertTrue(cwd and os.path.isabs(cwd), cwd)
-            self.assertEqual([], runner.listings[0], "the folder was not empty or did not exist when npm ran")
+            self.assertEqual([".npmrc", "package.json"], runner.listings[0], "the folder held more or less than its own two files when npm ran")
+            self.assertEqual({".npmrc": "", "package.json": "{}"}, runner.files[0])
             self.assertFalse(os.path.exists(cwd), "the folder was left behind")
             here = os.path.realpath(os.getcwd()).lower()
             self.assertFalse(os.path.realpath(cwd).lower().startswith(here + os.sep) or os.path.realpath(cwd).lower() == here)
@@ -2168,6 +3174,22 @@ class NpmTests(unittest.TestCase):
         self.assertEqual({"status": "resolved", "version": "1.6.0", "integrity": INTEGRITY, "via": "npm-registry"}, result)
         self.assertEqual([], [call for call in runner.calls if call[0] == "run"])
 
+    def test_a_folder_whose_files_cannot_be_written_is_a_failure_of_the_stage_not_an_exception_and_npm_is_not_run(self):
+        with tempfile.TemporaryDirectory() as base:
+            missing = os.path.join(base, "nothing-here")
+            runner = FakeRunner(npm=npm_ok({"version": "1.6.0", "dist.integrity": INTEGRITY}), http={NPM_URL: json_answer(packument())})
+            with mock.patch.object(ts.tempfile, "mkdtemp", return_value=missing):
+                result = self.resolve(runner)
+        self.assertEqual({"status": "resolved", "version": "1.6.0", "integrity": INTEGRITY, "via": "npm-registry"}, result)
+        self.assertEqual([], [call for call in runner.calls if call[0] == "run"])
+        runner = FakeRunner(npm=npm_ok({"version": "1.6.0", "dist.integrity": INTEGRITY}), http={NPM_URL: failed("tls")})
+        with tempfile.TemporaryDirectory() as base:
+            with mock.patch.object(ts.tempfile, "mkdtemp", return_value=os.path.join(base, "nothing-here")):
+                result = self.resolve(runner)
+        self.assertEqual("unresolved", result["status"])
+        self.assertEqual("network", result["reason"])
+        assert_clean(self, result)
+
     @unittest.skipUnless(WINDOWS or shutil.which("sh"), "needs a command shim or a shell")
     def test_a_hostile_npmrc_in_the_working_directory_is_never_read_by_the_command_line(self):
         tmp = tempfile.TemporaryDirectory()
@@ -2178,15 +3200,16 @@ class NpmTests(unittest.TestCase):
         (project / ".npmrc").write_text("registry=https://hostile.example.test/\n", encoding="utf-8")
         answer = json.dumps({"version": "1.6.0", "dist.integrity": INTEGRITY})
         if WINDOWS:
-            (bin_dir / "npm.cmd").write_bytes(("@echo off\r\nif exist .npmrc (\r\n  echo {\"error\":{\"code\":\"E500\"}}\r\n  exit /b 1\r\n)\r\necho %s\r\n" % answer).encode("utf-8"))
+            (bin_dir / "npm.cmd").write_bytes(("@echo off\r\nfindstr /c:\"hostile\" .npmrc >nul 2>nul\r\nif not errorlevel 1 (\r\n  echo {\"error\":{\"code\":\"E500\"}}\r\n  exit /b 1\r\n)\r\necho %s\r\n"
+                                               % answer).encode("utf-8"))
         else:
             script = bin_dir / "npm"
-            script.write_text("#!/bin/sh\nif [ -e .npmrc ]; then echo '{\"error\":{\"code\":\"E500\"}}'; exit 1; fi\necho '%s'\n" % answer, encoding="utf-8")
+            script.write_text("#!/bin/sh\nif grep -q hostile .npmrc 2>/dev/null; then echo '{\"error\":{\"code\":\"E500\"}}'; exit 1; fi\necho '%s'\n" % answer, encoding="utf-8")
             script.chmod(0o755)
 
         class NoNetwork(toolchain_io.SystemRunner):
             def http(self, method, url, **kwargs):
-                return HttpResult(404, {}, b"", None)
+                return HttpResult(0, {}, b"", "unreachable")
 
         previous = os.getcwd()
         try:
@@ -2196,6 +3219,51 @@ class NpmTests(unittest.TestCase):
         finally:
             os.chdir(previous)
         self.assertEqual({"status": "resolved", "version": "1.6.0", "integrity": INTEGRITY, "via": "npm-cli"}, result)
+
+
+class ConfigRunner(toolchain_io.SystemRunner):
+    """Asks `npm config get registry` where the resolver would ask its question, and keeps the answer."""
+
+    def __init__(self):
+        self.seen = []
+
+    def run(self, argv, *, cwd=None, env=None, timeout=60, input=None):
+        result = super().run(["npm", "config", "get", "registry"], cwd=cwd, env=env, timeout=timeout)
+        self.seen.append(result.stdout.strip())
+        return result
+
+
+@unittest.skipUnless(toolchain_io.which("npm"), "npm is not installed")
+class NpmProjectFileTests(unittest.TestCase):
+    """npm walks up from its folder to the first package.json and reads the .npmrc beside it. The folder of the resolver brings its own
+    two files, so that a project above the temporary folder cannot configure the command (another registry, for one). Real npm."""
+
+    PARENT_REGISTRY = "https://parent-registry.invalid/"
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.parent = os.path.realpath(self.tmp.name)
+        write_tree(self.parent, {"package.json": b"{}", ".npmrc": ("registry=" + self.PARENT_REGISTRY + "\n").encode("ascii")})
+        without = {name: value for name, value in os.environ.items() if not name.lower().startswith("npm_config_")}
+        patcher = mock.patch.dict(os.environ, without, clear=True)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def test_the_project_above_the_folder_of_the_resolver_does_not_configure_npm(self):
+        plain = tempfile.mkdtemp(prefix="plain-", dir=self.parent)
+        premise = toolchain_io.SystemRunner().run(["npm", "config", "get", "registry"], cwd=plain, timeout=120)
+        self.assertEqual(self.PARENT_REGISTRY, premise.stdout.strip(), "premise: the project above a folder configures npm there")
+        real = tempfile.mkdtemp
+
+        def inside_the_project(prefix="tmp", suffix="", dir=None):
+            return real(prefix=prefix, suffix=suffix, dir=self.parent)
+        runner = ConfigRunner()
+        with mock.patch.object(ts.tempfile, "mkdtemp", side_effect=inside_the_project):
+            ts._npm_cli(runner, "some-package", None)
+        self.assertEqual(1, len(runner.seen))
+        self.assertTrue(runner.seen[0], "npm gave no answer")
+        self.assertNotEqual(self.PARENT_REGISTRY, runner.seen[0], "the registry of the project above the folder was used")
 
 
 class PypiTests(unittest.TestCase):
