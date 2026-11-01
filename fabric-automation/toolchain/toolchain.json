@@ -78,7 +78,7 @@
     {"id": "npx", "command": "npx", "version_args": ["--version"], "min": "10", "needed_for": "launching npm MCP servers", "required": true},
     {"id": "gh", "command": "gh", "version_args": ["--version"], "min": "2.40", "needed_for": "publishing and the GitHub checks", "required": false},
     {"id": "az", "command": "az", "version_args": ["--version"], "min": "2.60", "needed_for": "sign-in for the azure-identity variants", "required": false},
-    {"id": "dotnet", "command": "dotnet", "version_args": ["--version"], "min": "10", "needed_for": "the Bicep MCP server (dnx)", "required": false},
+    {"id": "dotnet", "command": "dotnet", "version_args": ["--version"], "min": "10", "needed_for": "the Bicep MCP server (dotnet tool exec)", "required": false},
     {"id": "uv", "command": "uv", "version_args": ["--version"], "min": "0.4", "needed_for": "the Real-Time Intelligence MCP server (uvx)", "required": false},
     {"id": "fab", "command": "fab", "version_args": ["--version"], "min": "1.0", "needed_for": "the Fabric CLI that the git-integration skill calls", "required": false, "package": {"ecosystem": "pypi", "name": "ms-fabric-cli", "track": "latest"}},
     {"id": "powerbi-report-author", "command": "powerbi-report-author", "version_args": ["--version"], "min": "0.3.0", "needed_for": "the report skill, which names it a required helper for packing, unpacking, validating and previewing reports", "required": false, "package": {"ecosystem": "npm", "name": "@microsoft/powerbi-report-authoring-cli", "track": "latest"}}
@@ -297,10 +297,16 @@
       "title": "Bicep MCP Server",
       "transport": "stdio",
       "status": "unverified",
-      "summary": "Bicep authoring help: resource type schemas, formatting, build and best practices. The launch is not verified: the .NET page for `dotnet tool exec` lists `--yes` as available starting with .NET 11, while NuGet's own launch template passes it on .NET 10, and the hosted runner's SDK 10 has no `dnx` on its path, so no contract could be captured.",
+      "summary": "Bicep authoring help: resource type schemas, formatting, build and best practices. It launches through `dotnet tool exec`, which needs only the .NET 10 SDK on the path: the `dnx` script that Learn describes sits in the SDK folder, and on the hosted runner image that folder is not on the path. The 10.0.403 SDK takes `--yes` and does not pass it on to the tool (run on Windows with a package from a local feed), although neither its help text nor Learn, which says .NET 11, lists it. The declared environment turns off what the .NET CLI does on its first use by a user (a banner on the error stream, usage telemetry and a development certificate), and an operator's own setting wins. The launch has not been run against the real package yet, so no contract is captured.",
       "docs": ["https://github.com/Azure/bicep/blob/main/docs/mcp-tools.md"],
       "package": {"ecosystem": "nuget", "name": "Azure.Bicep.McpServer", "track": "latest"},
-      "launch": {"command": "dnx", "args": ["{package}", "--yes"]},
+      "launch": {"command": "dotnet", "args": ["tool", "exec", "{package}", "--yes"]},
+      "env": {
+        "DOTNET_NOLOGO": {"from_env": "DOTNET_NOLOGO", "default": "1"},
+        "DOTNET_CLI_TELEMETRY_OPTOUT": {"from_env": "DOTNET_CLI_TELEMETRY_OPTOUT", "default": "1"},
+        "DOTNET_SKIP_FIRST_TIME_EXPERIENCE": {"from_env": "DOTNET_SKIP_FIRST_TIME_EXPERIENCE", "default": "1"},
+        "DOTNET_GENERATE_ASPNET_CERTIFICATE": {"from_env": "DOTNET_GENERATE_ASPNET_CERTIFICATE", "default": "false"}
+      },
       "variants": {
         "default": {
           "summary": "All tools. Its offline behaviour is not verified, so its network class is internet.",

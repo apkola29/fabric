@@ -188,7 +188,14 @@ def _check_url(url):
 
 
 _GIT_CONFIG_DROPPED = ("GIT_CONFIG_COUNT", "GIT_CONFIG_PARAMETERS")
-_GIT_NETWORK_DROPPED = ("GIT_ASKPASS", "GIT_SSH", "GIT_SSH_COMMAND", "SSH_ASKPASS")
+# What a network call must not take a credential from: a program that asks for a password, the ssh variables, the netrc file that NETRC
+# names (libcurl reads it) and a client certificate with its key (git presents it to any server that asks for one).
+_GIT_NETWORK_DROPPED = ("GIT_ASKPASS", "GIT_SSH", "GIT_SSH_COMMAND", "SSH_ASKPASS", "NETRC",
+                        "GIT_SSL_CERT", "GIT_SSL_KEY", "GIT_SSL_CERT_PASSWORD_PROTECTED")
+# The variables that name the home folder of the operator: git and libcurl look for ~/.netrc, _netrc and the configuration there. Git on
+# Windows builds its HOME from HOMEDRIVE and HOMEPATH when it has none.
+_HOME_VARIABLES = ("HOME", "USERPROFILE", "XDG_CONFIG_HOME")
+_HOME_DROPPED = ("HOMEDRIVE", "HOMEPATH")
 # Variables that name a repository, its object store, its program folder or the templates of a new one: git must find none of them.
 _GIT_REPOSITORY_DROPPED = ("GIT_DIR", "GIT_WORK_TREE", "GIT_COMMON_DIR", "GIT_INDEX_FILE", "GIT_OBJECT_DIRECTORY",
                            "GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_NAMESPACE", "GIT_EXEC_PATH", "GIT_TEMPLATE_DIR")
@@ -199,8 +206,9 @@ _BARE_CONFIG = b"[core]\n\trepositoryformatversion = 0\n\tbare = true\n"
 def _git_env(network=False, file_url=False):
     """The environment overlay of a git call. Git reads no configuration file of the operator or of the system, takes no setting from
     GIT_CONFIG_* variables, is told of no repository, work tree, object store, program folder or template by the environment, and never
-    asks for a password; a network call also takes no program from GIT_ASKPASS or the ssh variables and may use https only (and file for
-    a file address). A value of None removes the variable that the process inherited."""
+    asks for a password; a network call also takes no program from GIT_ASKPASS or the ssh variables, no netrc file from NETRC, no client
+    certificate from the environment, and may use https only (and file for a file address). A value of None removes the variable that
+    the process inherited."""
     env = {"GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_NOSYSTEM": "1", "GIT_TERMINAL_PROMPT": "0"}
     env.update(dict.fromkeys(_GIT_CONFIG_DROPPED))
     env.update(dict.fromkeys(_GIT_REPOSITORY_DROPPED))
@@ -216,13 +224,21 @@ def _run_alone(runner, argv, env, timeout):
 
     It runs in a new empty folder, removed afterwards, and GIT_CEILING_DIRECTORIES names the parent of that folder, so that git does not
     look above it. Whatever repository holds the current directory of this process, or one of the folders around the temporary folder, is
-    never found, and its configuration (an address rewrite, a program for a remote) is never read."""
+    never found, and its configuration (an address rewrite, a program for a remote) is never read.
+
+    The same folder is the home folder of the call (HOME, USERPROFILE and XDG_CONFIG_HOME): libcurl inside git reads `.netrc` there (and
+    `_netrc` on Windows) and sends what it finds to a host that answers 401, which a call that is meant to be anonymous must not do.
+    HOME is set and not removed, because with no HOME libcurl asks the system for the home folder of the user. HOMEDRIVE and HOMEPATH are
+    removed, because git on Windows builds a HOME from them."""
     try:
         folder = os.path.realpath(tempfile.mkdtemp(prefix="tc-git-"))
     except OSError:
         raise _fail("unresolved", "no temporary folder") from None
     try:
-        return runner.run(argv, cwd=folder, env=dict(env, GIT_CEILING_DIRECTORIES=os.path.dirname(folder)), timeout=timeout)
+        overlay = dict(env, GIT_CEILING_DIRECTORIES=os.path.dirname(folder))
+        overlay.update(dict.fromkeys(_HOME_VARIABLES, folder))
+        overlay.update(dict.fromkeys(_HOME_DROPPED))
+        return runner.run(argv, cwd=folder, env=overlay, timeout=timeout)
     finally:
         try:
             _rmtree(folder)
@@ -231,8 +247,8 @@ def _run_alone(runner, argv, env, timeout):
 
 
 def _reset_cache_config(dest):
-    """Put the minimal configuration of a bare repository into `<dest>/config`, whatever is there. A cache folder that was not made by
-    this call is not trusted: what it names (an address rewrite, a program for a remote or for ssh) must not take effect."""
+    """Put the minimal configuration of a bare repository into `<dest>/config`, whatever is there. `git init` copies the template of a new
+    repository, and what a template names (an address rewrite, a program for a remote or for ssh) must not take effect."""
     config = os.path.join(str(dest), "config")
     try:
         _remove(config)
@@ -243,8 +259,12 @@ def _reset_cache_config(dest):
 
 
 def _network_argv(url, *args):
-    """git without any stored credential and without the ext transport; the file protocol is allowed only for a file address."""
-    argv = ["git", "-c", "protocol.ext.allow=never", "-c", "credential.helper="]
+    """git without any stored credential and without the ext transport; the file protocol is allowed only for a file address.
+
+    http.emptyAuth=false: git's default (auto) asks again with empty credentials when a server answers 401 and advertises Negotiate (or NTLM),
+    and libcurl with SSPI or GSS-API then answers with the logon session of the operator, which a call that is meant to be anonymous must
+    not do. A git that does not know the key ignores it."""
+    argv = ["git", "-c", "protocol.ext.allow=never", "-c", "credential.helper=", "-c", "http.emptyAuth=false"]
     if _check_url(url):
         argv += ["-c", "protocol.file.allow=always"]
     return argv + list(args)
@@ -434,10 +454,13 @@ def resolve_git_ref(url, track, runner=None):
 def fetch_git(url, commit, dest, runner=None):
     """Make `dest` a bare git dir that holds exactly that commit, fetched anonymously and shallow. Returns dest.
 
-    The configuration of the cache folder is replaced by the minimal one of a bare repository before the folder is used and again right
-    after git has made it, so that nothing a cache folder holds (a hostile configuration included) takes effect. Git is always given
-    the folder by its absolute path (--git-dir) and runs from an empty folder. A cache folder that is a link (a symbolic link or a
-    junction) is refused: what is written into it would go to another place."""
+    A cache folder is never reused. Whatever is at `dest` is removed first, and a new bare repository is made and fetched into, so that
+    nothing an old folder holds is trusted or takes effect: not its configuration, and not what git finds there besides it, such as a
+    `commondir` file (git then reads the configuration of another repository), a link that sends what git writes to another place, a
+    hook or an alternates file. The removal never follows a link inside the old folder. A cache folder that is itself a link (a symbolic
+    link or a junction) is refused before anything is removed. `git init` may copy a template, so the configuration is replaced by the
+    minimal one of a bare repository right after git has made the folder. Git is always given the folder by its absolute path
+    (--git-dir) and runs from an empty folder."""
     runner = runner or SystemRunner()
     sha = _sha(commit)
     _check_url(url)
@@ -445,11 +468,14 @@ def fetch_git(url, commit, dest, runner=None):
     if _is_link(dest):
         raise _fail("unresolved", "the cache folder is a link")
     cache = os.path.abspath(str(dest))
-    if dest.is_dir():
-        _reset_cache_config(cache)
-        if _has_commit(runner, cache, sha):
-            return dest
-    dest.mkdir(parents=True, exist_ok=True)
+    try:
+        _remove(dest)
+    except OSError:
+        raise _fail("unresolved", "cannot remove the old cache folder") from None
+    try:
+        dest.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        raise _fail("unresolved", "cannot make the cache folder") from None
     created = _run_alone(runner, ["git", "init", "--bare", "--quiet", cache], _git_env(), 60)
     if created.returncode != 0:
         raise _git_failure(created)
@@ -875,11 +901,15 @@ def _unresolved(reason, detail):
 
 
 def _stage_failure(label, status, error):
-    """(label, kind) of an HTTP answer that did not give a usable document: kinds are notfound and network."""
-    if error or status == 0:
-        return "%s %s" % (label, safe_detail(error or "failed", 20)), "network"
+    """(label, kind) of an HTTP answer that did not give a usable document: kinds are notfound and network.
+
+    A 404 or 410 that arrived is notfound whatever became of its body (too large, cut short, a timeout): the registry has said that the
+    package is not there, and the loss of the body does not unsay it. Any other status, and a request that got no answer, is network:
+    the answer cannot be told, so the caller may fall back (the npm command line does)."""
     if status in (404, 410):
         return label + " not found", "notfound"
+    if error or status == 0:
+        return "%s %s" % (label, safe_detail(error or "failed", 20)), "network"
     return "%s http %d" % (label, status), "network"
 
 
@@ -998,9 +1028,10 @@ def _npm_registry(runner, name, pin):
 def _resolve_npm(runner, name, pin):
     """The npm command line answers first, in a folder of its own that holds its own project files so that no file above it configures
     it, and the official registry document is asked next. When both answer they must agree on the version and the integrity; an answer
-    without an integrity is never taken. The command line stands alone only when the official registry gave no answer at all (the
-    network is blocked): the command line is the operator's own configuration, and it may be pointed at another registry that serves
-    another package of the same name, so a registry that answers, even with not found, an unusable document or no integrity, wins."""
+    without an integrity is never taken. The command line stands alone only when the official registry could not tell: it gave no answer
+    at all (the network is blocked), a refusal or an outage (403, 429, 5xx) or a document whose body could not be read. The command line
+    is the operator's own configuration, and it may be pointed at another registry that serves another package of the same name, so a
+    registry that answers not found (404 or 410, whatever became of its body), an unusable document or no integrity wins."""
     cli, cli_failure = _npm_cli(runner, name, pin)
     registry, registry_failure = _npm_registry(runner, name, pin)
     if cli and registry:
@@ -1378,8 +1409,9 @@ def vendor_skills(lock, selection, store, runner=None, quarantine=(), shared=())
     All or nothing: everything is staged and checked first, and only then does the store change, and the change is undone if a step
     fails. A pack folder that holds a link (a symbolic link or a junction) where a write or a delete would go through it is refused
     with `unresolved` before anything happens. `shared` is a list of (source id, folder). A shared folder that the previous MANIFEST
-    lists and that is not asked for now is removed. With nothing selected and nothing shared the store is left as it is. Returns the
-    MANIFEST dict."""
+    lists and that is not asked for now is removed. With nothing selected and nothing shared the store is left as it is. A folder that
+    already holds what the lock says is left alone and needs no git. Every commit that has a folder to write is fetched once per call,
+    into a new cache folder: an old one is never reused. Returns the MANIFEST dict."""
     runner = runner or SystemRunner()
     store = Path(store)
     picked = _pick(lock, selection, quarantine)

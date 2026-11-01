@@ -89,9 +89,9 @@ The replay script of the first review (23 scenarios) was extended with 15 more: 
 
 ## What was not changed, and what is still open
 
-- R-C-5 stays unverified. The fact-check workflow now prints what `dotnet tool exec` offers on its .NET 10 runner, so the next run settles it.
+- R-C-5 stays unverified in this review. The first hosted run showed that the help text of the SDK on the runner (10.0.403) does not list `--yes`, in line with Learn (from .NET 11), and that the runner has no `dnx` on its path, so the Bicep contract was still not captured. The third review settled it by running that SDK with a real tool package (see [toolchain-delta-findings.md](toolchain-delta-findings.md)).
 - Dependencies are not locked by hash. The three npm servers need nothing but their own pinned platform packages; the Real-Time Intelligence server and the two command-line tools declare ranges. The date bound narrows this and does not close it.
 - A candidate lock from a manual capture comes from a run that executes unreviewed packages. It is untrusted input for the review of a pull request.
-- Hooks and alternates inside an existing cache folder of the pack are not neutralised; the digest check of the skills is the guard.
+- Hooks and alternates inside an existing cache folder of the pack are not neutralised; the digest check of the skills is the guard. (The third review showed that the limit was wider than hooks and alternates, and closed it by not reusing a cache folder at all: see [toolchain-delta-findings.md](toolchain-delta-findings.md).)
 - Nothing has been run against a tenant, hosted servers are never captured, the Power BI license is never accepted by the kit, the unattended identity of each server is not proven (spikes S2 and S6), VS Code was not run, and the SQL endpoint tool name still needs a signed-in session.
 - Reviewer C also noted that environment scrubbing does not sandbox a hostile package: it can change files of the same job. Neither workflow promotes an artifact automatically.

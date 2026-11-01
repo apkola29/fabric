@@ -166,9 +166,18 @@ def make_writable(path):
     """Clear what stops Windows from deleting a file: its read-only attribute (git writes its objects that way).
 
     Anywhere else deleting a file depends on its folder, and the mode of the file is left alone: a hard link shares it with every other
-    name of the same file, so a chmod before the delete would change a file that is not being deleted."""
-    if WINDOWS:
-        os.chmod(path, stat.S_IWRITE)
+    name of the same file, so a chmod before the delete would change a file that is not being deleted. The same holds on Windows for a
+    file that has more than one name: the attribute belongs to the file, so clearing it through this name would also clear it for the
+    other names, which may be somewhere that is not being cleaned. Nothing that the kit or git writes has two names, so such a file is
+    left as it is and the delete that follows is refused by the system."""
+    if not WINDOWS:
+        return
+    try:
+        if os.stat(path).st_nlink > 1:
+            return
+    except OSError:
+        pass  # a path that cannot be examined is handled as before: the delete that follows reports what is wrong
+    os.chmod(path, stat.S_IWRITE)
 
 
 def _is_absolute(path):

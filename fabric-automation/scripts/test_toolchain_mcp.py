@@ -48,6 +48,9 @@ TOOLS = [
 ]
 if mode == "bigline":
     TOOLS = [dict(TOOLS[0], description="d" * 6000)]
+if mode == "real-names":
+    TOOLS = [{"name": name, "inputSchema": {"type": "object"}}
+             for name in ("onelake_create-shortcut-adls-gen2", "onelake_create-shortcut-amazon-s3", "onelake_create-shortcut-s3-compatible")]
 
 
 def send(obj):
@@ -86,7 +89,16 @@ if mode in ("silent", "grandchild"):
     while True:
         time.sleep(0.2)
 if mode in ("modern-slow", "modern-slow-named", "slow-legacy", "hybrid-locking"):
-    time.sleep(3.0)
+    delay = 3.0
+    first_path = os.environ.get("FAKE_FIRST")
+    if first_path:
+        # the first process to run is the one that the probe gives up on and ends: it sleeps for long, and the process that replaces it does not
+        try:
+            os.close(os.open(first_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY))
+            delay = 10.0
+        except FileExistsError:
+            delay = 0.0
+    time.sleep(delay)
 
 
 def modern_meta_ok(params):
@@ -176,6 +188,8 @@ for raw in sys.stdin:
             fail(mid, -32603, "Unsupported client version, server build 2026-10-31")
         elif mode == "legacy-bad-protocol":
             reply(mid, dict(legacy_result, protocolVersion=20250618))
+        elif mode == "legacy-protocol":
+            reply(mid, dict(legacy_result, protocolVersion=os.environ.get("FAKE_PROTOCOL")))
         elif mode == "legacy-error":
             fail(mid, -32603, "Internal error 2026-09-01 at startup")
         elif mode == "legacy-strict" and params.get("protocolVersion") != "2025-06-18":
@@ -280,6 +294,7 @@ class StdioTests(unittest.TestCase):
         self.log = self.dir / ("log-%s.txt" % self._testMethodName)
         self.pids = self.dir / ("pids-%s.txt" % self._testMethodName)
         self.starts = self.dir / ("starts-%s.txt" % self._testMethodName)
+        self.first = self.dir / ("first-%s.txt" % self._testMethodName)
         # a stand-in that is meant to answer discover must not lose the race against a busy machine; the tests of the wait patch it again
         patcher = mock.patch.object(toolchain_mcp, "DISCOVER_WAIT", 30.0)
         patcher.start()
@@ -443,36 +458,60 @@ class StdioTests(unittest.TestCase):
         self.assertIn("protocol version", str(error))
         self.assertEqual(["server/discover", "initialize"], [m["method"] for m in self.messages()])
 
+    def test_the_oldest_and_the_newest_revision_of_the_handshake_era_that_a_server_answers_with_are_recorded_as_they_are(self):
+        for version in ("2024-11-05", "2025-11-25"):
+            with self.subTest(version):
+                result = self.probe("legacy-protocol", env={"FAKE_PROTOCOL": version})
+                self.assertEqual(("legacy", version, EXPECTED_TOOLS), (result["era"], result["protocol"], result["tools"]))
+
+    def test_an_answer_that_names_a_revision_that_the_probe_does_not_speak_records_nothing_and_leaves_the_server_at_once(self):
+        # Found in round 9: a later date, even one that does not exist, went on to tools/list and was recorded as the protocol of the server.
+        for version in ("2027-01-01", "9999-99-99", "2026-07-28"):
+            with self.subTest(version):
+                if self.log.exists():
+                    self.log.unlink()
+                error = self.assertFails("protocol-error", "legacy-protocol", env={"FAKE_PROTOCOL": version})
+                self.assertEqual("protocol-error: unsupported protocol version", str(error))
+                self.assertEqual(["server/discover", "initialize"], [m["method"] for m in self.messages()], "the probe went on after the answer that it refused")
+                self.assertGone()
+
+    @staticmethod
+    def counted_starts():
+        """Counts the server processes that the probe starts, on the side of the probe. The marker file of the stand-in cannot be counted on
+        here: a process that is ended before its interpreter has run its first line (a slow start) writes no marker, and the count then
+        depends on how fast the interpreter starts."""
+        return mock.patch.object(toolchain_mcp, "popen_tree", wraps=toolchain_mcp.popen_tree)
+
     def test_a_modern_server_that_is_slow_to_start_is_started_again_and_found_modern(self):
-        with mock.patch.object(toolchain_mcp, "DISCOVER_WAIT", 0.5):
-            result = self.probe("modern-slow", env={"FAKE_STARTS": str(self.starts)}, timeout=40)
+        with mock.patch.object(toolchain_mcp, "DISCOVER_WAIT", 0.5), self.counted_starts() as started:
+            result = self.probe("modern-slow", env={"FAKE_FIRST": str(self.first)}, timeout=40)
         self.assertEqual(("modern", EXPECTED_TOOLS), (result["era"], result["tools"]))
         self.assertEqual({"name": "Fake Modern", "version": "2.0.0"}, result["server"])
         self.assertEqual(["initialize", "server/discover", "tools/list"], [m["method"] for m in self.messages()])
-        self.assertEqual(2, len(self.starts.read_text().split()))
+        self.assertEqual(2, started.call_count)
 
     def test_a_modern_server_that_names_its_versions_after_a_slow_start_gives_its_name_too(self):
         with mock.patch.object(toolchain_mcp, "DISCOVER_WAIT", 0.5):
-            result = self.probe("modern-slow-named", env={"FAKE_STARTS": str(self.starts)}, timeout=40)
+            result = self.probe("modern-slow-named", env={"FAKE_FIRST": str(self.first)}, timeout=40)
         self.assertEqual(("modern", EXPECTED_TOOLS), (result["era"], result["tools"]))
         self.assertEqual({"name": "Fake Modern", "version": "2.0.0"}, result["server"])
         self.assertEqual(["initialize", "server/discover", "tools/list"], [m["method"] for m in self.messages()])
 
     def test_a_legacy_server_that_is_slow_to_start_is_started_again_and_found_legacy(self):
-        with mock.patch.object(toolchain_mcp, "DISCOVER_WAIT", 0.5):
-            result = self.probe("slow-legacy", env={"FAKE_STARTS": str(self.starts)}, timeout=40)
+        with mock.patch.object(toolchain_mcp, "DISCOVER_WAIT", 0.5), self.counted_starts() as started:
+            result = self.probe("slow-legacy", env={"FAKE_FIRST": str(self.first)}, timeout=40)
         self.assertEqual(("legacy", EXPECTED_TOOLS), (result["era"], result["tools"]))
         self.assertEqual(["initialize", "notifications/initialized", "tools/list"], [m["method"] for m in self.messages()])
-        self.assertEqual(2, len(self.starts.read_text().split()))
+        self.assertEqual(2, started.call_count)
 
     def test_a_server_that_takes_its_era_from_the_first_request_never_sees_the_discover_that_was_given_up(self):
         # seen with real servers on a busy machine: one that was sent discover and then initialize answered initialize and then
         # refused the legacy tools/list as an invalid request, because discover had settled its era
-        with mock.patch.object(toolchain_mcp, "DISCOVER_WAIT", 0.5):
-            result = self.probe("hybrid-locking", env={"FAKE_STARTS": str(self.starts)}, timeout=40)
+        with mock.patch.object(toolchain_mcp, "DISCOVER_WAIT", 0.5), self.counted_starts() as started:
+            result = self.probe("hybrid-locking", env={"FAKE_FIRST": str(self.first)}, timeout=40)
         self.assertEqual(("legacy", EXPECTED_TOOLS), (result["era"], result["tools"]))
         self.assertEqual(["initialize", "notifications/initialized", "tools/list"], [m["method"] for m in self.messages()])
-        self.assertEqual(2, len(self.starts.read_text().split()))
+        self.assertEqual(2, started.call_count)
 
     def test_an_initialize_error_that_names_modern_versions_after_a_failed_discover_is_modern_with_an_unknown_server(self):
         result = self.probe("modern-via-initialize")
@@ -585,6 +624,11 @@ class StdioTests(unittest.TestCase):
     def test_duplicate_tool_names_are_a_protocol_error(self):
         self.assertFails("protocol-error", "duplicate")
 
+    def test_tools_with_the_names_of_real_tools_that_look_like_keys_are_listed_intact(self):
+        names = ["onelake_create-shortcut-adls-gen2", "onelake_create-shortcut-amazon-s3", "onelake_create-shortcut-s3-compatible"]
+        result = self.probe("real-names")
+        self.assertEqual(names, list(result["tools"]))
+
     def test_a_cursor_that_never_ends_is_a_protocol_error(self):
         self.assertIn("do not end", str(self.assertFails("protocol-error", "loop")))
 
@@ -637,15 +681,38 @@ class StdioTests(unittest.TestCase):
         self.assertEqual([], os.listdir(work))
 
     def test_the_child_does_not_inherit_the_environment_of_the_parent(self):
+        secret = "s3cret-value"
         parent = {"SECRET_X": "secret-value", "PBI_MODELING_MCP_ALLOWED_CONNECTION_HOSTS": "tokens.example", "AZURE_CLIENT_ID": "id-value",
-                  "AZURE_TENANT_ID": "tenant-value", "NODE_OPTIONS": "--require=hook.js", "GITHUB_TOKEN": "token-value", "PYTHONPATH": "elsewhere"}
+                  "AZURE_TENANT_ID": "tenant-value", "NODE_OPTIONS": "--require=hook.js", "GITHUB_TOKEN": "token-value", "PYTHONPATH": "elsewhere",
+                  "NPM_TOKEN": secret, "NPM_CONFIG__AUTHTOKEN": secret, "npm_config__password": secret, "npm_config_username": secret,
+                  "npm_config_//registry.npmjs.org/:_authToken": secret, "PASSWORD": secret, "HTTPS_PROXY": "http://user:" + secret + "@proxy.test:3128"}
         seen = self.dump_env({"DECLARED_WITH_DEFAULT": {"from_env": "DECLARED_WITH_DEFAULT", "default": "fallback"}}, parent)
         for name in parent:
-            self.assertNotIn(name, seen)
+            if name != "HTTPS_PROXY":
+                self.assertNotIn(name.upper(), seen)
+        self.assertEqual("http://proxy.test:3128", seen["HTTPS_PROXY"], "the proxy is kept and its password is not")
+        self.assertEqual([], [name for name, value in seen.items() if secret in value], "a credential reached the child")
         self.assertEqual("fallback", seen["DECLARED_WITH_DEFAULT"])
         self.assertEqual(os.environ["PATH"], seen["PATH"])
-        known = {name.upper() for name in toolchain_mcp.ENV_ALLOW_LIST} | {"DECLARED_WITH_DEFAULT", "FAKE_ENV_DUMP", "FAKE_LOG", "FAKE_PIDFILE"}
-        self.assertEqual([], sorted(set(seen) - known - self.interpreter_additions()), "variables that nobody allowed or declared reached the child")
+        self.assertEqual([], sorted(set(seen) - self.promised({"DECLARED_WITH_DEFAULT"}) - self.interpreter_additions()), "variables that nobody allowed or declared reached the child")
+
+    def promised(self, declared):
+        """The names (upper case) that a child may have: the allow-list, the npm settings of the fixed list, what the caller declared and what the stand-in is told."""
+        npm = {"NPM_CONFIG_" + name.upper() for name in toolchain_mcp.ENV_ALLOW_NPM}
+        return {name.upper() for name in toolchain_mcp.ENV_ALLOW_LIST} | npm | {name.upper() for name in declared} | {"FAKE_ENV_DUMP", "FAKE_LOG", "FAKE_PIDFILE"}
+
+    def test_the_npm_settings_of_the_fixed_list_reach_the_child_and_no_other_setting_of_that_family_does(self):
+        # A shell that sets NPM_CONFIG_CACHE or NPM_CONFIG_USERCONFIG made the test above fail, although the module promises to pass those on.
+        allowed = {("npm_config_", "NPM_CONFIG_", "Npm_Config_")[index % 3] + name: ("proxy.test:3128" if name in ("proxy", "https_proxy", "registry") else "value-%d" % index)
+                   for index, name in enumerate(toolchain_mcp.ENV_ALLOW_NPM)}
+        hostile = {"NPM_CONFIG__AUTHTOKEN": "t", "npm_config__auth": "a", "npm_config_username": "u", "npm_config_certfile": "c", "npm_config_foo": "x",
+                   "npm_config_//registry.npmjs.org/:_authToken": "t", "NPM_TOKEN": "t"}
+        seen = self.dump_env({}, dict(allowed, **hostile))
+        for name, value in allowed.items():
+            self.assertEqual(value, seen[name.upper()], name)
+        for name in hostile:
+            self.assertNotIn(name.upper(), seen)
+        self.assertEqual([], sorted(set(seen) - self.promised(()) - self.interpreter_additions()))
 
     def test_a_declared_variable_takes_the_value_of_the_parent_only_when_the_parent_sets_it(self):
         declared = {"TC_WITH_DEFAULT": {"from_env": "TC_WITH_DEFAULT", "default": "fallback"}, "TC_NO_DEFAULT": {"from_env": "TC_NO_DEFAULT"},
@@ -1326,11 +1393,36 @@ class InitializeTests(unittest.TestCase):
                 self.assertEqual("protocol-error", caught.code)
                 self.assertEqual(["initialize"], server.sent)
 
-    def test_a_protocol_version_that_is_a_date_is_taken_as_it_is(self):
-        for version in ("2024-11-05", "2025-03-26", "2025-06-18", "2025-11-25", "2027-01-01"):
-            server, result = self.start(True, {"result": {"protocolVersion": version, "serverInfo": {"name": "Old Server", "version": "0.1"}}}, TOOLS_ANSWER)
-            self.assertEqual(("legacy", version), (result["era"], result["protocol"]))
-            self.assertEqual(["initialize", "notifications/initialized", "tools/list"], server.sent)
+    def test_a_protocol_version_of_the_handshake_era_is_taken_as_it_is(self):
+        self.assertEqual(("2024-11-05", "2025-03-26", "2025-06-18", "2025-11-25"), toolchain_mcp.HANDSHAKE_VERSIONS)
+        for version in toolchain_mcp.HANDSHAKE_VERSIONS:
+            for answered in (True, False):
+                with self.subTest(version, answered=answered):
+                    server, result = self.start(answered, {"result": {"protocolVersion": version, "serverInfo": {"name": "Old Server", "version": "0.1"}}}, TOOLS_ANSWER)
+                    self.assertEqual(("legacy", version), (result["era"], result["protocol"]))
+                    self.assertEqual(["initialize", "notifications/initialized", "tools/list"], server.sent)
+
+    def test_a_protocol_version_that_the_probe_does_not_speak_is_refused_before_anything_more_is_sent(self):
+        # Changed on purpose in round 9: this test used to take 2027-01-01 as it was. The specification says that a client that does not
+        # support the version of the answer SHOULD disconnect, so no initialized notification and no tools/list follow.
+        info = {"name": "Old Server", "version": "0.1"}
+        for label, version in (("a later date", "2027-01-01"), ("a date that does not exist", "9999-99-99"), ("a date of no month or day", "0000-00-00"),
+                               ("the modern revision", toolchain_mcp.MODERN_VERSION), ("the day after the newest of the handshake era", "2025-11-26"),
+                               ("a date between two revisions", "2025-07-01"), ("a date before all of them", "2024-01-01")):
+            for answered in (True, False):
+                with self.subTest(label, answered=answered):
+                    server, caught = self.fails(answered, {"result": {"protocolVersion": version, "serverInfo": info}})
+                    self.assertEqual("protocol-error", caught.code)
+                    self.assertEqual("protocol-error: unsupported protocol version", str(caught))
+                    self.assertEqual(["initialize"], server.sent, "something was sent after the answer that was refused")
+
+    def test_the_two_kinds_of_unusable_protocol_version_have_their_own_messages(self):
+        info = {"name": "Old Server", "version": "0.1"}
+        for version, message in (("latest", "protocol-error: initialize answered without a usable protocol version"), (20250618, "protocol-error: initialize answered without a usable protocol version"),
+                                 ("2027-01-01", "protocol-error: unsupported protocol version")):
+            with self.subTest(repr(version)):
+                _, caught = self.fails(True, {"result": {"protocolVersion": version, "serverInfo": info}})
+                self.assertEqual(message, str(caught))
 
 
 class NamedVersionsTests(unittest.TestCase):
@@ -1410,6 +1502,47 @@ class ProbeDecisionTests(unittest.TestCase):
         session, error = self.fails(first)
         self.assertEqual(("protocol-error", 0), (error.code, session.restarts))
         self.assertEqual(["server/discover"], first.sent)
+
+
+class ToolNameTests(unittest.TestCase):
+    """A tool name is what the server calls the tool: it is checked for being usable and unique, and never for looking like a secret. The
+    real tools of the pinned Fabric server have names that the rule for secrets takes for one (a long word that holds a digit)."""
+
+    REAL = ("onelake_create-shortcut-adls-gen2", "onelake_create-shortcut-amazon-s3", "onelake_create-shortcut-s3-compatible")
+
+    def test_the_names_of_those_real_tools_are_what_the_rule_for_secrets_would_refuse_so_it_must_not_be_applied_to_them(self):
+        for name in self.REAL:
+            self.assertTrue(toolchain_mcp.suspect(name), name)
+        self.assertIs(toolchain_mcp.suspect, toolchain_mcp._suspect)
+
+    def test_a_tool_with_such_a_name_is_listed_intact_in_either_era(self):
+        page = {"result": {"tools": [{"name": name, "inputSchema": {"type": "object"}} for name in reversed(self.REAL)]}}
+        for meta in (None, toolchain_mcp._meta()):
+            with self.subTest(meta=meta is not None):
+                tools = toolchain_mcp._list_tools(ScriptedServer(page), time.monotonic() + 10, meta)
+                self.assertEqual(sorted(self.REAL), list(tools))
+
+
+class CommittedLockTests(unittest.TestCase):
+    """What the probe accepts is what the committed lock holds: a legacy contract names a revision of the handshake era, a modern one the
+    modern revision, so that no contract that was captured is one that the probe would now refuse."""
+
+    LOCK = HERE.parent / "toolchain" / "toolchain.lock.json"
+
+    def test_every_captured_contract_names_a_revision_that_the_probe_speaks(self):
+        if not self.LOCK.is_file():
+            self.skipTest("the lock is not in this folder")
+        contracts = json.loads(self.LOCK.read_text(encoding="utf-8")).get("contracts", {})
+        captured = {name: entry for name, entry in contracts.items() if isinstance(entry, dict) and entry.get("status") == "captured"}
+        self.assertTrue(captured, "the lock holds no captured contract, so nothing was checked")
+        for name, entry in sorted(captured.items()):
+            with self.subTest(name):
+                if entry.get("era") == "legacy":
+                    self.assertIn(entry.get("protocol"), toolchain_mcp.HANDSHAKE_VERSIONS)
+                elif entry.get("era") == "modern":
+                    self.assertEqual(toolchain_mcp.MODERN_VERSION, entry.get("protocol"))
+                else:
+                    self.fail("the era of a captured contract is neither legacy nor modern: %r" % (entry.get("era"),))
 
 
 class SessionTests(unittest.TestCase):

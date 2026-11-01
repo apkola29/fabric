@@ -6,10 +6,11 @@ the stdio page of the 2026-07-28 revision of the specification asks a client of 
 stateless: there is no handshake and every request carries `_meta`. A server that answers `server/discover` is modern, and the
 probe goes on with `tools/list` and the metadata. A server that refuses the version asked for is modern and is not asked anything
 else. A server that answers with any other error is legacy and gets the handshake (`initialize`, `notifications/initialized`,
-`tools/list`). One that says nothing within a short wait, or leaves, is legacy too, but it is started again for the handshake:
-a server may settle its era on the first request it reads, and then refuse the requests of the other era. Whatever happens, the
-child and its descendants are ended before the call returns. Server messages are never copied into an error: an error holds a
-reason code and a short fixed detail. Standard library only.
+`tools/list`). A server that accepts `initialize` but names a revision that this client does not speak is left at once, as the
+lifecycle page of the specification asks of a client. One that says nothing within a short wait, or leaves, is legacy too, but it
+is started again for the handshake: a server may settle its era on the first request it reads, and then refuse the requests of the
+other era. Whatever happens, the child and its descendants are ended before the call returns. Server messages are never copied into
+an error: an error holds a reason code and a short fixed detail. Standard library only.
 """
 
 from __future__ import annotations
@@ -334,6 +335,9 @@ def _suspect(value):
             or any(_host_like(run) or _IPV4.search(run) for run in _RUN.findall(value)))
 
 
+suspect = _suspect  # the one rule for a text that must not reach the lock; toolchain.py validates a lock with it too
+
+
 def _label(value, pattern):
     return value if isinstance(value, str) and pattern.fullmatch(value) and not _suspect(value) else "unknown"
 
@@ -433,10 +437,15 @@ def _modern(server, deadline, info):
 
 
 def _legacy(server, deadline, answer):
+    """The contract of a server that accepted `initialize`. The revision it answers with must be one that this client speaks. The
+    specification asks a client that does not support the version of the answer to disconnect, so nothing more is sent to the server:
+    no `notifications/initialized` and no `tools/list`."""
     result = answer.get("result")
     protocol = result.get("protocolVersion") if isinstance(result, dict) else None
     if not (isinstance(protocol, str) and _DATE.fullmatch(protocol)):
         raise _fail("protocol-error", "initialize answered without a usable protocol version")
+    if protocol not in HANDSHAKE_VERSIONS:
+        raise _fail("protocol-error", "unsupported protocol version")
     server.notify("notifications/initialized")
     return {"era": "legacy", "protocol": protocol, "server": _server_info(result.get("serverInfo")),
             "tools": _list_tools(server, deadline, None)}

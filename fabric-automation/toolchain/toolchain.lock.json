@@ -1,7 +1,7 @@
 {
   "schema": 1,
-  "generated": "2026-10-31",
-  "inputs_digest": "sha256:a162c163e169dcb014471a684a2bea54e61614d2247c26e186b5f1836bf3a194",
+  "generated": "2026-11-01",
+  "inputs_digest": "sha256:4683824f9a2b33ca0e0aa3b88fcd9986a4a172c56ccaa4e4e131f5b11ecb4216",
   "skill_sources": {
     "azure-skills": {
       "repo": "https://github.com/microsoft/azure-skills.git",

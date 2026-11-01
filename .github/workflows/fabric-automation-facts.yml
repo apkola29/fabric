@@ -58,24 +58,12 @@ jobs:
         with:
           persist-credentials: false
 
-      # The runner image ships Node.js 22, the .NET 10 SDK (for dnx) and Python 3.12; uv is not
-      # on it. A missing uv only leaves the Real-Time Intelligence contract unchecked. The
-      # Power BI authoring server stays skipped: its license is accepted by a person, never here.
+      # The runner image ships Node.js 22, a .NET 10 SDK and Python 3.12; uv is not on it. A missing uv only leaves the
+      # Real-Time Intelligence contract unchecked. The Bicep server launches through `dotnet tool exec`, so the SDK is all it
+      # needs (the image has no `dnx` script on its path). The Power BI authoring server stays skipped: its license is
+      # accepted by a person, never here.
       - name: Install uv
         run: pipx install "uv==0.13.6" || echo "::warning::uv could not be installed, so the Real-Time Intelligence contract will be unavailable"
-
-      # The launch line of the Bicep server is `dnx PACKAGE --yes`. Learn says that `--yes` exists from .NET 11, and the
-      # NuGet template uses it on .NET 10. This reads the help text of the SDK on the runner only: no network, no package.
-      - name: Record the options of dotnet tool exec on this SDK
-        run: |
-          version="$(dotnet --version)"
-          if help="$(dotnet tool exec --help 2>&1)"; then
-            if printf '%s\n' "$help" | grep -qE -- '(^|[[:space:]])--yes([[:space:]]|,|\||$)'; then found="lists --yes"; else found="does not list --yes"; fi
-          else
-            found="could not print its help"
-          fi
-          echo "dotnet SDK $version: dotnet tool exec $found" | tee -a "$GITHUB_STEP_SUMMARY"
-          printf '%s\n' "$help" | grep -n -i -E -- 'yes|-y' | head -5 || true
 
       # Reads registry and Git metadata. No package of a new version is launched here.
       - name: Report what changed upstream

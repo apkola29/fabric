@@ -209,6 +209,13 @@ def shared_manifest():
     return manifest
 
 
+def clashing_manifest():
+    """The small manifest in which a variant of another server names the license variable of the licensed server as one of its own."""
+    manifest = small_manifest()
+    manifest["mcp_servers"][0]["variants"]["online"]["env"][EULA_ENV] = {"from_env": EULA_ENV}
+    return manifest
+
+
 def small_profiles():
     return toolchain.Profiles({"schema": 1, "profiles": {
         "dev-a": {"mode": "dev", "title": "Everything",
@@ -246,8 +253,8 @@ def tools_profiles():
 
 
 def server_label(package):
-    """The server name that a probe reports for a package: a plain label, never the package spec."""
-    return re.sub(r"[^A-Za-z0-9 ._-]+", "-", package).strip("-")
+    """The server name that a probe reports for a package: a plain label, never the package spec and never something that reads like a host name."""
+    return re.sub(r"[^A-Za-z0-9 _-]+", "-", package).strip("-")
 
 
 def launch_of(manifest, packages, server_id, variant_name):
@@ -388,6 +395,17 @@ def forbidden(name):
     def call(*args, **kwargs):
         raise AssertionError("%s must not be called here" % name)
     return call
+
+
+def unreadable(*folders):
+    """A digest_tree that cannot measure the named folders, as when a file in one of them cannot be read, and measures any other folder as the tests do."""
+    named = {Path(f) for f in folders}
+
+    def digest(path):
+        if Path(path) in named:
+            raise toolchain_sources.SourceError("unresolved: cannot read a file")
+        return tree_digest(path)
+    return digest
 
 
 def make_deps(home, runner=None, env=None, clock=None, **functions):
@@ -787,6 +805,17 @@ class SchemaTests(Base):
         profiles["profiles"]["agent-ok"]["tools"] = ["fab", "fab"]
         self.assertProblem(toolchain.validate_profiles(profiles), "'fab' is listed twice")
 
+    def test_a_package_may_be_pinned_to_a_version_with_a_dotted_suffix_and_not_to_one_that_ends_in_a_period(self):
+        for index in (1, 2):
+            for track, ok in (("1.8.0.post1", True), ("1.8.0.dev3", True), ("1.8.0rc1", True), ("1.8.0.", False), ("1.8.0.dev3.", False), ("1.x", False)):
+                with self.subTest(server=index, track=track):
+                    manifest = small_manifest()
+                    manifest["mcp_servers"][index]["package"]["track"] = track
+                    problems = toolchain.validate_manifest(manifest)
+                    self.assertEqual(ok, not problems, problems)
+                    if not ok:
+                        self.assertProblem(problems, "track: '%s' must be \"latest\" or an exact version" % track)
+
     def test_the_license_variable_must_be_passed_through_and_default_to_false(self):
         manifest = small_manifest()
         manifest["mcp_servers"][3]["env"][EULA_ENV]["default"] = "true"
@@ -923,26 +952,76 @@ class SchemaTests(Base):
             with self.subTest(name=name):
                 problems = self.lock_problems(lambda l: l["contracts"]["npm-srv/online"]["server"].update(name=name))
                 self.assertProblem(problems, "server.name")
-        for name in ("Fabric MCP Server", "azure-mcp", "a", "A1 b_c.d-e", "x" * 64, "unknown"):
+        for name in ("Fabric MCP Server", "azure-mcp", "a", "A1 b_c 2.5-e", "x" * 64, "unknown"):  # Changed on purpose in round 9: "A1 b_c.d-e" reads like a host name
             with self.subTest(name=name):
                 self.assertEqual([], self.lock_problems(lambda l: l["contracts"]["npm-srv/online"]["server"].update(name=name)))
         for version in ("1.2.3" + "@" + "example.invalid", path_like, "", "1.2.3 beta", "+1.0", "-1", "1/2", "x" * 65, "1.0\n", "v1:2"):
             with self.subTest(version=version):
                 problems = self.lock_problems(lambda l: l["contracts"]["npm-srv/online"]["server"].update(version=version))
                 self.assertProblem(problems, "server.version")
-        for version in ("1.6.0", "4.0.0-beta.4", "1.0.0+build.5", "1.0rc1", "0_1~2", "unknown", "1" * 64, "v1.2.3", "1.30.0", "5.3.20.RELEASE"):
+        for version in ("1.6.0", "4.0.0-beta.4", "1.0.0+build.5", "1.0rc1", "0_1~2", "unknown", "1" * 64, "v1.2.3", "1.30.0"):
             with self.subTest(version=version):
                 self.assertEqual([], self.lock_problems(lambda l: l["contracts"]["npm-srv/online"]["server"].update(version=version)))
 
     def test_a_server_version_starts_with_a_digit_and_is_no_host_name(self):
         build_host = "build." + "private." + "example"
+        # Changed on purpose in round 9: "5.3.20.RELEASE" ends in a label that reads like a host name, and the probe would not store it either.
         for version in (build_host, "x" * 64, "1" * 65, "v", "V1.0", "v.1", "build1", "1." + build_host, "1.2.3." + "example." + "com", "10." + build_host,
-                        "1.0.0-" + "rc." + "final"):
+                        "1.0.0-" + "rc." + "final", "5.3.20.RELEASE"):
             with self.subTest(version=version):
                 self.assertProblem(self.lock_problems(lambda l: l["contracts"]["npm-srv/online"]["server"].update(version=version)), "server.version")
-        for version in ("1.6.0", "4.0.0-beta.4", "1.30.0", "v2.0.1", "1.0.0.windows.1", "2025.10.1", "5.3.20.RELEASE", "1.0.0-beta.4+build.7"):
+        for version in ("1.6.0", "4.0.0-beta.4", "1.30.0", "v2.0.1", "1.0.0.windows.1", "2025.10.1", "1.0.0-beta.4+build.7"):
             with self.subTest(version=version):
                 self.assertEqual([], self.lock_problems(lambda l: l["contracts"]["npm-srv/online"]["server"].update(version=version)))
+
+    def test_a_server_name_or_version_that_the_probe_would_not_store_is_not_valid_in_a_lock_either(self):
+        token = "1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c"
+        self.assertEqual(30, len(token))
+        reading = "must not read like a token, a host name or an address"
+        for version in ("1.host-1.com", "1.web2.com", ADDRESS, token, "v" + token[:29], "5.3.20.RELEASE"):
+            with self.subTest(version=version):
+                self.assertTrue(toolchain.SERVER_VERSION_RE.fullmatch(version), "the shape rule alone let it through")
+                self.assertTrue(toolchain_mcp.suspect(version))
+                problems = self.lock_problems(lambda l: l["contracts"]["npm-srv/online"]["server"].update(version=version))
+                self.assertEqual(["contracts.npm-srv/online.server.version: " + reading], problems)
+        for name in ("acme.example.com", "web2.example.net", ADDRESS, token, "Azure " + token):
+            with self.subTest(name=name):
+                self.assertTrue(toolchain.SERVER_NAME_RE.fullmatch(name), "the shape rule alone let it through")
+                problems = self.lock_problems(lambda l: l["contracts"]["npm-srv/online"]["server"].update(name=name))
+                self.assertEqual(["contracts.npm-srv/online.server.name: " + reading], problems)
+        for version in ("4.0.0-beta.4", "1.6.0", "1.30.0", "unknown"):
+            with self.subTest(version=version):
+                self.assertEqual([], self.lock_problems(lambda l: l["contracts"]["npm-srv/online"]["server"].update(version=version)))
+        for name in ("Fabric MCP Server", "fabric-rti-mcp-server", "Azure MCP Server", "unknown"):
+            with self.subTest(name=name):
+                self.assertEqual([], self.lock_problems(lambda l: l["contracts"]["npm-srv/online"]["server"].update(name=name)))
+        problems = self.lock_problems(lambda l: l["contracts"]["npm-srv/online"]["server"].update(name=token, version="1.host-1.com"))
+        self.assertEqual(2, len(problems), "both are named")
+        self.assertNotIn(token, " ".join(problems), "what reads like a token is not echoed")
+
+    def test_the_rule_for_a_server_name_and_version_is_the_one_of_the_probe_and_it_is_not_applied_to_tool_names(self):
+        with mock.patch.object(toolchain_mcp, "suspect", side_effect=lambda value: value == "Marker Name") as suspect:
+            self.assertEqual(["contracts.npm-srv/online.server.name: must not read like a token, a host name or an address"],
+                             self.lock_problems(lambda l: l["contracts"]["npm-srv/online"]["server"].update(name="Marker Name")))
+            self.assertEqual([], self.lock_problems(lambda l: l["contracts"]["npm-srv/online"]["server"].update(name="Fabric MCP Server")))
+        self.assertTrue(suspect.called)
+        real_tools = ("onelake_create-shortcut-adls-gen2", "onelake_create-shortcut-amazon-s3", "onelake_create-shortcut-s3-compatible")
+        tool = {"schema": "sha256:" + "5" * 64, "read_only": True, "destructive": False, "idempotent": True}
+        for name in real_tools:
+            with self.subTest(tool=name):
+                self.assertTrue(toolchain_mcp.suspect(name), "the rule reads a name like this as a token: it must not be applied to tool names")
+                self.assertEqual([], self.lock_problems(lambda l: l["contracts"]["npm-srv/online"]["tools"].__setitem__(name, dict(tool))))
+
+    def test_the_committed_lock_is_valid_and_so_are_its_server_names_and_versions(self):
+        if not (REAL / "toolchain.lock.json").is_file():
+            self.skipTest("the committed lock is not here")
+        lock = toolchain.load_lock(REAL / "toolchain.lock.json")
+        captured = {key: contract for key, contract in lock["contracts"].items() if contract["status"] == "captured"}
+        self.assertGreaterEqual(len(captured), 5)
+        for key, contract in captured.items():
+            with self.subTest(contract=key):
+                for value in contract["server"].values():
+                    self.assertFalse(toolchain_mcp.suspect(value), value)
 
     def test_the_protocol_of_a_captured_contract_is_a_date(self):
         path_like = "C:\\" + "Users\\jane\\protocol"
@@ -1388,6 +1467,24 @@ class PackageTests(Base):
         self.assertEqual(pin("acme-py", "2024.1"), toolchain.server_launch(manifest, lock, "py-srv", "default")["args"][0])
         lock["packages"]["pypi:acme-py"]["version"] = "1.0rc1"
         self.assertEqual(pin("acme-py", "1.0rc1"), toolchain.server_launch(manifest, lock, "py-srv", "default")["args"][0])
+
+    def test_a_dotted_suffix_is_an_exact_version_for_pypi_and_nuget_and_the_semver_rule_of_npm_still_refuses_it(self):
+        manifest = small_manifest()
+        for eco, version, ok in (("pypi", "1.8.0.post1", True), ("pypi", "1.8.0.dev3", True), ("pypi", "1.8.0.rc1", True), ("nuget", "1.8.0.post1", True),
+                                 ("npm", "1.8.0.post1", False), ("npm", "1.8.0.dev3", False), ("npm", "1.8.0.rc1", False), ("npm", "1.8.0rc1", False),
+                                 ("npm", "1.8.0-post1", True), ("npm", "1.8.0", True),
+                                 ("pypi", "1.8.0.", False), ("pypi", "1.8.0.dev3.", False), ("nuget", "1.8.0.", False), ("pypi", "1.8.0." + "5-", False),
+                                 ("pypi", "1.8.0." + "5+", False), ("pypi", "1.x", False), ("pypi", "1.*", False)):
+            with self.subTest(ecosystem=eco, version=version):
+                self.assertEqual(ok, toolchain.exact_version(eco, version))
+        self.assertIsNone(toolchain.NPM_EXACT_RE.fullmatch("1.8.0.post1"))
+        lock = copy.deepcopy(dict(synthetic_lock(manifest, small_profiles())))
+        lock["packages"]["pypi:acme-py"]["version"] = "1.8.0.post1"
+        self.assertEqual(pin("acme-py", "1.8.0.post1"), toolchain.server_launch(manifest, lock, "py-srv", "default")["args"][0])
+        lock["packages"]["npm:@acme/tool"]["version"] = "1.8.0.post1"
+        with self.assertRaises(toolchain.ToolchainError) as caught:
+            toolchain.server_launch(manifest, lock, "npm-srv", "offline")
+        self.assertIn("package npm:@acme/tool has no exact version in the lock ('1.8.0.post1' could float)", str(caught.exception))
 
     def test_a_pinned_package_must_resolve_to_its_pin(self):
         manifest = small_manifest()
@@ -2237,9 +2334,11 @@ class SharedLockCommandTests(Base):
         self.assertEqual([("plugins/core", ("common", "zeta")), ("plugins/extra", ("alpha",))], self.up.calls["read_plugin"])
         self.assertEqual(self.truth["skill_sources"], read_json(self.path)["skill_sources"])
 
-    def test_a_stale_cache_is_refetched_and_read_again_with_the_shared_folders(self):
-        first = self.run_lock()
-        self.assertEqual(0, first[0])
+    def test_a_read_that_fails_on_the_freshly_fetched_cache_is_an_error_for_the_source_and_is_not_fetched_again(self):
+        # Changed on purpose in round 9: a cache folder is never reused, so a failed read is not answered by fetching a second time.
+        self.assertEqual(0, self.run_lock()[0])
+        before = self.path.read_bytes()
+        self.up.calls["fetch_git"].clear()
         failures = []
 
         def reader(*args, **kwargs):
@@ -2249,8 +2348,11 @@ class SharedLockCommandTests(Base):
             return self.up.read_plugin(*args, **kwargs)
         (self.root / ".factory" / "pack" / ".cache" / ("1" * 12)).mkdir(parents=True, exist_ok=True)
         code, out, err = self.run_lock(read_plugin=reader)
-        self.assertEqual((0, ""), (code, err), out)
-        self.assertEqual(self.truth["skill_sources"], read_json(self.path)["skill_sources"])
+        self.assertEqual(1, code)
+        self.assertIn("skill source src: missing: the object is not in the cache", err)
+        self.assertEqual(["1" * 40], self.up.calls["fetch_git"], "one fetch, and none after the failed read")
+        self.assertEqual(1, len(failures), "and the failed read is not made again")
+        self.assertEqual(before, self.path.read_bytes(), "a lock that fails is not written")
 
 
 class SharedResolveTests(SharedFolderBase):
@@ -2357,6 +2459,14 @@ class SharedPackTests(SharedFolderBase):
         write_store(self.store, self.lock, ["alpha-core", "beta-core", "gamma"])
         write(self.store / "common" / "index.md", "tampered\n")
         self.assertEqual([("FAIL", "the local pack holds the shared folder common with content that differs from the lock")], self.problems())
+
+    def test_a_pack_folder_that_cannot_be_measured_is_a_failure_and_not_a_crash(self):
+        write_store(self.store, self.lock, ["alpha-core", "beta-core", "gamma"])
+        resolved = self.resolved("dev-a")
+        deps = self.deps(digest_tree=unreadable(self.store / "skills" / "gamma", self.store / "common"))
+        self.assertEqual([("FAIL", "the local pack holds skill gamma that cannot be measured (it is not a readable folder)"),
+                          ("FAIL", "the local pack holds the shared folder common that cannot be measured (it is not a readable folder)")],
+                         toolchain.store_problems(self.store, resolved["skills"], self.lock, deps, resolved["shared"]))
 
     def test_a_pack_without_a_manifest_has_the_one_old_warning(self):
         self.assertEqual([("WARN", "the local pack has no MANIFEST.json")], self.problems())
@@ -3014,6 +3124,32 @@ class OneValidationPathTests(Base):
         code, out, err = self.cli("render", "--host", "load-plan", "--profile", "agent-ok")
         self.assertEqual((0, ""), (code, err), out)
 
+    def test_a_profile_that_has_servers_and_no_skill_is_stopped_by_a_broken_repo_owned_skill_in_every_command(self):
+        self.rewrite_profiles(lambda p: p["profiles"].__setitem__("servers-only", {"mode": "dev", "skills": [], "instructions": [],
+                                                                                      "mcp": [{"server": "docs", "variant": "default"}]}))
+        self.break_router()
+        message = "repo-owned skill router: missing description"
+        for argv in (["render", "--host", "copilot-cli", "--profile", "servers-only"], ["render", "--host", "load-plan", "--profile", "servers-only"],
+                     ["render", "--write-project", "--profile", "servers-only"], ["install", "--host", "copilot-cli", "--profile", "servers-only"]):
+            with self.subTest(argv=argv):
+                code, out, err = self.cli(*argv, deps=self.deps(runner=self.runner))
+                self.assertEqual(1, code, out + err)
+                self.assertIn("profile servers-only: " + message, err)
+        with self.assertRaises(toolchain.ToolchainError) as caught:
+            self.resolved("servers-only")
+        self.assertIn("profile servers-only: " + message, caught.exception.problems)
+        self.assertIn("[FAIL] V8: " + message, self.cli("verify", "--profile", "servers-only")[1])
+        write(self.root / "toolchain" / "skills" / "router" / "SKILL.md", "---\nname: router\ndescription: routes work\n---\n")
+        self.assertEqual({"router"}, {r["name"] for r in self.resolved("servers-only")["repo_skills"]})
+        self.assertEqual(0, self.cli("render", "--host", "copilot-cli", "--profile", "servers-only")[0])
+
+    def test_a_profile_with_servers_and_no_skill_has_the_rule_for_the_skill_folders_of_this_repository_in_its_own_problems(self):
+        self.rewrite_profiles(lambda p: p["profiles"].__setitem__("servers-only", {"mode": "dev", "skills": [], "instructions": [],
+                                                                                      "mcp": [{"server": "docs", "variant": "default"}]}))
+        write(self.root / "toolchain" / "skills" / "Bad_Name" / "SKILL.md", "---\nname: bad\ndescription: x\n---\n")
+        problems = toolchain.profile_problems(self.manifest, self.profiles, self.lock, "servers-only", self.root / "toolchain")
+        self.assertProblem(problems, "toolchain/skills/Bad_Name: a skill folder is named with lower-case letters, digits and hyphens")
+
     def test_a_captured_contract_that_lists_no_tool_stops_every_command_of_a_profile_that_uses_it(self):
         self.rewrite_lock(lambda lock: lock["contracts"]["npm-srv/offline"].update(tools={}))
         self.assertAllRefuse("agent-ok", "profile agent-ok: contract npm-srv/offline is captured but lists no tool")
@@ -3030,11 +3166,16 @@ class OneValidationPathTests(Base):
                 code, out, err = self.cli(*argv)
                 self.assertEqual((0, ""), (code, err), "dev-a does not use that variant: " + out)
 
-    def test_fetch_is_not_stopped_by_a_contract_that_lists_no_tool(self):
+    def test_fetch_is_stopped_by_a_captured_contract_that_lists_no_tool_like_every_other_command(self):
+        # Changed on purpose in round 9: fetch resolves each profile it works for, so it stops on what stops render and install.
         self.rewrite_lock(lambda lock: lock["contracts"]["npm-srv/offline"].update(tools={}))
         code, out, err = self.cli("fetch", "--profile", "agent-ok", deps=self.deps(vendor_skills=self.vendor))
-        self.assertEqual((0, ""), (code, err), out)
-        self.assertEqual([[("src", "core", "alpha-core")]], self.vendored)
+        self.assertEqual(1, code)
+        self.assertIn("profile agent-ok: contract npm-srv/offline is captured but lists no tool", err)
+        self.assertEqual([], self.vendored)
+        code, out, err = self.cli("fetch", "--profile", "dev-a", deps=self.deps(vendor_skills=self.vendor))
+        self.assertEqual((0, ""), (code, err), "dev-a does not use that variant: " + out)
+        self.assertEqual([[("src", "core", "alpha-core"), ("src", "core", "beta-core"), ("src", "extra", "gamma")]], self.vendored)
 
     def test_an_unresolved_package_leaves_the_server_out_of_a_dev_profile_with_a_note(self):
         self.unresolved("nuget:Acme.Nuget")
@@ -3073,18 +3214,32 @@ class OneValidationPathTests(Base):
         self.assertAllRefuse("agent-ok", "package npm:@acme/tool is unresolved in the lock")
         self.assertAllRefuse("exec-ok", "package pypi:acme-py is unresolved in the lock")
 
-    def test_fetch_is_not_blocked_by_what_only_concerns_the_servers_and_does_not_resolve_a_profile(self):
-        def spoil(lock):
+    def test_fetch_is_stopped_by_what_concerns_the_servers_of_a_profile_it_works_for(self):
+        # Changed on purpose in round 9: fetch used to look at the skills of a profile only, so it fetched for a profile that verify refuses.
+        def clash(lock):
             lock["skill_sources"]["src"]["plugins"]["core"].update(bundled_mcp=["npm-srv"])
+
+        def no_contract(lock):
             lock["contracts"].pop("npm-srv/offline")
+
+        def unresolved(lock):
             lock["packages"]["npm:@acme/tool"] = {"status": "unresolved", "reason": "network", "detail": ""}
-        self.rewrite_lock(spoil)
-        with mock.patch.object(toolchain, "resolve_profile", side_effect=AssertionError("fetch must not resolve a profile")):
-            code, out, err = self.cli("fetch", deps=self.deps(vendor_skills=self.vendor))
-            self.assertEqual((0, ""), (code, err), out)
-            code, out, err = self.cli("fetch", "--profile", "agent-ok", deps=self.deps(vendor_skills=self.vendor))
-            self.assertEqual((0, ""), (code, err), out)
-        self.assertEqual([[("src", "core", "alpha-core"), ("src", "core", "beta-core"), ("src", "extra", "gamma")], [("src", "core", "alpha-core")]], self.vendored)
+        cases = (("a bundled server of the same name", clash, "has the name of an MCP server that the plugin src/core bundles"),
+                 ("no contract entry", no_contract, "the lock has no contract entry for npm-srv/offline"),
+                 ("an unresolved package", unresolved, "package npm:@acme/tool is unresolved in the lock"))
+        for what, spoil, message in cases:
+            with self.subTest(what=what):
+                self.small_project()
+                self.rewrite_lock(spoil)
+                code, out, err = self.cli("fetch", "--profile", "agent-ok", deps=self.deps(vendor_skills=self.vendor))
+                self.assertEqual(1, code, out)
+                self.assertIn("profile agent-ok: ", err)
+                self.assertIn(message, err)
+                self.assertNotIn("Traceback", err)
+                code, out, err = self.cli("fetch", deps=self.deps(vendor_skills=self.vendor))
+                self.assertEqual(1, code, out)
+                self.assertIn(message, err)
+                self.assertEqual([], self.vendored, "nothing is fetched for a profile that does not verify, nor for the others of the same run")
 
     def test_fetch_still_refuses_a_profile_whose_skills_cannot_be_loaded(self):
         self.rewrite_profiles(lambda p: p["profiles"]["agent-ok"]["skills"][0]["names"].append("risky"))
@@ -3101,6 +3256,99 @@ class OneValidationPathTests(Base):
         code, out, err = self.cli("fetch", "--profile", "agent-ok", deps=self.deps(vendor_skills=self.vendor))
         self.assertEqual(1, code)
         self.assertIn("the lock has no shared folder 'common' for source 'src'", err)
+
+    def test_a_locked_skill_with_a_finding_stops_fetch_of_an_agent_profile_as_it_stops_verify_and_render(self):
+        self.rewrite_lock(lambda lock: lock["skill_sources"]["src"]["plugins"]["core"]["skills"]["alpha-core"].update(findings=["missing description"]))
+        finding = "skill src/core/alpha-core has findings: missing description"
+        code, out, err = self.cli("fetch", "--profile", "agent-ok", deps=self.deps(vendor_skills=self.vendor))
+        self.assertEqual(1, code)
+        self.assertIn("profile agent-ok: " + finding, err)
+        self.assertEqual([], self.vendored)
+        self.assertIn("[FAIL] V8: profile agent-ok: " + finding, self.cli("verify", "--profile", "agent-ok")[1])
+        self.assertEqual(1, self.cli("render", "--host", "copilot-cli", "--profile", "agent-ok")[0])
+        self.assertEqual(1, self.cli("fetch", deps=self.deps(vendor_skills=self.vendor))[0], "the default selection holds agent-ok")
+        self.assertEqual([], self.vendored, "and nothing is fetched for dev-a either")
+        code, out, err = self.cli("fetch", "--profile", "dev-a", deps=self.deps(vendor_skills=self.vendor))
+        self.assertEqual((0, ""), (code, err), "the same finding only warns in dev mode: " + out)
+        self.assertEqual(1, len(self.vendored))
+
+    def test_a_repo_owned_skill_with_the_name_of_a_locked_skill_stops_fetch(self):
+        write(self.root / "toolchain" / "skills" / "alpha-core" / "SKILL.md", "---\nname: alpha-core\ndescription: shadows a locked skill\n---\n")
+        clash = "the repo-owned skill 'alpha-core' has the same name as a locked skill"
+        for argv, named in ((["fetch"], "dev-a"), (["fetch", "--profile", "agent-ok"], "agent-ok"), (["fetch", "--profile", "dev-a"], "dev-a")):
+            with self.subTest(argv=argv):
+                code, out, err = self.cli(*argv, deps=self.deps(vendor_skills=self.vendor))
+                self.assertEqual(1, code, out)
+                self.assertIn("profile %s: %s" % (named, clash), err)
+        self.assertEqual([], self.vendored)
+        self.assertIn("[FAIL] V2: profile agent-ok: " + clash, self.cli("verify", "--profile", "agent-ok")[1])
+
+    def test_a_repo_owned_skill_folder_with_a_bad_name_stops_fetch_and_the_message_names_the_profile(self):
+        write(self.root / "toolchain" / "skills" / "Bad_Name" / "SKILL.md", "---\nname: Bad_Name\ndescription: a folder that is not named like a skill\n---\n")
+        message = "toolchain/skills/Bad_Name: a skill folder is named with lower-case letters, digits and hyphens"
+        code, out, err = self.cli("fetch", "--profile", "agent-ok", deps=self.deps(vendor_skills=self.vendor))
+        self.assertEqual(1, code)
+        self.assertIn("profile agent-ok: " + message, err)
+        self.assertEqual(1, err.count(message), "it is said once")
+        self.assertEqual([], self.vendored)
+        self.assertIn("[FAIL] V2: profile agent-ok: " + message, self.cli("verify", "--profile", "agent-ok")[1])
+
+    def test_fetch_resolves_each_profile_it_works_for_and_lints_a_repo_owned_skill_once(self):
+        linted = []
+
+        def lint(folder):
+            linted.append(Path(folder).name)
+            return fake_lint_skill(folder)
+        with mock.patch.object(toolchain, "resolve_profile", wraps=toolchain.resolve_profile) as spy:
+            code, out, err = self.cli("fetch", deps=self.deps(vendor_skills=self.vendor, lint_skill=lint))
+        self.assertEqual((0, ""), (code, err), out)
+        self.assertEqual(["dev-a", "agent-ok"], [call.args[3] for call in spy.call_args_list])
+        self.assertEqual(["router"], linted, "dev-a and agent-ok both load the router skill of the repository, and it is linted once")
+        with mock.patch.object(toolchain, "resolve_profile", wraps=toolchain.resolve_profile) as spy:
+            self.cli("fetch", "--profile", "agent-ok", deps=self.deps(vendor_skills=self.vendor))
+        self.assertEqual(["agent-ok"], [call.args[3] for call in spy.call_args_list])
+
+    def test_a_profile_without_skills_is_resolved_too_when_it_is_named_and_is_not_selected_by_default(self):
+        self.rewrite_profiles(lambda p: p["profiles"].__setitem__("servers-only", {"mode": "dev", "skills": [], "instructions": [],
+                                                                                      "mcp": [{"server": "npm-srv", "variant": "writer"}]}))
+        code, out, err = self.cli("fetch", "--profile", "servers-only", deps=self.deps(vendor_skills=self.vendor))
+        self.assertEqual(1, code)
+        self.assertIn("profile servers-only: the lock has no contract entry for npm-srv/writer", err)
+        self.assertEqual([], self.vendored)
+        code, out, err = self.cli("fetch", deps=self.deps(vendor_skills=self.vendor))
+        self.assertEqual((0, ""), (code, err), "the default selection is the profiles that have skills: " + out)
+        self.assertEqual(1, len(self.vendored))
+
+    def test_fetch_of_the_committed_project_takes_what_resolve_profile_takes_for_every_profile_with_skills(self):
+        if not (REAL / "toolchain.lock.json").is_file():
+            self.skipTest("the committed lock is not here")
+        project = self.tmp / "committed"
+        shutil.copytree(REAL, project / "toolchain")
+        calls = []
+
+        def vendor(lock, selection, store, runner=None, quarantine=(), shared=()):
+            calls.append({"selection": selection, "shared": shared, "quarantine": quarantine})
+            return {"schema": 1, "skills": {name: {"files": 1} for _source, _plugin, name in selection}}
+        deps = self.deps(vendor_skills=vendor, lint_skill=toolchain_sources.lint_skill, digest_tree=toolchain_sources.digest_tree)
+        manifest = toolchain.load_manifest(project / "toolchain" / "toolchain.json")
+        profiles = toolchain.load_profiles(project / "toolchain" / "profiles.json")
+        lock = toolchain.load_lock(project / "toolchain" / "toolchain.lock.json")
+        with_skills = [name for name, profile in profiles["profiles"].items() if profile["skills"]]
+        self.assertGreater(len(with_skills), 3)
+        skills, folders = set(), set()
+        for name in with_skills:
+            resolved = toolchain.resolve_profile(manifest, profiles, lock, name, deps=deps)
+            skills.update((s["source"], s["plugin"], s["name"]) for s in resolved["skills"])
+            folders.update((s["source"], s["folder"]) for s in resolved["shared"])
+        self.assertGreater(len(skills), 10)
+        self.assertEqual({("skills-for-fabric", "common")}, folders)
+        with mock.patch.object(toolchain, "resolve_profile", wraps=toolchain.resolve_profile) as spy:
+            code, out, err = self.cli("fetch", root=project, deps=deps)
+        self.assertEqual((0, ""), (code, err), out)
+        self.assertEqual(with_skills, [call.args[3] for call in spy.call_args_list], "the one validation path, for each profile that has skills")
+        self.assertEqual([sorted(skills)], [c["selection"] for c in calls])
+        self.assertEqual([sorted(folders)], [c["shared"] for c in calls])
+        self.assertEqual([tuple(sorted({q["skill"] for q in manifest["quarantine"]}))], [c["quarantine"] for c in calls])
 
     def test_live_verification_says_when_it_skipped_a_profile_and_why(self):
         self.rewrite_lock(lambda lock: lock["skill_sources"]["src"]["plugins"]["core"].update(bundled_mcp=["npm-srv"]))
@@ -3421,6 +3669,75 @@ class ContractCheckTests(Base):
         self.assertIn("[WARN] V10: contract py-srv/default was captured for package version 1.7.0, not the locked one", out)
         self.assertTrue(all("acme-py" not in " ".join(a) for a in self.launched()))
 
+    def test_a_contract_captured_for_another_package_version_and_another_launch_is_reported_for_the_package_version_only(self):
+        self.rewrite_manifest(lambda m: m["mcp_servers"][0]["variants"]["online"].update(args=["--all"]))
+
+        def change(lock):
+            lock.update(inputs_digest=toolchain.inputs_digest(self.manifest))
+            lock["contracts"]["npm-srv/online"].update(package_version="1.5.0")
+        self.rewrite_lock(change)
+        code, out, _ = self.verify(env={EULA_ENV: "true"})
+        self.assertIn("[WARN] V10: contract npm-srv/online was captured for package version 1.5.0, not the locked one", out)
+        self.assertNotIn("contract npm-srv/online was not launched", out, "the package version is the first reason that is given")
+        self.assertEqual([["uvx", PY, "--all"], ["dnx", NUGET, "--yes"], ["npx", "-y", LICENSED, "--start", "--readonly"]], self.launched(), "the server is not run")
+
+    def test_a_contract_captured_for_another_launch_is_not_launched_and_the_launch_check_fails_it(self):
+        changes = {"the arguments": lambda m: m["mcp_servers"][0]["variants"]["offline"].update(args=["--all"]),
+                   "a declared env default": lambda m: m["mcp_servers"][0]["env"]["ACME_MODE"].update(default="fast")}
+        for what, change in changes.items():
+            with self.subTest(change=what):
+                self.small_project()
+                self.up = Upstream(self.manifest, self.lock)
+                self.rewrite_manifest(change)
+                self.rewrite_lock(lambda lock: lock.update(inputs_digest=toolchain.inputs_digest(self.manifest)))
+                code, out, err = self.cli("verify", "--contracts", "--profile", "agent-ok", deps=self.up.deps(self.home, env={EULA_ENV: "true"}))
+                self.assertEqual(1, code, out)
+                self.assertEqual([], self.up.calls["probe_stdio"], "the changed launch line is never run")
+                self.assertIn("[WARN] V10: contract npm-srv/offline was not launched: it was captured for another launch "
+                              "(capture it again with python scripts/toolchain.py lock --contracts)", out)
+                self.assertIn("[FAIL] V10: profile agent-ok: contract npm-srv/offline was captured for another launch; capture it again "
+                              "(python scripts/toolchain.py lock --contracts)", out)
+                self.assertEqual(1, out.count("[FAIL] V10"), "no second failure is added for it")
+                self.assertNotIn("matches the live server", out)
+                self.assertNotIn("contract drift", out)
+
+    def test_only_the_contract_of_the_changed_launch_is_left_unlaunched_and_the_others_are_still_checked(self):
+        self.rewrite_manifest(lambda m: m["mcp_servers"][0]["variants"]["online"].update(args=["--all"]))
+        self.rewrite_lock(lambda lock: lock.update(inputs_digest=toolchain.inputs_digest(self.manifest)))
+        code, out, err = self.verify(env={EULA_ENV: "true"})
+        self.assertEqual(1, code, out)
+        self.assertEqual([["uvx", PY, "--all"], ["dnx", NUGET, "--yes"], ["npx", "-y", LICENSED, "--start", "--readonly"]], self.launched())
+        self.assertIn("[WARN] V10: contract npm-srv/online was not launched: it was captured for another launch", out)
+        for key in ("py-srv/default", "nuget-srv/default", "licensed/offline"):
+            self.assertIn("[PASS] V10: contract %s matches the live server" % key, out)
+
+    def test_the_tool_names_of_a_drift_are_cleaned_of_control_characters_and_cut_short(self):
+        junk = lambda locked, live: {"added": ["a\x1b[2Jb", "x" * 200], "removed": ["c\x07d"], "changed": ["e\x00f", "g\nh"]}
+        deps = self.up.deps(self.home, env={EULA_ENV: "true"}, contract_diff=junk)
+        code, out, err = self.cli("verify", "--contracts", "--profile", "agent-ok", deps=deps)
+        self.assertEqual(1, code)
+        line = [l for l in out.splitlines() if "contract drift in npm-srv/offline" in l]
+        self.assertEqual(["[FAIL] V10: contract drift in npm-srv/offline: tools added a [2Jb, %s; removed c d; changed e f, g h" % ("x" * 120)], line)
+        self.assertEqual([], [c for c in out if ord(c) < 32 and c != "\n"], "no control character reaches the report")
+        self.up.tools["@acme/tool"]["evil\x1b[2Jtool"] = {"schema": "sha256:" + "1" * 64, "read_only": True, "destructive": False, "idempotent": True}
+        out = self.cli("verify", "--contracts", "--profile", "agent-ok", deps=self.up.deps(self.home, env={EULA_ENV: "true"}))[1]
+        self.assertIn("[FAIL] V10: contract drift in npm-srv/offline: tools added evil [2Jtool", out)
+        self.assertNotIn("\x1b", out)
+
+    def test_the_license_variable_goes_to_the_server_that_declares_it_and_to_no_other_even_one_that_names_the_same_variable(self):
+        self.small_project(manifest=clashing_manifest())
+        self.assertEqual(0, self.cli("render", "--write-project")[0])
+        self.up = Upstream(self.manifest, self.lock)
+        code, out, err = self.verify(env={EULA_ENV: "true", "ACME_TARGET": "sandbox"})
+        self.assertEqual(0, code, out + err)
+        self.assertEqual(4, len(self.up.calls["probe_stdio"]))
+        for call in self.up.calls["probe_stdio"]:
+            self.assertEqual(LICENSED in " ".join(call["argv"]), EULA_ENV in call["env"], call["argv"])
+        self.assertEqual("true", self.call_for(LICENSED)["env"][EULA_ENV])
+        online = self.call_for("--online")
+        self.assertEqual("sandbox", online["env"]["ACME_TARGET"], "the other variables that the variant declares are still handed on")
+        self.assertNotIn(EULA_ENV, online["env"])
+
     def test_a_probe_that_fails_is_a_failure_that_names_the_reason_only(self):
         feed = "pkgs." + "contoso." + "invalid"
         with mock.patch.object(self.up, "probe_stdio", side_effect=toolchain_mcp.McpProbeError("timeout: waited on " + feed)):
@@ -3467,6 +3784,54 @@ class ProbeEnvironmentTests(unittest.TestCase):
         declared = {EULA_ENV: {"from_env": EULA_ENV, "default": "false"}}
         self.assertEqual({}, toolchain.probe_environment(declared, {"PATH": "/opt/fake/bin"}, {"env": EULA_ENV}, ()))
         self.assertEqual({EULA_ENV: "true"}, toolchain.probe_environment(declared, {EULA_ENV: "true"}, {"env": EULA_ENV}, ()))
+
+    def test_an_operator_variable_that_is_empty_counts_as_not_set_the_way_a_host_file_reads_it(self):
+        spec = {"WITH_DEFAULT": {"from_env": "SRC_A", "default": "fallback"}, "NO_DEFAULT": {"from_env": "SRC_B"}}
+        cases = (({"SRC_A": "", "SRC_B": ""}, {"WITH_DEFAULT": "fallback"}, "empty: the default, or the variable is left out"),
+                 ({"SRC_A": "set", "SRC_B": "also"}, {"WITH_DEFAULT": "set", "NO_DEFAULT": "also"}, "set"),
+                 ({}, {"WITH_DEFAULT": "fallback"}, "unset: the default"),
+                 ({"SRC_A": "", "SRC_B": "also"}, {"WITH_DEFAULT": "fallback", "NO_DEFAULT": "also"}, "one empty and one set"),
+                 ({"SRC_A": " "}, {"WITH_DEFAULT": " "}, "a blank is not empty"))
+        for parent, expected, what in cases:
+            with self.subTest(what=what):
+                declared = toolchain.probe_environment(spec, parent, None, ())
+                self.assertEqual(expected, declared)
+                reads = lambda given: {name: value for name, value in toolchain_mcp.capture_env(given, parent).items() if name in spec}
+                self.assertEqual(reads(spec), reads(declared), "the capture environment reads the structured declaration the same way")
+
+    def test_the_license_variable_of_the_server_is_handed_on_only_when_the_operator_set_it_to_something(self):
+        eula = {"env": EULA_ENV}
+        for value, expected in (("true", {EULA_ENV: "true"}), ("", {}), ("false", {EULA_ENV: "false"})):
+            with self.subTest(value=value):
+                self.assertEqual(expected, toolchain.probe_environment({}, {EULA_ENV: value}, eula, {EULA_ENV}))
+        declared = {EULA_ENV: {"from_env": EULA_ENV, "default": "false"}}
+        self.assertEqual({}, toolchain.probe_environment(declared, {EULA_ENV: ""}, eula, ()), "an empty value is not set, and the default of the license variable is never used")
+
+    def test_the_license_variables_of_a_manifest_are_those_of_the_servers_that_declare_a_license(self):
+        self.assertEqual({EULA_ENV}, toolchain.license_variables(small_manifest()))
+        self.assertEqual({"A_EULA", "B_EULA"}, toolchain.license_variables({"mcp_servers": [{"eula": {"env": "A_EULA"}}, {"id": "none"}, {"eula": {"env": "B_EULA"}}]}))
+        self.assertEqual(set(), toolchain.license_variables({"mcp_servers": [{"id": "none"}, {"eula": None}]}))
+        self.assertEqual(set(), toolchain.license_variables({"mcp_servers": []}))
+
+    def test_the_bound_replaces_the_operators_own_variables_of_the_same_name_in_any_case_and_keeps_the_others(self):
+        bound = "2026-10-31T00:00:00Z"
+        self.assertEqual(("npm_config_before", "uv_exclude_newer"), toolchain.BOUND_VARIABLES)
+        for names in (("npm_config_before", "uv_exclude_newer"), ("NPM_CONFIG_BEFORE", "UV_EXCLUDE_NEWER"), ("Npm_Config_Before", "Uv_Exclude_Newer"),
+                      ("npm_config_before", "UV_EXCLUDE_NEWER")):
+            with self.subTest(names=names):
+                env = {names[0]: "2099-01-01", names[1]: "2099-01-01", "PATH": "/opt/fake/bin", "ACME_TARGET": "sandbox"}
+                bounded = toolchain.bounded_environment(env, "2026-10-30")
+                self.assertEqual({"npm_config_before": bound, "UV_EXCLUDE_NEWER": bound, "PATH": "/opt/fake/bin", "ACME_TARGET": "sandbox"}, bounded)
+                self.assertEqual("2099-01-01", env[names[0]], "the operator's own mapping is not changed")
+        every_case = {"NPM_CONFIG_BEFORE": "a", "npm_config_before": "b", "Npm_Config_Before": "c", "UV_EXCLUDE_NEWER": "d", "uv_exclude_newer": "e", "Uv_Exclude_Newer": "f"}
+        self.assertEqual({"npm_config_before": bound, "UV_EXCLUDE_NEWER": bound}, toolchain.bounded_environment(every_case, "2026-10-30"))
+        self.assertEqual({"npm_config_before": bound, "UV_EXCLUDE_NEWER": bound}, toolchain.bounded_environment({}, "2026-10-30"))
+
+    def test_the_bound_is_midnight_at_the_start_of_the_day_after_the_capture(self):
+        for captured, bound in (("2026-10-30", "2026-10-31T00:00:00Z"), ("2026-12-31", "2027-01-01T00:00:00Z"), ("2028-02-28", "2028-02-29T00:00:00Z"),
+                                ("2028-02-29", "2028-03-01T00:00:00Z"), ("2027-02-28", "2027-03-01T00:00:00Z"), ("2099-12-31", "2100-01-01T00:00:00Z")):
+            with self.subTest(captured=captured):
+                self.assertEqual({"npm_config_before": bound, "UV_EXCLUDE_NEWER": bound}, toolchain.bounded_environment({"npm_config_before": "x"}, captured))
 
     def test_through_the_capture_environment_a_server_gets_the_declared_variables_and_the_few_a_process_needs_and_no_secret(self):
         declared = self.environment()
@@ -3770,9 +4135,10 @@ class InstallTests(InstallBase):
         self.assertFalse((self.skills / toolchain.MARKER).exists())
 
     def test_a_symbolic_link_in_the_store_is_refused(self):
+        # Changed on purpose in round 9: copy_tree asks is_link, the one link test of the kit, and no longer Path.is_symlink, which is false for a junction.
         folder = self.store / "skills" / "gamma"
         write(folder / "link.md", "stands in for a link\n")
-        with mock.patch.object(Path, "is_symlink", lambda self: self.name == "link.md"):
+        with mock.patch.object(toolchain, "is_link", lambda path: Path(path).name == "link.md"):
             with self.assertRaises(toolchain.ToolchainError) as caught:
                 toolchain.copy_tree(folder, self.tmp / "copy")
         self.assertIn("symbolic link", str(caught.exception))
@@ -4023,18 +4389,109 @@ class InstallSafetyTests(InstallBase):
             with self.subTest(windows=windows):
                 folder = self.root / ("to-remove-%s" % windows)
                 write(folder / "inner.txt", "x")
-                real = shutil.rmtree
+                inner = str(folder / "inner.txt")
+                real, steps = shutil.rmtree, []
+                function = mock.Mock(side_effect=lambda target: steps.append("function"))
 
                 def failing_once(target, *args, **kwargs):
-                    kwargs["onerror"](os.unlink, str(folder / "inner.txt"), (PermissionError, PermissionError("x"), None))
+                    kwargs["onerror"](function, inner, (PermissionError, PermissionError("x"), None))
                     return real(target, *args, **kwargs)
-                with mock.patch.object(toolchain.toolchain_io, "WINDOWS", windows), mock.patch.object(toolchain.toolchain_io.os, "chmod") as chmod, \
+                with mock.patch.object(toolchain.toolchain_io, "WINDOWS", windows), \
+                        mock.patch.object(toolchain.toolchain_io.os, "chmod", side_effect=lambda *args: steps.append("chmod")) as chmod, \
                         mock.patch.object(shutil, "rmtree", side_effect=failing_once):
                     toolchain.remove_tree(folder)
                 self.assertEqual(windows, chmod.called)
                 if windows:
-                    chmod.assert_called_once_with(str(folder / "inner.txt"), stat.S_IWRITE)
+                    chmod.assert_called_once_with(inner, stat.S_IWRITE)
+                function.assert_called_once_with(inner)
+                self.assertEqual(["chmod", "function"] if windows else ["function"], steps, "the attribute is cleared, and then the call that failed is made again")
                 self.assertFalse(folder.exists())
+
+    def test_a_folder_with_a_read_only_file_in_it_is_removed_on_every_system(self):
+        folder = self.root / "read-only-inside"
+        write(folder / "inner" / "ro.txt", "x")
+        write(folder / "plain.txt", "x")
+        os.chmod(folder / "inner" / "ro.txt", stat.S_IREAD)
+        self.addCleanup(lambda: os.chmod(folder / "inner" / "ro.txt", stat.S_IWRITE) if (folder / "inner" / "ro.txt").exists() else None)
+        with mock.patch.object(toolchain.toolchain_io, "RETRY_DELAYS", ()):
+            toolchain.remove_tree(folder)
+        self.assertFalse(folder.exists())
+
+    def test_a_file_is_removed_by_remove_tree_also_when_it_is_read_only(self):
+        for read_only in (False, True):
+            with self.subTest(read_only=read_only):
+                path = self.root / ("a-file-%s.txt" % read_only)
+                write(path, "x")
+                if read_only:
+                    os.chmod(path, stat.S_IREAD)
+                    self.addCleanup(lambda p=path: os.chmod(p, stat.S_IWRITE) if p.exists() else None)
+                with mock.patch.object(toolchain.toolchain_io, "RETRY_DELAYS", ()):
+                    toolchain.remove_tree(path)
+                self.assertFalse(os.path.lexists(path))
+
+    def test_a_file_has_its_read_only_attribute_cleared_before_it_is_unlinked_on_windows(self):
+        path = self.root / "a-file.txt"
+        write(path, "x")
+        steps = []
+        with mock.patch.object(toolchain.toolchain_io, "WINDOWS", True), \
+                mock.patch.object(toolchain.toolchain_io.os, "chmod", side_effect=lambda *args: steps.append("chmod")) as chmod, \
+                mock.patch.object(os, "unlink", side_effect=lambda target: steps.append("unlink")) as unlink:
+            toolchain.remove_tree(path)
+        chmod.assert_called_once_with(path, stat.S_IWRITE)
+        unlink.assert_called_once_with(path)
+        self.assertEqual(["chmod", "unlink"], steps)
+
+    def test_a_file_and_a_link_that_windows_refuses_to_delete_for_a_moment_are_deleted_after_a_pause(self):
+        busy = lambda: PermissionError(13, "Access is denied")
+        with mock.patch.object(toolchain.toolchain_io, "transient_refusal", side_effect=lambda exc: True), \
+                mock.patch.object(toolchain.toolchain_io, "RETRY_DELAYS", (0, 0, 0)):
+            path = self.root / "busy.txt"
+            write(path, "x")
+            real, calls = os.unlink, []
+
+            def unlink(target, *args, **kwargs):
+                calls.append(1)
+                if len(calls) < 3:
+                    raise busy()
+                return real(target, *args, **kwargs)
+            with mock.patch.object(os, "unlink", side_effect=unlink):
+                toolchain.remove_tree(path)
+            self.assertEqual((3, False), (len(calls), path.exists()), "once, and again after each of the two pauses")
+            link = self.root / "busy-link"
+            link.mkdir()
+            with mock.patch.object(toolchain, "is_link", lambda p: Path(p) == link), \
+                    mock.patch.object(os, "unlink", side_effect=[busy(), busy(), None]) as unlink_link, \
+                    mock.patch.object(os, "rmdir", side_effect=[busy(), busy()]) as rmdir:
+                toolchain.remove_tree(link)
+            self.assertEqual((3, 2), (unlink_link.call_count, rmdir.call_count))
+
+    def test_a_link_is_unlinked_by_remove_tree_and_never_walked(self):
+        folder = self.root / "declared-link"
+        write(folder / "keep.txt", "x")
+        with mock.patch.object(toolchain, "is_link", lambda path: Path(path) == folder), mock.patch.object(os, "unlink") as unlink, \
+                mock.patch.object(os, "rmdir") as rmdir, mock.patch.object(shutil, "rmtree") as rmtree:
+            toolchain.remove_tree(folder)
+        unlink.assert_called_once_with(folder)
+        rmdir.assert_not_called()
+        rmtree.assert_not_called()
+        self.assertTrue((folder / "keep.txt").is_file())
+
+    def test_a_link_that_os_unlink_refuses_is_removed_like_an_empty_folder(self):
+        folder = self.root / "declared-link"
+        write(folder / "keep.txt", "x")
+        with mock.patch.object(toolchain, "is_link", lambda path: Path(path) == folder), mock.patch.object(os, "unlink", side_effect=PermissionError(13, "denied")), \
+                mock.patch.object(os, "rmdir") as rmdir, mock.patch.object(shutil, "rmtree") as rmtree:
+            toolchain.remove_tree(folder)
+        rmdir.assert_called_once_with(folder)
+        rmtree.assert_not_called()
+
+    def test_a_link_is_removed_without_clearing_an_attribute_of_what_it_points_at(self):
+        folder = self.root / "declared-link"
+        write(folder / "keep.txt", "x")
+        with mock.patch.object(toolchain, "is_link", lambda path: Path(path) == folder), mock.patch.object(os, "unlink"), \
+                mock.patch.object(toolchain.toolchain_io, "WINDOWS", True), mock.patch.object(toolchain.toolchain_io.os, "chmod") as chmod:
+            toolchain.remove_tree(folder)
+        chmod.assert_not_called()
 
     def test_an_install_that_stopped_half_way_is_finished_by_the_next_run(self):
         real = os.replace
@@ -4086,6 +4543,84 @@ class InstallSafetyTests(InstallBase):
         self.assertIn("! skill alpha-core: .github/skills/alpha-core exists and is not managed by the toolchain (use --force to replace it)", out)
         self.assertNotIn("Traceback", err)
         self.assertEqual(b"my own skill\n", (self.skills / "alpha-core" / "SKILL.md").read_bytes())
+
+    def test_a_managed_folder_that_cannot_be_measured_counts_as_modified(self):
+        self.install("--apply", "--skip-mcp")
+        gamma = self.skills / "gamma"
+        before = self.snapshot(self.root)
+        code, out, err = self.install("--skip-mcp", digest_tree=unreadable(gamma))
+        self.assertEqual((1, ""), (code, err), out)
+        self.assertIn("! skill gamma: modified since it was installed; use --force to replace it", out)
+        self.assertEqual(before, self.snapshot(self.root), "a plan changes nothing")
+        code, out, err = self.install("--apply", "--skip-mcp", digest_tree=unreadable(gamma))
+        self.assertEqual((1, ""), (code, err), out)
+        self.assertEqual(before, self.snapshot(self.root), "and an apply with a conflict does not replace the folder")
+        code, out, err = self.install("--apply", "--skip-mcp", "--force", digest_tree=unreadable(gamma))
+        self.assertEqual((0, ""), (code, err), out)
+        self.assertIn("~ skill gamma: replace .github/skills/gamma", out)
+        self.assertEqual([], self.leftovers())
+        self.assertEqual(0, self.install("--skip-mcp")[0], "the folder holds the pinned content again")
+
+    def test_a_managed_folder_that_left_the_profile_and_cannot_be_measured_is_kept_until_it_is_forced(self):
+        self.install("--apply", "--skip-mcp")
+        gamma = self.skills / "gamma"
+        code, out, err = self.install("--apply", "--skip-mcp", "--profile", "agent-ok", digest_tree=unreadable(gamma))
+        self.assertEqual((1, ""), (code, err), out)
+        self.assertIn("! skill gamma: modified since it was installed; use --force to remove it", out)
+        self.assertTrue(gamma.is_dir())
+        self.assertIn("gamma", self.marker()["skills"], "it stays managed, so the conflict is shown again")
+        code, out, err = self.install("--apply", "--skip-mcp", "--profile", "agent-ok", "--force", digest_tree=unreadable(gamma))
+        self.assertEqual((0, ""), (code, err), out)
+        self.assertIn("~ skill gamma: remove it, it left the profile", out)
+        self.assertFalse(gamma.exists())
+
+    def test_a_managed_skill_folder_that_was_replaced_by_a_file_is_a_conflict_and_is_replaced_with_force(self):
+        real = dict(digest_tree=toolchain_sources.digest_tree)
+        self.assertEqual(0, self.install("--apply", **real)[0])
+        gamma = self.skills / "gamma"
+        shutil.rmtree(gamma)
+        write(gamma, "a file where the managed folder was\n")
+        for flags in ([], ["--apply"]):
+            code, out, err = self.install(*flags, **real)
+            self.assertEqual((1, ""), (code, err), out)
+            self.assertIn("! skill gamma: modified since it was installed; use --force to replace it", out)
+            self.assertTrue(gamma.is_file(), "nothing is changed without --force")
+        deps = self.deps(runner=FakeRunner(found=("git", "python", "gh", "az", "copilot")), **real)
+        code, out, err = self.cli("verify", "--live", "--host", "copilot-cli", "vscode", deps=deps)
+        self.assertEqual(1, code)
+        self.assertIn("[FAIL] V9: managed skill gamma is missing from .github/skills (copilot-cli, vscode)", out)
+        self.assertNotIn("Traceback", err)
+        code, out, err = self.cli("doctor", "--offline", deps=self.deps(runner=FakeRunner(found=("git", "python", "gh", "az", "copilot"), answers=GOOD_TOOLS), **real))
+        self.assertEqual(1, code)
+        self.assertIn("[FAIL] host copilot-cli skills: managed skill gamma is missing from .github/skills", out)
+        self.assertNotIn("Traceback", err)
+        code, out, err = self.install("--apply", "--force", **real)
+        self.assertEqual((0, ""), (code, err), out)
+        self.assertIn("~ skill gamma: replace .github/skills/gamma", out)
+        self.assertIn("0 conflict(s)", out)
+        self.assertTrue(gamma.is_dir())
+        self.assertEqual(skill_files("gamma")["SKILL.md"], (gamma / "SKILL.md").read_bytes())
+        self.assertEqual([], self.leftovers(), "the file that was moved aside is gone")
+        self.assertEqual(skill_digest("gamma"), self.marker()["skills"]["gamma"])
+        code, out, err = self.install(**real)
+        self.assertEqual((0, ""), (code, err), out)
+        self.assertIn("0 to add, 0 to change, 8 unchanged, 0 conflict(s)", out)
+
+    def test_a_managed_skill_folder_that_left_the_profile_and_was_replaced_by_a_file_is_removed_with_force(self):
+        real = dict(digest_tree=toolchain_sources.digest_tree)
+        self.assertEqual(0, self.install("--apply", "--skip-mcp", **real)[0])
+        gamma = self.skills / "gamma"
+        shutil.rmtree(gamma)
+        write(gamma, "a file where the managed folder was\n")
+        code, out, err = self.install("--apply", "--skip-mcp", "--profile", "agent-ok", **real)
+        self.assertEqual((1, ""), (code, err), out)
+        self.assertIn("! skill gamma: modified since it was installed; use --force to remove it", out)
+        self.assertTrue(gamma.is_file())
+        code, out, err = self.install("--apply", "--skip-mcp", "--profile", "agent-ok", "--force", **real)
+        self.assertEqual((0, ""), (code, err), out)
+        self.assertIn("~ skill gamma: remove it, it left the profile", out)
+        self.assertFalse(os.path.lexists(gamma))
+        self.assertNotIn("gamma", self.marker()["skills"])
 
     def test_the_applied_line_comes_after_every_step_and_the_operation_lines_before_the_first(self):
         seen, real = [], os.replace
@@ -4484,6 +5019,335 @@ class InstallSafetyTests(InstallBase):
         self.assertFalse(toolchain.is_link(self.root))
 
 
+class LinkTests(InstallBase):
+    """Where the kit must not read or write through a link (a symbolic link, or on Windows a junction): the pack that `lock` and `update` resolve into,
+    the folders that `copy_tree` copies, the skills and the instructions of this repository, and the local pack that is read. Each rule is tried
+    with a link that the test only declares, and with a real junction or symbolic link where the account can make one (a test is skipped where it cannot)."""
+
+    def linked(self, *paths):
+        wanted = {Path(p) for p in paths}
+        return mock.patch.object(toolchain, "is_link", lambda path: Path(path) in wanted)
+
+    def make_junction(self, link, target):
+        if os.name != "nt":
+            self.skipTest("junctions exist on Windows only")
+        target.mkdir(parents=True, exist_ok=True)
+        made = subprocess.run(["cmd", "/c", "mklink", "/J", str(link), str(target)], capture_output=True, text=True)
+        if made.returncode != 0:
+            self.skipTest("mklink /J is not available here")
+        self.addCleanup(lambda: os.rmdir(link) if os.path.lexists(link) else None)
+
+    def make_symlink(self, link, target):
+        target.mkdir(parents=True, exist_ok=True)
+        try:
+            os.symlink(target, link, target_is_directory=True)
+        except (OSError, NotImplementedError):
+            self.skipTest("symbolic links are not available here")
+        self.addCleanup(lambda: os.unlink(link) if os.path.lexists(link) else None)
+
+    @staticmethod
+    def drop_link(path):
+        """Remove a link and not what it points at."""
+        try:
+            os.unlink(path)
+        except OSError:
+            os.rmdir(path)
+
+    LINK_MESSAGE = "%s is a link; the toolchain does not write through links"
+    PACK_LINKS = ((".factory",), (".factory", "pack"), (".factory", "pack", ".cache"))
+    RESOLVING = (["lock"], ["lock", "--check"], ["lock", "--only", "src"], ["lock", "--contracts"], ["update"], ["update", "--check"], ["update", "--write"])
+
+    def test_lock_and_update_do_not_resolve_into_a_pack_that_is_behind_a_link(self):
+        shutil.rmtree(self.root / ".factory")
+        path = self.root / "toolchain" / "toolchain.lock.json"
+        before = path.read_bytes()
+        for parts in self.PACK_LINKS:
+            for argv in self.RESOLVING:
+                with self.subTest(link="/".join(parts), argv=argv), self.linked(self.root.joinpath(*parts)):
+                    up = Upstream(self.manifest, self.lock)
+                    code, out, err = self.cli(*argv, deps=up.deps(self.home))
+                    self.assertEqual(1, code, out)
+                    self.assertIn(self.LINK_MESSAGE % "/".join(parts), err)
+                    self.assertNotIn("Traceback", err)
+                    self.assertFalse(any(up.calls.values()), "nothing is resolved: %r" % (up.calls,))
+                    self.assertFalse((self.root / ".factory").exists(), "nothing is made")
+                    self.assertEqual(before, path.read_bytes())
+
+    def test_lock_without_the_network_resolves_nothing_so_a_link_at_the_pack_does_not_matter(self):
+        self.rewrite_manifest(lambda m: m["quarantine"].append({"source": "src", "skill": "more", "reason": "x"}))
+        with self.linked(*[self.root.joinpath(*parts) for parts in self.PACK_LINKS]):
+            code, out, err = self.cli("lock", "--no-network", deps=self.deps())
+        self.assertEqual((0, ""), (code, err), out)
+        self.assertEqual(toolchain.inputs_digest(self.manifest), read_json(self.root / "toolchain" / "toolchain.lock.json")["inputs_digest"])
+
+    def assert_no_resolution_behind_a_real_link(self, make_link):
+        for parts in self.PACK_LINKS:
+            name = "-".join(part.strip(".") for part in parts)
+            root, elsewhere = self.tmp / ("linked-" + name), self.tmp / ("elsewhere-" + name)
+            write_project(root, self.manifest, self.profiles, self.lock)
+            link = root.joinpath(*parts)
+            link.parent.mkdir(parents=True, exist_ok=True)
+            make_link(link, elsewhere)
+            self.assertTrue(toolchain.is_link(link))
+            for argv in self.RESOLVING:
+                with self.subTest(link="/".join(parts), argv=argv):
+                    up = Upstream(self.manifest, self.lock)
+                    code, out, err = self.cli(*argv, deps=up.deps(self.home), root=root)
+                    self.assertEqual(1, code, out)
+                    self.assertIn(self.LINK_MESSAGE % "/".join(parts), err)
+                    self.assertEqual([], list(elsewhere.iterdir()), "nothing was made behind the link")
+                    self.assertFalse(any(up.calls.values()), "nothing is resolved: %r" % (up.calls,))
+
+    def test_a_real_junction_in_the_way_of_the_pack_or_its_caches_stops_lock_and_update(self):
+        self.assert_no_resolution_behind_a_real_link(self.make_junction)
+
+    def test_a_real_symbolic_link_in_the_way_of_the_pack_or_its_caches_stops_lock_and_update(self):
+        self.assert_no_resolution_behind_a_real_link(self.make_symlink)
+
+    def sample(self):
+        folder = self.tmp / "sample"
+        write(folder / "SKILL.md", "a skill\n")
+        write(folder / "inner" / "deep.md", "deep\n")
+        return folder
+
+    def test_copy_tree_refuses_a_link_that_is_an_entry_at_any_depth_and_the_folder_itself(self):
+        folder, target = self.sample(), self.tmp / "copy"
+        refusal = "sample holds a symbolic link; skills are copied, never linked"
+        for what, name in (("a file at the top", "SKILL.md"), ("a folder at the top", "inner"), ("a file below", "deep.md")):
+            with self.subTest(entry=what), self.linked(*[p for p in folder.rglob("*") if p.name == name]):
+                with self.assertRaises(toolchain.ToolchainError) as caught:
+                    toolchain.copy_tree(folder, target)
+                self.assertEqual(refusal, str(caught.exception))
+            shutil.rmtree(target, ignore_errors=True)
+        with self.linked(folder):
+            with self.assertRaises(toolchain.ToolchainError) as caught:
+                toolchain.copy_tree(folder, target)
+        self.assertEqual(refusal, str(caught.exception))
+        self.assertFalse(target.exists(), "nothing is made for a folder that is a link")
+        toolchain.copy_tree(folder, target)
+        self.assertEqual({"SKILL.md", "inner/deep.md"}, {p.relative_to(target).as_posix() for p in target.rglob("*") if p.is_file()})
+
+    def assert_copy_tree_refuses_real_links(self, make_link):
+        folder, outside = self.sample(), self.tmp / "outside"
+        write(outside / "secret.txt", "outside the skill\n")
+        for where in (folder / "linked", folder / "inner" / "linked"):
+            target = self.tmp / ("copy-" + where.parent.name)
+            make_link(where, outside)
+            with self.subTest(link=where.relative_to(folder).as_posix()):
+                with self.assertRaises(toolchain.ToolchainError) as caught:
+                    toolchain.copy_tree(folder, target)
+                self.assertIn("sample holds a symbolic link", str(caught.exception))
+                self.assertEqual([], [p for p in target.rglob("secret.txt")], "nothing behind the link was copied")
+            self.drop_link(where)
+        alias = self.tmp / "alias"
+        make_link(alias, folder)
+        with self.subTest(link="the folder itself"):
+            with self.assertRaises(toolchain.ToolchainError):
+                toolchain.copy_tree(alias, self.tmp / "copy-alias")
+            self.assertFalse((self.tmp / "copy-alias").exists())
+
+    def test_copy_tree_refuses_a_real_junction_as_an_entry_and_as_the_folder(self):
+        self.assert_copy_tree_refuses_real_links(self.make_junction)
+
+    def test_copy_tree_refuses_a_real_symbolic_link_as_an_entry_and_as_the_folder(self):
+        self.assert_copy_tree_refuses_real_links(self.make_symlink)
+
+    def test_copy_tree_refuses_a_real_symbolic_link_to_a_file(self):
+        folder = self.sample()
+        write(self.tmp / "outside.txt", "outside the skill\n")
+        try:
+            os.symlink(self.tmp / "outside.txt", folder / "outside.txt")
+        except (OSError, NotImplementedError):
+            self.skipTest("symbolic links are not available here")
+        with self.assertRaises(toolchain.ToolchainError):
+            toolchain.copy_tree(folder, self.tmp / "copy")
+        self.assertEqual([], [p for p in (self.tmp / "copy").rglob("outside.txt")])
+
+    def test_the_skills_of_this_repository_are_read_from_real_folders_only(self):
+        base = self.root / "toolchain"
+        said = "%s is a link; the toolchain reads the skills of this repository from real folders only"
+        for linked, shown in ((base / "skills", "toolchain/skills"), (base / "skills" / "router", "toolchain/skills/router")):
+            with self.subTest(link=shown), self.linked(linked):
+                with self.assertRaises(toolchain.ToolchainError) as caught:
+                    toolchain.repo_skill_folders(base)
+                self.assertEqual(said % shown, str(caught.exception))
+        self.assertEqual(["router"], sorted(toolchain.repo_skill_folders(base)))
+
+    def test_a_link_beside_the_skills_that_no_skill_is_behind_is_none_of_our_business(self):
+        base = self.root / "toolchain"
+        (base / "skills" / "notes").mkdir()
+        write(base / "skills" / "readme.md", "not a folder\n")
+        with self.linked(base / "skills" / "notes", base / "skills" / "readme.md"):
+            self.assertEqual(["router"], sorted(toolchain.repo_skill_folders(base)))
+
+    def test_every_command_that_reads_the_skills_of_this_repository_stops_at_a_link_there(self):
+        said = "toolchain/skills/router is a link; the toolchain reads the skills of this repository from real folders only"
+        with self.linked(self.root / "toolchain" / "skills" / "router"):
+            code, out, err = self.cli("verify")
+            self.assertEqual(1, code)
+            self.assertIn("[FAIL] V8: " + said, out)
+            for argv in (["render", "--host", "copilot-cli"], ["install", "--skip-mcp"], ["fetch"], ["list"], ["list", "--profile", "dev-a"]):
+                with self.subTest(argv=argv):
+                    code, out, err = self.cli(*argv, deps=self.deps(runner=self.runner, vendor_skills=forbidden("vendor_skills")))
+                    self.assertEqual(1, code, out)
+                    self.assertIn(said, err)
+                    self.assertNotIn("Traceback", err)
+            code, out, err = self.cli("doctor", "--offline", deps=self.deps(runner=self.runner))
+            self.assertIn("[WARN] profile dev-a: cannot be resolved: ", out)
+            self.assertIn(said, out)
+
+    def assert_no_skill_of_this_repository_behind_a_real_link(self, make_link):
+        base = self.root / "toolchain"
+        outside = self.tmp / "outside-skill"
+        write(outside / "SKILL.md", "---\nname: outside-skill\ndescription: lives outside the repository\n---\n")
+        make_link(base / "skills" / "outside-skill", outside)
+        with self.assertRaises(toolchain.ToolchainError) as caught:
+            toolchain.repo_skill_folders(base)
+        self.assertIn("toolchain/skills/outside-skill is a link", str(caught.exception))
+        code, out, err = self.cli("render", "--host", "copilot-cli")
+        self.assertEqual(1, code)
+        self.assertIn("toolchain/skills/outside-skill is a link", err)
+        real = self.tmp / "real-skills"
+        self.drop_link(base / "skills" / "outside-skill")
+        shutil.move(str(base / "skills"), str(real))
+        make_link(base / "skills", real)
+        with self.assertRaises(toolchain.ToolchainError) as caught:
+            toolchain.repo_skill_folders(base)
+        self.assertIn("toolchain/skills is a link", str(caught.exception))
+
+    def test_a_real_junction_at_the_skills_of_this_repository_is_refused(self):
+        self.assert_no_skill_of_this_repository_behind_a_real_link(self.make_junction)
+
+    def test_a_real_symbolic_link_at_the_skills_of_this_repository_is_refused(self):
+        self.assert_no_skill_of_this_repository_behind_a_real_link(self.make_symlink)
+
+    def test_instructions_behind_a_link_are_a_problem_of_the_profile(self):
+        base, profile = self.root / "toolchain", self.profiles["profiles"]["dev-a"]
+        write(base / "instructions" / "deep" / "more" / "x.md", "deep\n")
+        write(base / "top.md", "top\n")
+        deep = {"instructions": ["instructions/deep/more/x.md", "instructions/base.md", "top.md"]}
+        said = "instructions '%s' is behind a link: its folder '%s' is a link"
+        self.assertEqual([], toolchain.instruction_problems(profile, base))
+        self.assertEqual([], toolchain.instruction_problems(deep, base))
+        with self.linked(base / "instructions"):
+            self.assertEqual([said % ("instructions/base.md", "instructions")], toolchain.instruction_problems(profile, base))
+            self.assertEqual([said % ("instructions/deep/more/x.md", "instructions"), said % ("instructions/base.md", "instructions")],
+                             toolchain.instruction_problems(deep, base), "top.md is not behind it")
+        with self.linked(base / "instructions" / "deep"):
+            self.assertEqual([said % ("instructions/deep/more/x.md", "instructions/deep")], toolchain.instruction_problems(deep, base))
+        with self.linked(base / "instructions" / "deep" / "more"):
+            self.assertEqual([said % ("instructions/deep/more/x.md", "instructions/deep/more")], toolchain.instruction_problems(deep, base))
+        with self.linked(base / "instructions" / "deep", base / "instructions" / "deep" / "more"):
+            self.assertEqual([said % ("instructions/deep/more/x.md", "instructions/deep")], toolchain.instruction_problems(deep, base), "the folder nearest the toolchain folder is named")
+        with self.linked(base):
+            self.assertEqual([], toolchain.instruction_problems(profile, base), "the toolchain folder itself is the boundary")
+
+    def test_every_command_that_reads_the_instructions_of_a_profile_stops_at_a_link_above_them(self):
+        said = "instructions 'instructions/base.md' is behind a link: its folder 'instructions' is a link"
+        with self.linked(self.root / "toolchain" / "instructions"):
+            code, out, err = self.cli("verify", "--profile", "dev-a")
+            self.assertEqual(1, code)
+            self.assertIn("[FAIL] V6: profile dev-a: " + said, out)
+            for argv in (["render", "--host", "copilot-cli"], ["render", "--host", "load-plan"], ["install", "--skip-mcp"], ["fetch", "--profile", "dev-a"]):
+                with self.subTest(argv=argv):
+                    code, out, err = self.cli(*argv, deps=self.deps(runner=self.runner, vendor_skills=forbidden("vendor_skills")))
+                    self.assertEqual(1, code, out)
+                    self.assertIn("profile dev-a: " + said, err)
+            self.assertEqual(0, self.cli("verify", "--profile", "agent-empty")[0], "a profile without instructions is not behind it")
+
+    def assert_no_instructions_behind_a_real_link(self, make_link):
+        base = self.root / "toolchain"
+        real = self.tmp / "real-instructions"
+        shutil.move(str(base / "instructions"), str(real))
+        make_link(base / "instructions", real)
+        code, out, err = self.cli("verify", "--profile", "dev-a")
+        self.assertEqual(1, code)
+        self.assertIn("[FAIL] V6: profile dev-a: instructions 'instructions/base.md' is behind a link: its folder 'instructions' is a link", out)
+        self.assertEqual(1, self.cli("render", "--host", "load-plan")[0])
+
+    def test_a_real_junction_at_the_instructions_folder_is_refused(self):
+        self.assert_no_instructions_behind_a_real_link(self.make_junction)
+
+    def test_a_real_symbolic_link_at_the_instructions_folder_is_refused(self):
+        self.assert_no_instructions_behind_a_real_link(self.make_symlink)
+
+    def pack(self):
+        """The local pack of the shared manifest, and what its profile needs from it."""
+        self.small_project(manifest=shared_manifest())
+        write_store(self.store, self.lock, ["alpha-core", "beta-core", "gamma"])
+        resolved = self.resolved("dev-a")
+        return lambda deps=None: toolchain.store_problems(self.store, resolved["skills"], self.lock, deps or self.deps(), resolved["shared"])
+
+    PACK_LINK = "the local pack holds %s behind a link; the toolchain reads the pack from real folders only"
+
+    def test_a_folder_of_the_pack_that_is_a_link_is_a_failure_though_it_holds_the_locked_content(self):
+        problems = self.pack()
+        self.assertEqual([], problems())
+        with self.linked(self.store / "skills" / "gamma"):
+            self.assertEqual([("FAIL", self.PACK_LINK % "skill gamma")], problems())
+        with self.linked(self.store / "skills"):
+            self.assertEqual([("FAIL", self.PACK_LINK % ("skill " + name)) for name in ("alpha-core", "beta-core", "gamma")], problems())
+        with self.linked(self.store / "common"):
+            self.assertEqual([("FAIL", self.PACK_LINK % "the shared folder common")], problems())
+        with self.linked(self.store, self.store.parent):
+            self.assertEqual([], problems(), "the pack folder and what is above it are refused by fetch and install, which are the ones that write")
+
+    def test_a_pack_that_is_behind_a_link_is_a_failure_of_live_verification_and_makes_install_fetch_again(self):
+        self.pack()
+        self.assertEqual(0, self.install("--apply")[0])
+        deps = self.deps(runner=self.runner)
+        code, out, _ = self.cli("verify", "--live", "--host", "copilot-cli", deps=deps)
+        self.assertEqual(0, code, out)
+        with self.linked(self.store / "skills" / "gamma"):
+            code, out, _ = self.cli("verify", "--live", "--host", "copilot-cli", deps=deps)
+            self.assertEqual(1, code)
+            self.assertIn("[FAIL] V9: profile dev-a: " + self.PACK_LINK % "skill gamma", out)
+            code, out, err = self.install("--skip-mcp")
+            self.assertIn("+ store .factory/pack: fetch 3 skill(s) (" + self.PACK_LINK % "skill gamma" + ")", out)
+            self.assertNotIn("= store", out)
+
+    def assert_a_real_link_in_the_pack_is_found(self, make_link):
+        self.pack()
+        gamma = self.store / "skills" / "gamma"
+        elsewhere = self.tmp / "gamma-elsewhere"
+        shutil.copytree(gamma, elsewhere)
+        shutil.rmtree(gamma)
+        make_link(gamma, elsewhere)
+        resolved = self.resolved("dev-a")
+        problems = toolchain.store_problems(self.store, resolved["skills"], self.lock, self.deps(), resolved["shared"])
+        self.assertEqual([("FAIL", self.PACK_LINK % "skill gamma")], problems)
+
+    def test_a_real_junction_for_a_folder_of_the_pack_is_found(self):
+        self.assert_a_real_link_in_the_pack_is_found(self.make_junction)
+
+    def test_a_real_symbolic_link_for_a_folder_of_the_pack_is_found(self):
+        self.assert_a_real_link_in_the_pack_is_found(self.make_symlink)
+
+    def assert_a_real_link_inside_a_folder_of_the_pack_makes_its_content_differ(self, make_link):
+        self.pack()
+        deps = self.deps(digest_tree=toolchain_sources.digest_tree)
+        resolved = self.resolved("dev-a")
+        gamma = self.store / "skills" / "gamma"
+        self.assertEqual(skill_digest("gamma"), toolchain_sources.digest_tree(gamma)["digest"], "the real digest of the fixture is the synthetic one")
+        self.assertEqual([], toolchain.store_problems(self.store, resolved["skills"], self.lock, deps, resolved["shared"]))
+        make_link(gamma / "inside", self.tmp / "inside-elsewhere")
+        problems = toolchain.store_problems(self.store, resolved["skills"], self.lock, deps, resolved["shared"])
+        self.assertEqual([("FAIL", "the local pack holds skill gamma with content that differs from the lock")], problems)
+
+    def test_a_real_junction_inside_a_folder_of_the_pack_is_part_of_its_measured_content(self):
+        self.assert_a_real_link_inside_a_folder_of_the_pack_makes_its_content_differ(self.make_junction)
+
+    def test_a_real_symbolic_link_inside_a_folder_of_the_pack_is_part_of_its_measured_content(self):
+        self.assert_a_real_link_inside_a_folder_of_the_pack_makes_its_content_differ(self.make_symlink)
+
+    def test_a_pack_listing_with_an_entry_that_is_not_an_object_is_a_warning_and_not_a_crash(self):
+        problems = self.pack()
+        pack = read_json(self.store / "MANIFEST.json")
+        pack["skills"]["gamma"] = "not an object"
+        write(self.store / "MANIFEST.json", toolchain.dump_json(pack))
+        self.assertEqual([("WARN", "the local pack does not list skill gamma at the locked digest")], problems())
+
+
 class SharedInstallTests(InstallBase):
     """The shared folders of the sources are installed beside each skills folder, with the ownership rules of the skills."""
 
@@ -4548,6 +5412,62 @@ class SharedInstallTests(InstallBase):
         self.assertIn("~ shared common: replace .github/common (forced)", out)
         self.assertFalse((self.common / "mine.md").exists())
         self.assertEqual({"common": shared_digest("common")}, self.marker()["shared"])
+
+    def test_a_folder_that_holds_the_pinned_content_without_a_marker_is_taken_as_it_is(self):
+        shutil.copytree(self.store / "common", self.common)
+        code, out, err = self.install("--apply", "--skip-mcp")
+        self.assertEqual((0, ""), (code, err), out)
+        self.assertIn("= shared common", out)
+        self.assertNotRegex(out, r"(?m)^! ")
+        self.assertEqual({"common": shared_digest("common")}, self.marker()["shared"], "it is recorded in the marker")
+        for rel, data in shared_files("common").items():
+            self.assertEqual(data, (self.common / rel).read_bytes())
+        self.assertEqual([], self.leftovers())
+
+    def test_a_folder_that_differs_from_the_pinned_content_even_by_a_line_is_a_conflict_without_a_marker(self):
+        shutil.copytree(self.store / "common", self.common)
+        edited = shared_files("common")["index.md"] + b"one more line\n"
+        (self.common / "index.md").write_bytes(edited)
+        code, out, err = self.install("--apply", "--skip-mcp")
+        self.assertEqual((1, ""), (code, err), out)
+        self.assertIn("! shared common: .github/common exists and is not managed by the toolchain (use --force to replace it)", out)
+        self.assertNotIn("= shared common", out)
+        self.assertEqual(edited, (self.common / "index.md").read_bytes())
+        self.assertNotIn("shared", self.marker())
+
+    def test_a_managed_folder_that_cannot_be_measured_counts_as_modified(self):
+        self.install("--apply")
+
+        def digest(path):
+            if Path(path) == self.common:
+                raise toolchain_sources.SourceError("unresolved: cannot read a file")
+            return tree_digest(path)
+        code, out, err = self.install("--apply", digest_tree=digest)
+        self.assertEqual((1, ""), (code, err), out)
+        self.assertIn("! shared common: modified since it was installed; use --force to replace it", out)
+        code, out, err = self.install("--apply", "--profile", "agent-empty", digest_tree=digest)
+        self.assertEqual((1, ""), (code, err), out)
+        self.assertIn("! shared common: modified since it was installed; use --force to remove it", out)
+        self.assertTrue(self.common.is_dir())
+        code, out, err = self.install("--apply", "--force", digest_tree=digest)
+        self.assertEqual((0, ""), (code, err), out)
+        self.assertIn("~ shared common: replace .github/common", out)
+        code, out, err = self.install("--apply", "--profile", "agent-empty", "--force", digest_tree=digest)
+        self.assertEqual((0, ""), (code, err), out)
+        self.assertIn("~ shared common: remove it, the profile no longer needs it", out)
+        self.assertFalse(self.common.exists())
+
+    def test_a_managed_shared_folder_that_cannot_be_measured_is_a_problem_of_live_verification_and_of_doctor_and_not_a_crash(self):
+        self.assertEqual(0, self.install("--apply", "--host", "copilot-cli", "vscode")[0])
+        code, out, err = self.cli("verify", "--live", "--host", "copilot-cli", deps=self.deps(runner=self.runner, digest_tree=unreadable(self.common)))
+        self.assertEqual(1, code)
+        self.assertIn("[FAIL] V9: shared folder .github/common cannot be measured (it is not a readable folder)", out)
+        self.assertNotIn("Traceback", err)
+        code, out, err = self.cli("doctor", "--offline", deps=self.deps(runner=FakeRunner(found=("git", "python", "gh", "az", "copilot"), answers=GOOD_TOOLS),
+                                                                       digest_tree=unreadable(self.common)))
+        self.assertEqual(1, code)
+        self.assertIn("[FAIL] host copilot-cli shared: .github/common cannot be measured (it is not a readable folder); run: python scripts/toolchain.py install --apply", out)
+        self.assertNotIn("Traceback", err)
 
     def test_a_managed_folder_that_was_edited_is_a_conflict_until_it_is_forced(self):
         self.install("--apply")
@@ -4849,6 +5769,131 @@ class HostTests(InstallBase):
         code, out, _ = self.cli("verify", "--live", "--host", "copilot-cli", deps=deps)
         self.assertEqual(0, code, "a CRLF checkout of the same text is the same text: " + out)
 
+    PREFIX = "run: python scripts/toolchain.py "
+
+    def run_the_hint(self, hint):
+        """Run the command that a hint tells to run, as a person would."""
+        self.assertTrue(hint.startswith(self.PREFIX), hint)
+        code, out, err = self.cli(*hint[len(self.PREFIX):].split(), deps=self.deps(runner=self.runner))
+        self.assertEqual(0, code, out + err)
+
+    def test_the_hints_of_live_verification_name_the_host_and_the_profile_and_running_one_fixes_the_report(self):
+        default, other = "dev-a", "agent-ok"
+        for host, mcp, skills, flags in (("claude-code", ".mcp.json", ".claude/skills", " --host claude-code"), ("copilot-cli", ".github/mcp.json", ".github/skills", "")):
+            with self.subTest(host=host):
+                hint = toolchain.install_command(other, default, [host])
+                self.assertEqual(self.PREFIX + "install --apply" + flags + " --profile agent-ok", hint)
+                self.assertEqual(hint, toolchain.mcp_hint(host, other, default))
+                code, out, _ = self.cli("verify", "--live", "--host", host, "--profile", other, deps=self.deps(runner=self.runner))
+                self.assertEqual(1, code)
+                self.assertIn("[FAIL] V9: %s is missing, so %s has no MCP servers for profile agent-ok (%s)" % (mcp, host, hint), out)
+                self.assertIn("[FAIL] V9: %s has no managed skills marker (%s)" % (skills, hint), out)
+                self.assertNotIn("render --write-project", out, "that writes the default profile")
+                self.run_the_hint(hint)
+                code, out, _ = self.cli("verify", "--live", "--host", host, "--profile", other, deps=self.deps(runner=self.runner))
+                self.assertEqual(0, code, out)
+            for leftover in (".github", ".claude", ".vscode"):
+                shutil.rmtree(self.root / leftover, ignore_errors=True)
+            (self.root / ".mcp.json").unlink(missing_ok=True)
+
+    def test_the_hint_for_a_skills_folder_that_was_installed_for_another_profile_names_the_host_of_that_folder(self):
+        self.assertEqual(0, self.install("--apply", "--host", "claude-code")[0])
+        hint = toolchain.install_command("agent-ok", "dev-a", ["claude-code"])
+        self.assertEqual(self.PREFIX + "install --apply --host claude-code --profile agent-ok", hint)
+        code, out, _ = self.cli("verify", "--live", "--host", "claude-code", "--profile", "agent-ok", deps=self.deps(runner=self.runner))
+        self.assertEqual(1, code)
+        self.assertIn("[FAIL] V9: .claude/skills was installed for profile dev-a, not profile agent-ok (%s)" % hint, out)
+        self.run_the_hint(hint)
+        code, out, _ = self.cli("verify", "--live", "--host", "claude-code", "--profile", "agent-ok", deps=self.deps(runner=self.runner))
+        self.assertEqual(0, code, out)
+
+    def test_the_hint_of_a_project_file_that_takes_precedence_names_the_host_and_the_profile_it_installs(self):
+        self.assertEqual(0, self.install("--apply", "--host", "copilot-cli", "vscode", "--profile", "agent-ok")[0])
+        write(self.root / ".mcp.json", toolchain.dump_json(toolchain.render("claude-code", self.resolved("dev-a"))))
+        hint = toolchain.install_command("agent-ok", "dev-a", ["claude-code"])
+        self.assertEqual(self.PREFIX + "install --apply --host claude-code --profile agent-ok", hint)
+        code, out, _ = self.cli("verify", "--live", "--host", "copilot-cli", "--profile", "agent-ok", deps=self.deps(runner=self.runner))
+        self.assertEqual(1, code)
+        self.assertIn("[FAIL] V9: .mcp.json takes precedence over .github/mcp.json for Copilot CLI and differs from the rendering of profile agent-ok "
+                      "(%s, or delete it)" % hint, out)
+        self.run_the_hint(hint)
+        code, out, _ = self.cli("verify", "--live", "--host", "copilot-cli", "--profile", "agent-ok", deps=self.deps(runner=self.runner))
+        self.assertEqual(0, code, out)
+
+    def test_the_install_command_names_the_scope_when_it_is_the_users(self):
+        base = self.PREFIX + "install --apply"
+        self.assertEqual(base, toolchain.install_command("dev-a", "dev-a"))
+        self.assertEqual(base, toolchain.install_command("dev-a", "dev-a", ["copilot-cli", "vscode"], "project"))
+        self.assertEqual(base + " --profile agent-ok", toolchain.install_command("agent-ok", "dev-a", ["copilot-cli"], "project"))
+        self.assertEqual(base + " --host claude-code --profile agent-ok", toolchain.install_command("agent-ok", "dev-a", ["claude-code"], "project"))
+        self.assertEqual(base + " --scope user", toolchain.install_command("dev-a", "dev-a", ["copilot-cli", "vscode"], "user"))
+        self.assertEqual(base + " --profile dev-b --scope user", toolchain.install_command("dev-b", "dev-a", ["copilot-cli"], "user"))
+        self.assertEqual(base + " --host claude-code --scope user", toolchain.install_command("dev-a", "dev-a", ["claude-code"], "user"))
+        self.assertEqual(base + " --host claude-code --profile dev-b --scope user", toolchain.install_command("dev-b", "dev-a", ["claude-code"], "user"))
+
+    def test_the_hint_for_a_skills_folder_of_the_user_names_the_scope_and_the_one_for_the_project_does_not(self):
+        self.rewrite_profiles(lambda p: p["profiles"].__setitem__("dev-b", {"mode": "dev", "skills": [{"source": "src", "plugin": "core", "names": ["alpha-core"]}],
+                                                                              "mcp": [], "instructions": []}))
+        for host, user_folder, project_folder, flags in (("copilot-cli", "$HOME/.copilot/skills", ".github/skills", ""),
+                                                          ("claude-code", "$HOME/.claude/skills", ".claude/skills", " --host claude-code")):
+            with self.subTest(host=host):
+                self.assertEqual(0, self.install("--apply", "--scope", "user", "--host", host, "--skip-mcp")[0])
+                self.assertEqual(0, self.install("--apply", "--host", host, "--skip-mcp")[0])
+                user = self.PREFIX + "install --apply%s --profile dev-b --scope user" % flags
+                project = self.PREFIX + "install --apply%s --profile dev-b" % flags
+                user_line = "[FAIL] V9: %s was installed for profile dev-a, not profile dev-b (%s)" % (user_folder, user)
+                project_line = "[FAIL] V9: %s was installed for profile dev-a, not profile dev-b (%s)" % (project_folder, project)
+                verify = lambda: self.cli("verify", "--live", "--host", host, "--profile", "dev-b", deps=self.deps(runner=self.runner))
+                code, out, _ = verify()
+                self.assertEqual(1, code)
+                self.assertIn(user_line, out.splitlines())
+                self.assertIn(project_line, out.splitlines())
+                self.run_the_hint(user)
+                lines = verify()[1].splitlines()
+                self.assertFalse([l for l in lines if user_folder in l], "the folder of the user is right after the command of its hint: %r" % lines)
+                self.assertIn(project_line, lines, "and the folder of the project is left alone by it")
+                self.run_the_hint(project)
+                code, out, _ = verify()
+                self.assertEqual(0, code, out)
+
+    def test_the_hint_for_a_user_mcp_file_names_the_scope_and_the_lines_for_a_project_file_have_no_hint(self):
+        self.rewrite_profiles(lambda p: p["profiles"].__setitem__("dev-c", {"mode": "dev", "skills": [], "instructions": [],
+                                                                              "mcp": [{"server": "docs", "variant": "default"}]}))
+        self.assertEqual(0, self.install("--apply", "--scope", "user", "--host", "copilot-cli", "--skip-skills")[0])
+        self.assertEqual(0, self.install("--apply", "--host", "copilot-cli", "--skip-skills")[0])
+        user_file, project_file = self.home / ".copilot" / "mcp-config.json", self.root / ".github" / "mcp.json"
+        original = toolchain.render("copilot-cli", self.resolved("dev-a"))
+        for path in (user_file, project_file):
+            data = copy.deepcopy(original)
+            del data["mcpServers"]["npm-srv"]
+            data["mcpServers"]["docs"]["url"] = "https://changed.example.invalid/mcp"
+            write(path, toolchain.dump_json(data))
+        hint = self.PREFIX + "install --apply --scope user"
+        lines = self.cli("verify", "--live", "--host", "copilot-cli", deps=self.deps(runner=self.runner))[1].splitlines()
+        self.assertIn("[WARN] V9: $HOME/.copilot/mcp-config.json lacks the server npm-srv (%s)" % hint, lines)
+        self.assertIn("[WARN] V9: $HOME/.copilot/mcp-config.json holds a different entry for the server docs (%s)" % hint, lines)
+        self.assertIn("[FAIL] V9: .github/mcp.json lacks the server npm-srv", lines)
+        self.assertIn("[FAIL] V9: .github/mcp.json holds a different entry for the server docs", lines)
+        lines = self.cli("verify", "--live", "--host", "copilot-cli", "--profile", "dev-c", deps=self.deps(runner=self.runner))[1].splitlines()
+        self.assertIn("[WARN] V9: $HOME/.copilot/mcp-config.json holds a different entry for the server docs (%s --profile dev-c --scope user)" % hint.replace(" --scope user", ""),
+                      lines, "the profile is named before the scope")
+        data = copy.deepcopy(original)
+        del data["mcpServers"]["npm-srv"]
+        write(user_file, toolchain.dump_json(data))
+        self.run_the_hint(hint)
+        self.assertEqual(original["mcpServers"]["npm-srv"], read_json(user_file)["mcpServers"]["npm-srv"], "what the user file lacked is put back")
+        out = self.cli("verify", "--live", "--host", "copilot-cli", deps=self.deps(runner=self.runner))[1]
+        self.assertNotIn("$HOME/.copilot/mcp-config.json", out)
+
+    def test_doctor_looks_at_the_project_only_so_its_hints_name_no_scope(self):
+        self.assertEqual(0, self.install("--apply", "--scope", "user", "--host", "copilot-cli", "vscode")[0])
+        runner = FakeRunner(found=("git", "python", "gh", "az", "copilot", "code"), answers=GOOD_TOOLS)
+        out = self.cli("doctor", "--offline", deps=self.deps(runner=runner))[1]
+        self.assertIn("[WARN] host copilot-cli, vscode skills: no skills are installed in .github/skills (run: python scripts/toolchain.py install --apply)", out)
+        self.assertIn("[WARN] host copilot-cli mcp: .github/mcp.json is missing (run: python scripts/toolchain.py render --write-project)", out)
+        self.assertNotIn("--scope", out)
+        self.assertNotIn("$HOME", out)
+
     def test_a_manifest_without_claude_code_has_no_project_file_to_compare(self):
         manifest = small_manifest()
         del manifest["hosts"]["claude-code"]
@@ -4979,7 +6024,8 @@ class InstalledStateTests(InstallBase):
     def test_a_profile_with_servers_only_still_installs_and_needs_the_router(self):
         code, out, _ = self.live("--host", "copilot-cli", "--profile", "dev-docs")
         self.assertEqual(1, code)
-        self.assertIn("[FAIL] V9: .github/skills has no managed skills marker (run: python scripts/toolchain.py install --apply)", out)
+        # Changed on purpose in round 9: dev-docs is not the default profile, so the hint names it, as the hints of doctor do.
+        self.assertIn("[FAIL] V9: .github/skills has no managed skills marker (run: python scripts/toolchain.py install --apply --profile dev-docs)", out)
         self.assertEqual(0, self.install("--apply", "--host", "copilot-cli", "--profile", "dev-docs")[0])
         self.assertEqual(0, self.live("--host", "copilot-cli", "--profile", "dev-docs")[0])
         shutil.rmtree(self.skills / "router")
@@ -4996,6 +6042,28 @@ class InstalledStateTests(InstallBase):
         code, out, _ = self.doctor(found=("git", "python", "gh", "az", "copilot"))
         self.assertEqual(0, code, out)
         self.assertIn("[WARN] host copilot-cli skills: the managed marker in .github/skills is unreadable", out)
+
+    def test_a_managed_skill_folder_that_cannot_be_measured_is_a_problem_of_live_verification_and_of_doctor_and_not_a_crash(self):
+        self.assertEqual(0, self.install("--apply", "--host", "copilot-cli")[0])
+        gamma = self.skills / "gamma"
+        code, out, err = self.cli("verify", "--live", "--host", "copilot-cli", deps=self.deps(runner=self.runner, digest_tree=unreadable(gamma)))
+        self.assertEqual(1, code)
+        self.assertIn("[FAIL] V9: managed skill gamma in .github/skills cannot be measured (it is not a readable folder)", out)
+        self.assertNotIn("alpha-core in .github/skills", out)
+        self.assertNotIn("Traceback", err)
+        code, out, err = self.cli("doctor", "--offline", deps=self.deps(runner=self.machine(("git", "python", "gh", "az", "copilot")), digest_tree=unreadable(gamma)))
+        self.assertEqual(1, code)
+        self.assertIn("[FAIL] host copilot-cli skills: managed skill gamma in .github/skills cannot be measured (it is not a readable folder)", out)
+        self.assertNotIn("Traceback", err)
+
+    def test_a_folder_of_the_local_pack_that_cannot_be_measured_is_a_failure_of_live_verification_and_not_a_crash(self):
+        self.assertEqual(0, self.install("--apply", "--host", "copilot-cli", "vscode")[0])
+        pack_gamma = self.store / "skills" / "gamma"
+        code, out, err = self.cli("verify", "--live", "--host", "copilot-cli", deps=self.deps(runner=self.runner, digest_tree=unreadable(pack_gamma)))
+        self.assertEqual(1, code)
+        self.assertIn("[FAIL] V9: profile dev-a: the local pack holds skill gamma that cannot be measured (it is not a readable folder)", out)
+        self.assertNotIn("Traceback", err)
+        self.assertEqual(0, self.cli("verify", "--live", "--host", "copilot-cli", deps=self.deps(runner=self.runner))[0])
 
     def test_a_marker_of_another_lock_stays_a_failure_of_its_own(self):
         self.assertEqual(0, self.install("--apply", "--host", "copilot-cli")[0])
@@ -5556,7 +6624,8 @@ class LockCommandTests(Base):
         self.rewrite_manifest(lambda m: m["mcp_servers"][0]["variants"]["writer"].update(args=["--all"]))
         code, out, err = self.cli("lock", "--no-network", deps=self.deps())
         self.assertEqual((0, ""), (code, err), out)
-        self.assertEqual(self.DROPPED, self.written()["contracts"]["npm-srv/writer"])
+        # Changed on purpose in round 9: lock --no-network leaves the contract out, as lock does, and no longer puts a placeholder in its place.
+        self.assertNotIn("npm-srv/writer", self.written()["contracts"])
         self.assertIn("note: dropped the captured contract of npm-srv/writer: its launch changed", out.splitlines())
         write(self.path, toolchain.dump_json(data))
         code, out, err = self.lock()
@@ -5955,12 +7024,290 @@ class LockCommandTests(Base):
         self.assertEqual(1, code)
         self.assertIn("toolchain.lock.json is invalid", err)
 
+    def restart(self, change=None):
+        """A project with every contract captured, then (optionally) the manifest edited."""
+        self.manifest = small_manifest()
+        write_project(self.root, self.manifest, self.profiles)
+        if self.path.exists():
+            self.path.unlink()
+        self.lock("--contracts", env={EULA_ENV: "true"})
+        self.before = self.path.read_bytes()
+        if change:
+            self.rewrite_manifest(change)
+
+    NEW_TOOL = {"id": "newtool", "command": "newtool", "version_args": ["--version"], "min": "1.0", "needed_for": "a test", "required": False,
+                "package": {"ecosystem": "pypi", "name": "brand-new", "track": "latest"}}
+
+    def test_lock_without_the_network_refuses_a_package_pin_that_the_lock_does_not_hold(self):
+        problem = "the lock has %s for package %s, but the manifest pins %s"
+        cases = (("a pin that is another version", lambda m: m["mcp_servers"][0]["package"].update(track="1.7.0"), problem % ("version 1.6.0", "npm:@acme/tool", "1.7.0")),
+                 ("a pin on a tool package", lambda m: m["tools"][4]["package"].update(track="1.9.0"), problem % ("version 1.8.0", "pypi:acme-cli", "1.9.0")),
+                 ("a package that is new", lambda m: m["tools"].append(dict(self.NEW_TOOL)), "the lock has no entry for package pypi:brand-new"),
+                 ("a new package with a pin", lambda m: m["tools"].append(dict(self.NEW_TOOL, package={"ecosystem": "pypi", "name": "brand-new", "track": "2.0.0"})),
+                  "the lock has no entry for package pypi:brand-new"))
+        for what, change, expected in cases:
+            with self.subTest(change=what):
+                self.restart(change)
+                code, out, err = self.cli("lock", "--no-network", deps=self.deps())
+                self.assertEqual(1, code, out)
+                self.assertIn("error: a changed package pin needs a lock with the network", err)
+                self.assertIn("  - " + expected, err.splitlines())
+                self.assertEqual(self.before, self.path.read_bytes(), "the lock is left as it was")
+                self.assertNotIn("Traceback", err)
+
+    def test_lock_without_the_network_refuses_a_pin_that_the_lock_holds_unresolved(self):
+        self.restart(lambda m: m["mcp_servers"][0]["package"].update(track="1.6.0"))
+        data = self.written()
+        data["packages"]["npm:@acme/tool"] = {"status": "unresolved", "reason": "network", "detail": ""}
+        write(self.path, toolchain.dump_json(data))
+        code, out, err = self.cli("lock", "--no-network", deps=self.deps())
+        self.assertEqual(1, code, out)
+        self.assertIn("  - the lock has no resolved version for package npm:@acme/tool, but the manifest pins 1.6.0", err.splitlines())
+
+    def test_lock_without_the_network_still_accepts_a_package_that_the_lock_agrees_with(self):
+        cases = (("latest, as before", lambda m: m["quarantine"].append({"source": "src", "skill": "more", "reason": "x"})),
+                 ("the version that the lock holds", lambda m: m["mcp_servers"][0]["package"].update(track="1.6.0")),
+                 ("the version that the lock holds for a tool", lambda m: m["tools"][4]["package"].update(track="1.8.0")))
+        for what, change in cases:
+            with self.subTest(change=what):
+                self.restart(change)
+                code, out, err = self.cli("lock", "--no-network", deps=self.deps())
+                self.assertEqual((0, ""), (code, err), out)
+                self.assertEqual(toolchain.inputs_digest(self.manifest), self.written()["inputs_digest"])
+                self.assertEqual(0, self.cli("render", "--write-project")[0])
+                code, out, _ = self.cli("verify")
+                self.assertEqual(0, code, out)
+
+    def test_the_package_problems_of_a_lock_are_the_missing_and_the_pinned_to_another_version(self):
+        self.restart()
+        manifest, lock = copy.deepcopy(self.manifest), toolchain.load_lock(self.path)
+        self.assertEqual(([], []), toolchain.lock_package_problems(manifest, lock))
+        manifest["mcp_servers"][0]["package"]["track"] = "1.7.0"
+        manifest["mcp_servers"][1]["package"]["track"] = "1.8.0"
+        manifest["tools"].append(dict(self.NEW_TOOL))
+        lock = copy.deepcopy(dict(lock))
+        lock["packages"]["nuget:Acme.Nuget"] = {"status": "unresolved", "reason": "network", "detail": ""}
+        self.assertEqual((["package pypi:brand-new"], ["the lock has version 1.6.0 for package npm:@acme/tool, but the manifest pins 1.7.0"]),
+                         toolchain.lock_package_problems(manifest, lock))
+        manifest["mcp_servers"][2]["package"]["track"] = "0.5.0"
+        self.assertEqual(["the lock has version 1.6.0 for package npm:@acme/tool, but the manifest pins 1.7.0",
+                          "the lock has no resolved version for package nuget:Acme.Nuget, but the manifest pins 0.5.0"],
+                         toolchain.lock_package_problems(manifest, lock)[1])
+        self.assertEqual(([], []), toolchain.lock_package_problems({"mcp_servers": [], "tools": []}, {}), "a lock without packages and a manifest without any")
+
+    def add_unused_contract(self, key="npm-srv/writer", variant="writer"):
+        """The captured contract of a variant that no profile uses, as a lock may hold it after a profile stopped using the variant."""
+        data = self.written()
+        extra = dict(copy.deepcopy(data["contracts"]["npm-srv/offline"]), launch=launch_of(self.manifest, data["packages"], "npm-srv", variant))
+        data["contracts"] = dict(sorted(dict(data["contracts"], **{key: extra}).items()))
+        write(self.path, toolchain.dump_json(data))
+
+    def test_a_lock_that_the_offline_refresh_writes_is_the_lock_that_lock_would_write(self):
+        cases = (("a variant that a profile uses", lambda m: m["mcp_servers"][0]["variants"]["online"].update(args=[]), "npm-srv/online", True),
+                 ("a variant that no profile uses", lambda m: m["mcp_servers"][0]["variants"]["writer"].update(args=["--all"]), "npm-srv/writer", False))
+        for what, change, key, used in cases:
+            with self.subTest(change=what):
+                self.restart()
+                self.add_unused_contract()
+                self.rewrite_manifest(change)
+                code, out, err = self.cli("lock", "--no-network", deps=self.deps())
+                self.assertEqual((0, ""), (code, err), out)
+                self.assertIn("note: dropped the captured contract of %s: its launch changed" % key, out.splitlines())
+                if used:
+                    self.assertEqual(self.DROPPED, self.written()["contracts"][key], "the placeholder of a variant that a profile uses")
+                else:
+                    self.assertNotIn(key, self.written()["contracts"], "no placeholder for a variant that no profile uses")
+                code, out, err = self.lock("--check")
+                self.assertEqual(0, code, "the offline refresh and lock agree: " + out)
+                self.assertIn("the lock is current", out)
+                self.assertEqual(0, self.cli("lock", "--no-network", deps=self.deps())[0])
+                self.assertEqual(0, self.lock("--check")[0])
+
+    def test_the_offline_refresh_without_the_profiles_replaces_every_captured_contract_of_a_changed_launch_by_a_placeholder(self):
+        self.restart()
+        self.add_unused_contract()
+        self.rewrite_manifest(lambda m: (m["mcp_servers"][0]["variants"]["writer"].update(args=["--all"]),
+                                         m["mcp_servers"][0]["variants"]["online"].update(args=[])))
+        old = toolchain.load_lock(self.path)
+        for profiles, expected in ((None, {"npm-srv/online", "npm-srv/writer"}), (self.profiles, {"npm-srv/online"})):
+            with self.subTest(profiles=None if profiles is None else "given"):
+                new, notes = toolchain.refresh_digest(self.manifest, old, self.deps(), profiles)
+                placeholders = {key for key, contract in new["contracts"].items() if contract == self.DROPPED}
+                self.assertEqual(expected, placeholders)
+                self.assertEqual(["dropped the captured contract of npm-srv/online: its launch changed", "dropped the captured contract of npm-srv/writer: its launch changed"],
+                                 sorted(notes))
+        new, _ = toolchain.refresh_digest(self.manifest, old, self.deps())
+        self.assertIn("npm-srv/writer", new["contracts"], "the old call keeps its old result")
+
+    def test_the_license_variable_goes_to_the_server_that_declares_it_and_to_no_other_even_one_that_names_the_same_variable(self):
+        self.small_project(manifest=clashing_manifest(), with_lock=False)
+        self.truth = synthetic_lock(self.manifest, self.profiles)
+        del self.lock
+        self.up = Upstream(self.manifest, self.truth)
+        code, out, err = self.lock("--contracts", env={EULA_ENV: "true", "ACME_TARGET": "sandbox"})
+        self.assertEqual(0, code, out + err)
+        self.assertEqual(5, len(self.up.calls["probe_stdio"]))
+        for call in self.up.calls["probe_stdio"]:
+            self.assertEqual(LICENSED in " ".join(call["argv"]), EULA_ENV in call["env"], call["argv"])
+        online = [c for c in self.up.calls["probe_stdio"] if c["argv"][-1] == "--online"][0]
+        self.assertEqual("sandbox", online["env"]["ACME_TARGET"], "the other variables that the variant declares are still handed on")
+        self.assertNotIn(EULA_ENV, online["env"])
+
+    def test_a_capture_on_a_later_day_replaces_a_contract_when_only_its_era_protocol_or_server_changed_and_keeps_it_when_nothing_did(self):
+        new_day = "2026-11-08"
+
+        def recapture(change):
+            """A fresh lock with every contract captured on the day of NOW, then a capture nine days later after `change` of the upstream."""
+            self.up = Upstream(self.manifest, self.truth)
+            if self.path.exists():
+                self.path.unlink()
+            self.lock("--contracts", env={EULA_ENV: "true"})
+            more = change(self.up) or {}
+            self.lock("--contracts", env={EULA_ENV: "true"}, clock=lambda: NOW + datetime.timedelta(days=9), **more)
+            return self.written()["contracts"]
+
+        def modern(up):
+            original = up.probe_stdio
+
+            def probe(argv, env=None, cwd=None, timeout=60):
+                answer = original(argv, env=env, cwd=cwd, timeout=timeout)
+                return dict(answer, era="modern") if "acme-py" in " ".join(argv) else answer
+            return {"probe_stdio": probe}
+        contracts = recapture(lambda up: None)
+        self.assertEqual({CAPTURED}, {c["captured"] for c in contracts.values() if c["status"] == "captured"}, "nothing changed: every contract keeps its date")
+        contracts = recapture(modern)
+        py = contracts["py-srv/default"]
+        self.assertEqual(("modern", new_day), (py["era"], py["captured"]), "the era alone")
+        self.assertEqual(("legacy", CAPTURED), (contracts["npm-srv/online"]["era"], contracts["npm-srv/online"]["captured"]))
+        contracts = recapture(lambda up: setattr(up, "protocol", "2026-07-28"))
+        captured = {key: c for key, c in contracts.items() if c["status"] == "captured"}
+        self.assertEqual({("2026-07-28", new_day)}, {(c["protocol"], c["captured"]) for c in captured.values()}, "the protocol alone, of every contract")
+        contracts = recapture(lambda up: up.labels.__setitem__("acme-py", "renamed-server"))
+        py = contracts["py-srv/default"]
+        self.assertEqual(("renamed-server", new_day), (py["server"]["name"], py["captured"]), "the server name alone")
+        self.assertEqual(CAPTURED, contracts["npm-srv/online"]["captured"])
+        contracts = recapture(lambda up: up.server_versions.__setitem__("acme-py", "9.9.9"))
+        py = contracts["py-srv/default"]
+        self.assertEqual(("9.9.9", new_day), (py["server"]["version"], py["captured"]), "the server version alone")
+        self.assertEqual(CAPTURED, contracts["npm-srv/online"]["captured"])
+
+    def test_a_captured_contract_of_another_package_version_is_replaced_even_when_nothing_else_differs(self):
+        old = {"status": "captured", "era": "modern", "protocol": "2025-06-18", "server": {"name": "srv", "version": "1.0.0"},
+               "package_version": "1.5.0", "launch": "sha256:" + "a" * 64, "captured": "2026-01-01", "tools": {}}
+        new = dict(old, package_version="1.6.0", captured="2026-02-02")
+        self.assertEqual(new, toolchain.merge_contract(old, new, "1.6.0", old["launch"]))
+        self.assertEqual(old, toolchain.merge_contract(old, dict(old, captured="2026-02-02"), "1.5.0", old["launch"]), "only the date differs: the first capture stays")
+
+    def test_a_label_that_reads_like_a_token_a_host_or_an_address_is_locked_as_unknown_whoever_says_it(self):
+        token = "1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c"
+        self.up.server_versions.update({"@acme/tool": "1.host-1.com", "acme-py": token, "Acme.Nuget": ADDRESS})
+        self.up.labels.update({"@acme/tool": "web2.example.net", "acme-py": token})
+        code, out, err = self.lock("--contracts", env={EULA_ENV: "true"})
+        self.assertEqual(0, code, out + err)
+        contracts = self.written()["contracts"]
+        for key in ("npm-srv/online", "npm-srv/offline", "py-srv/default"):
+            self.assertEqual(("captured", {"name": "unknown", "version": "unknown"}), (contracts[key]["status"], contracts[key]["server"]), key)
+        self.assertEqual(("captured", "unknown"), (contracts["nuget-srv/default"]["status"], contracts["nuget-srv/default"]["server"]["version"]))
+        raw = self.path.read_text(encoding="utf-8")
+        for leak in ("host-1", "web2", token, ADDRESS):
+            self.assertNotIn(leak, raw)
+        self.assertEqual("1.6.0", contracts["licensed/offline"]["server"]["version"], "a plain label is stored as it is")
+
     def test_a_malformed_resolver_answer_cannot_corrupt_the_lock(self):
         self.up.plugins["plugins/core"]["skills"]["alpha-core"]["digest"] = "not-a-digest"
         code, out, err = self.lock()
         self.assertEqual(1, code)
         self.assertIn("the resolved lock is invalid", err)
         self.assertFalse(self.path.exists())
+
+    def two_sources(self):
+        """The small project with a second skill source, and an upstream that knows both."""
+        manifest = small_manifest()
+        manifest["skill_sources"].append({"id": "other", "repo": "https://github.com/acme/other.git", "track": {"kind": "branch", "name": "main"},
+                                          "plugins": [{"name": "solo", "path": "plugins/solo"}]})
+        self.small_project(manifest=manifest, with_lock=False)
+        self.truth = synthetic_lock(self.manifest, self.profiles)
+        del self.lock
+        self.up = Upstream(self.manifest, self.truth)
+
+    def test_every_resolution_fetches_each_source_once_whether_or_not_its_cache_folder_exists(self):
+        self.two_sources()
+        runner, fetched = FakeRunner(), []
+
+        def fetch(url, commit, dest, runner_given):
+            fetched.append((url, commit, Path(dest), runner_given))
+            return self.up.fetch_git(url, commit, dest, runner_given)
+        caches = self.root / ".factory" / "pack" / ".cache"
+        both = [("https://github.com/acme/skills.git", "1" * 40, caches / ("1" * 12), runner), ("https://github.com/acme/other.git", "2" * 40, caches / ("2" * 12), runner)]
+        write(caches / ("1" * 12) / "left-over.txt", "a cache from an earlier run\n")
+        deps = lambda: self.up.deps(self.home, runner=runner, fetch_git=fetch, env={EULA_ENV: "true"})
+        for argv in (["lock"], ["lock"], ["lock", "--check"], ["update"], ["update", "--check"], ["lock", "--contracts"]):
+            with self.subTest(argv=argv):
+                fetched.clear()
+                code, out, err = self.cli(*argv, deps=deps())
+                self.assertEqual(0, code, out + err)
+                self.assertEqual(both, fetched, "each source is fetched once, in the order of the manifest, into the folder of its commit, with the runner of the deps")
+        self.assertTrue(all((caches / name).is_dir() for name in ("1" * 12, "2" * 12)))
+        fetched.clear()
+        self.assertEqual(0, self.cli("lock", "--only", "src", deps=deps())[0])
+        self.assertEqual(both[:1], fetched, "a source that --only leaves alone is not fetched")
+
+    def test_a_cache_folder_that_holds_junk_goes_to_the_fetch_as_it_is_and_only_the_fetch_touches_it(self):
+        cache = self.root / ".factory" / "pack" / ".cache" / ("1" * 12)
+        junk = {"commondir": "../../elsewhere\n", "config": "[core]\n\tfsmonitor = a-program\n", "hooks/pre-commit": "#!/bin/sh\n",
+                "objects/info/alternates": "elsewhere/objects\n"}
+        for rel, text in junk.items():
+            write(cache / rel, text)
+        listing = lambda folder: sorted(p.relative_to(folder).as_posix() for p in Path(folder).rglob("*") if p.is_file())
+        seen = []
+
+        def fetch(url, commit, dest, runner):
+            seen.append(("fetch", Path(dest), listing(dest)))
+            shutil.rmtree(dest)
+            Path(dest).mkdir()
+            write(Path(dest) / "FETCHED", "a new repository\n")
+            return Path(dest)
+
+        def reader(git_dir, commit, plugin_path, runner=None, shared=()):
+            seen.append(("read", Path(git_dir), listing(git_dir)))
+            return self.up.read_plugin(git_dir, commit, plugin_path, runner, shared=shared)
+        with mock.patch.object(toolchain, "remove_tree", side_effect=AssertionError("the kit does not delete a cache folder, fetch_git does")):
+            code, out, err = self.lock(fetch_git=fetch, read_plugin=reader)
+        self.assertEqual((0, ""), (code, err), out)
+        self.assertEqual(("fetch", cache, sorted(junk)), seen[0], "the junk is all there when the fetch is called: nothing cleaned it or read it before")
+        self.assertEqual([("read", cache, ["FETCHED"])] * 2, seen[1:], "and what is read, for each of the two plugins, is what the fetch made")
+        self.assertEqual(["FETCHED"], listing(cache))
+        self.assertEqual(self.truth["skill_sources"], self.written()["skill_sources"])
+
+    def test_a_read_that_fails_on_the_freshly_fetched_cache_is_an_error_whichever_plugin_fails_and_nothing_is_fetched_again(self):
+        for failing in (0, 1):
+            with self.subTest(failing_read=failing):
+                self.up.calls["fetch_git"].clear()
+                calls = []
+
+                def reader(*args, **kwargs):
+                    calls.append(1)
+                    if len(calls) == failing + 1:
+                        raise toolchain_sources.SourceError("missing: the object is not in the cache")
+                    return self.up.read_plugin(*args, **kwargs)
+                code, out, err = self.lock(read_plugin=reader)
+                self.assertEqual(1, code, out)
+                self.assertIn("skill source src: missing: the object is not in the cache", err)
+                self.assertEqual(["1" * 40], self.up.calls["fetch_git"], "one fetch, and none after the failed read")
+                self.assertEqual(failing + 1, len(calls), "and the failed read is not made again")
+                self.assertFalse(self.path.exists(), "a lock that fails is not written")
+
+    def test_the_folder_that_holds_the_caches_exists_when_the_fetch_is_called_and_the_fetch_makes_the_folder_of_the_commit_itself(self):
+        made = []
+
+        def fetch(url, commit, dest, runner):
+            self.assertTrue(Path(dest).parent.is_dir(), "the helper makes dest and not its parents")
+            Path(dest).mkdir()
+            made.append(Path(dest))
+            return Path(dest)
+        code, out, err = self.lock(fetch_git=fetch)
+        self.assertEqual((0, ""), (code, err), out)
+        self.assertEqual([self.root / ".factory" / "pack" / ".cache" / ("1" * 12)], made)
 
 
 class UpdateTests(Base):
@@ -6527,7 +7874,8 @@ class ToolPinTests(Base):
         self.rewrite_profiles(lambda p: p["profiles"]["dev-a"].update(tools=["fab"]))
         self.assertProblem(toolchain.profile_problems(self.manifest, self.profiles, self.lock, "dev-a"), "tool fab is not a tool of the manifest")
 
-    def test_fetch_is_about_skills_and_is_not_stopped_by_a_tool_package(self):
+    def test_fetch_is_stopped_by_an_unresolved_tool_package_of_an_agent_profile_like_every_other_command(self):
+        # Changed on purpose in round 9: fetch resolves the profile it works for, and a tool that cannot be pinned stops a job.
         self.unresolve("npm:@acme/report-cli")
         calls = []
 
@@ -6535,8 +7883,12 @@ class ToolPinTests(Base):
             calls.append(selection)
             return {"schema": 1, "skills": {n: {"files": 2} for _s, _p, n in selection}}
         code, out, err = self.cli("fetch", "--profile", "agent-ok", deps=self.deps(vendor_skills=vendor))
-        self.assertEqual((0, ""), (code, err), out)
-        self.assertEqual([[("src", "core", "alpha-core")]], calls)
+        self.assertEqual(1, code)
+        self.assertIn("profile agent-ok: package npm:@acme/report-cli is unresolved in the lock (tool pra)", err)
+        self.assertEqual([], calls)
+        code, out, err = self.cli("fetch", "--profile", "dev-a", deps=self.deps(vendor_skills=vendor))
+        self.assertEqual((0, ""), (code, err), "a dev profile leaves the tool out with a warning: " + out)
+        self.assertEqual([[("src", "core", "alpha-core"), ("src", "core", "beta-core"), ("src", "extra", "gamma")]], calls)
 
     def test_list_shows_the_tools_of_a_profile_with_their_pinned_versions(self):
         out = self.cli("list", "--profile", "dev-a")[1]
@@ -6582,6 +7934,52 @@ class ToolPinTests(Base):
         self.rewrite_lock(lambda lock: lock["packages"]["pypi:acme-cli"].update(version="1.8.0"))
         line = [l for l in self.doctor(fab="fab 1.8.0-beta.2\n")[1].splitlines() if "tool fab:" in l][0]
         self.assertIn("is not the pinned version 1.8.0", line)
+
+    def test_a_pre_release_is_not_the_pinned_release_in_doctor_and_in_live_verification(self):
+        self.assertEqual(0, self.cli("render", "--write-project")[0])
+        line = [l for l in self.doctor(fab="fab 1.8.0rc1\n")[1].splitlines() if "tool fab:" in l][0]
+        self.assertEqual("[WARN] tool fab: version 1.8.0rc1 is not the pinned version 1.8.0; install the pinned version", line)
+        (code, out, _), _ = self.live("--profile", "exec-tool", fab="fab 1.8.0rc1\n", found=("fab",))
+        self.assertEqual(1, code)
+        self.assertIn("[FAIL] V9: profile exec-tool: tool fab is version 1.8.0rc1, not the pinned version 1.8.0; install the pinned version", out)
+        (code, out, _), _ = self.live("--profile", "dev-a", fab="fab 1.8.0rc1\n", found=("fab", "pra"))
+        self.assertIn("[WARN] V9: profile dev-a: tool fab is version 1.8.0rc1, not the pinned version 1.8.0; install the pinned version", out)
+        self.assertNotIn("tool fab is at the pinned version", out)
+        self.rewrite_lock(lambda lock: lock["packages"]["pypi:acme-cli"].update(version="1.8.0rc1"))
+        line = [l for l in self.doctor(fab="fab 1.8.0rc1\n")[1].splitlines() if "tool fab:" in l][0]
+        self.assertEqual("[PASS] tool fab: version 1.8.0rc1 (pinned)", line)
+        line = [l for l in self.doctor(fab="fab 1.8.0\n")[1].splitlines() if "tool fab:" in l][0]
+        self.assertEqual("[WARN] tool fab: version 1.8.0 is not the pinned version 1.8.0rc1; install the pinned version", line)
+        (code, out, _), _ = self.live("--profile", "exec-tool", fab="fab 1.8.0rc1\n", found=("fab",))
+        self.assertEqual(0, code, out)
+        self.assertIn("[PASS] V9: profile exec-tool: tool fab is at the pinned version 1.8.0rc1", out)
+        (code, out, _), _ = self.live("--profile", "exec-tool", fab="fab 1.8.0a1\n", found=("fab",))
+        self.assertEqual(1, code)
+        self.assertIn("tool fab is version 1.8.0a1, not the pinned version 1.8.0rc1", out)
+
+    def test_a_dotted_suffix_is_not_the_pinned_release_in_doctor_and_in_live_verification(self):
+        self.assertEqual(0, self.cli("render", "--write-project")[0])
+        for printed, shown in (("fab 1.8.0.dev3\n", "1.8.0.dev3"), ("fab 1.8.0.post1\n", "1.8.0.post1"), ("fab 1.8.0.rc1.\n", "1.8.0.rc1")):
+            with self.subTest(printed=printed):
+                line = [l for l in self.doctor(fab=printed)[1].splitlines() if "tool fab:" in l][0]
+                self.assertEqual("[WARN] tool fab: version %s is not the pinned version 1.8.0; install the pinned version" % shown, line)
+                (code, out, _), _ = self.live("--profile", "exec-tool", fab=printed, found=("fab",))
+                self.assertEqual(1, code)
+                self.assertIn("[FAIL] V9: profile exec-tool: tool fab is version %s, not the pinned version 1.8.0; install the pinned version" % shown, out)
+        # a locked version with a dotted suffix is an exact pin now: it used to be taken for a version that could float, and the tool was held to its minimum
+        self.rewrite_lock(lambda lock: lock["packages"]["pypi:acme-cli"].update(version="1.8.0.post1"))
+        line = [l for l in self.doctor(fab="fab 1.8.0.post1\n")[1].splitlines() if "tool fab:" in l][0]
+        self.assertEqual("[PASS] tool fab: version 1.8.0.post1 (pinned)", line)
+        line = [l for l in self.doctor(fab="fab 1.8.0\n")[1].splitlines() if "tool fab:" in l][0]
+        self.assertEqual("[WARN] tool fab: version 1.8.0 is not the pinned version 1.8.0.post1; install the pinned version", line)
+        line = [l for l in self.doctor(fab="fab 1.8.0.dev3\n")[1].splitlines() if "tool fab:" in l][0]
+        self.assertEqual("[WARN] tool fab: version 1.8.0.dev3 is not the pinned version 1.8.0.post1; install the pinned version", line)
+        (code, out, _), _ = self.live("--profile", "exec-tool", fab="fab 1.8.0.post1\n", found=("fab",))
+        self.assertEqual(0, code, out)
+        self.assertIn("[PASS] V9: profile exec-tool: tool fab is at the pinned version 1.8.0.post1", out)
+        (code, out, _), _ = self.live("--profile", "exec-tool", fab="fab 1.8.0\n", found=("fab",))
+        self.assertEqual(1, code)
+        self.assertIn("tool fab is version 1.8.0, not the pinned version 1.8.0.post1", out)
 
     def test_a_tool_that_the_profile_does_not_list_keeps_the_check_of_the_minimum_and_so_does_a_profile_without_a_lock(self):
         out = self.doctor("--profile", "agent-empty", fab="fab 99.0.0\n")[1]
@@ -6781,6 +8179,60 @@ class HelperTests(Base):
         self.assertTrue(all(toolchain.license_accepted(env, "V") for env in accepted))
         self.assertFalse(any(toolchain.license_accepted(env, "V") for env in refused))
 
+    def test_a_pre_release_is_not_the_pinned_release_and_the_same_pre_release_is(self):
+        cases = (("fab 1.8.0rc1", "1.8.0", False), ("fab 1.8.0rc1", "1.8.0rc1", True), ("fab 1.8.0a1", "1.8.0rc1", False), ("fab 1.8.0", "1.8.0", True),
+                 ("fab 1.8", "1.8.0", True), ("fab 1.8.0", "1.8.0rc1", False), ("fab 1.8.0b2", "1.8.0b2", True), ("fab 1.8.0b2", "1.8.0b3", False),
+                 ("fab 1.8.0a1", "1.8.0a1", True), ("fab 1.8.0-beta.2", "1.8.0-beta.2", True), ("fab 1.8.0-beta.2", "1.8.0", False),
+                 ("fab 1.8.0", "1.8.0-beta.2", False), ("fab 1.8.0+build", "1.8.0+build", True), ("fab 1.8.0+build", "1.8.0", False),
+                 ("fab 1.8.0 (build 3)", "1.8.0", True),
+                 # Changed on purpose in round 9 (a): a dot and a letter start the suffix, Git for Windows' .windows.1 too. git is held to a minimum, never to a pin.
+                 ("git version 2.43.0.windows.1", "2.43.0", False), ("git version 2.43.0.windows.1", "2.43.0.windows.1", True))
+        for printed, pinned, same in cases:
+            with self.subTest(printed=printed, pinned=pinned):
+                self.assertEqual(same, toolchain.at_pin(printed, pinned))
+        self.assertEqual(((1, 8, 0), "rc1"), toolchain.read_version("fab 1.8.0rc1"))
+        self.assertEqual(((1, 8, 0), "-beta.2"), toolchain.read_version("fab 1.8.0-beta.2"))
+        self.assertEqual(((1, 8, 0), "+build"), toolchain.read_version("fab 1.8.0+build"))
+        self.assertEqual(((1, 8, 0), ""), toolchain.read_version("fab 1.8.0 (build 3)"))
+        self.assertEqual(((2, 43, 0), ".windows.1"), toolchain.read_version("git version 2.43.0.windows.1"))
+        self.assertEqual(((10,), ""), toolchain.read_version("npm 10"))
+        self.assertEqual("1.8.0rc1", toolchain.show_version(toolchain.read_version("fab 1.8.0rc1")))
+
+    def test_what_read_version_reads_is_what_the_exact_version_rule_accepts(self):
+        for version in ("1.8.0", "1.8", "1.8.0rc1", "1.8.0a1", "1.8.0b2", "1.0rc1", "1.8.0-beta.2", "4.0.0-beta.4", "1.0.0+build.5", "2.0.0-rc.1+build.7",
+                        "1.8.0.post1", "1.8.0.dev3", "1.8.0.rc1", "1.0.dev1", "2.0.0.post2.dev1"):
+            with self.subTest(version=version):
+                self.assertTrue(toolchain.EXACT_VERSION_RE.fullmatch(version))
+                printed = "tool %s (build 3)\n" % version
+                self.assertEqual(version, toolchain.show_version(toolchain.read_version(printed)))
+                self.assertTrue(toolchain.at_pin(printed, version))
+                self.assertFalse(toolchain.at_pin(printed, "9.9.9"))
+
+    def test_a_dotted_suffix_is_part_of_the_version_and_a_period_that_closes_a_sentence_is_not(self):
+        for suffix in (".dev3", ".post1", ".rc1"):
+            printed = "fab 1.8.0" + suffix
+            with self.subTest(suffix=suffix):
+                self.assertEqual(((1, 8, 0), suffix), toolchain.read_version(printed))
+                self.assertEqual("1.8.0" + suffix, toolchain.show_version(toolchain.read_version(printed)))
+                self.assertFalse(toolchain.at_pin(printed, "1.8.0"), "a pre-release or a post-release is not the release")
+                self.assertTrue(toolchain.at_pin(printed, "1.8.0" + suffix))
+                self.assertTrue(toolchain.at_pin("%s (build 3)\n" % printed, "1.8.0" + suffix))
+                self.assertFalse(toolchain.at_pin("fab 1.8.0", "1.8.0" + suffix))
+        self.assertFalse(toolchain.at_pin("fab 1.8.0.dev3", "1.8.0.post1"))
+        self.assertFalse(toolchain.at_pin("fab 1.8.0.dev3", "1.8.0.dev4"))
+        self.assertTrue(toolchain.at_pin("fab 1.8.dev3", "1.8.0.dev3"), "the numbers are still compared as 1.8 is 1.8.0")
+        for text in ("fab 1.8.0.", "fab 1.8.0,", "fab 1.8.0.\n", "fab 1.8.0. Next", "This is fab 1.8.0.", "(fab 1.8.0)."):
+            with self.subTest(text=text):
+                self.assertEqual(((1, 8, 0), ""), toolchain.read_version(text))
+                self.assertTrue(toolchain.at_pin(text, "1.8.0"))
+                self.assertFalse(toolchain.at_pin(text, "1.8.0.post1"))
+        for text, suffix in (("fab 1.8.0.dev3.", ".dev3"), ("fab 1.8.0.post1.\n", ".post1"), ("fab 1.8.0-beta.2.", "-beta.2"), ("fab 1.8.0rc1.", "rc1"),
+                             ("fab 1.8.0+build.5.", "+build.5"), ("fab 1.8.0.dev3, then", ".dev3")):
+            with self.subTest(text=text):
+                self.assertEqual(((1, 8, 0), suffix), toolchain.read_version(text))
+                self.assertTrue(toolchain.at_pin(text, "1.8.0" + suffix))
+        self.assertEqual(((1, 8, 0, 5), ""), toolchain.read_version("fab 1.8.0." + "5"), "a dot and a digit are one more number")
+
     def test_versions_are_parsed_and_compared_numerically(self):
         self.assertEqual((2, 43, 0), toolchain.parse_version("git version 2.43.0.windows.1"))
         self.assertEqual((22, 1, 0), toolchain.parse_version("v22.1.0"))
@@ -6870,6 +8322,48 @@ class CliTests(Base):
                     self.assertNotIn("Traceback", err)
                     self.assertNotIn(str(self.tmp), err)
                     self.assertEqual("", out)
+
+    def test_a_folder_that_cannot_be_measured_and_that_nothing_caught_is_an_error_line_with_a_safe_detail_and_exit_one(self):
+        arguments = {"render": ["--host", "vscode"]}
+        private = str(self.tmp / "private" / "x")
+        for command in ("list", "verify", "render", "lock", "update", "fetch", "install", "doctor"):
+            for exc, shown in ((toolchain_sources.SourceError("unresolved: not a folder"), "error: unresolved: not a folder"),
+                               (toolchain_sources.SourceError("unresolved: cannot read " + private), "error: unresolved: cannot read\n"),
+                               (toolchain_sources.SourceError(), "error: SourceError\n")):
+                with self.subTest(command=command, exc=str(exc)[:30], shown=shown):
+                    def boom(args, deps, root):
+                        raise exc
+                    with mock.patch.dict(toolchain.COMMANDS, {command: boom}):
+                        code, out, err = self.cli(command, *arguments.get(command, []))
+                    self.assertEqual(1, code)
+                    self.assertIn(shown, err)
+                    self.assertNotIn("Traceback", err)
+                    self.assertNotIn(str(self.tmp), err)
+                    self.assertEqual("", out)
+        with mock.patch.object(toolchain.toolchain_io, "safe_detail", side_effect=sentinel_detail("unresolved")):
+            with mock.patch.dict(toolchain.COMMANDS, {"list": lambda args, deps, root: (_ for _ in ()).throw(toolchain_sources.SourceError("unresolved: x"))}):
+                code, out, err = self.cli("list")
+        self.assertEqual((1, "error: SENTINEL\n"), (code, err), "the detail is made by the one safe_detail of toolchain_io")
+
+    def test_a_repo_owned_skill_that_cannot_be_measured_or_read_is_an_error_line_for_the_commands_that_look_at_it(self):
+        def digest(path):
+            raise toolchain_sources.SourceError("unresolved: cannot read a file")
+
+        def lint(path):
+            raise toolchain_sources.SourceError("unresolved: cannot read a file")
+        runner = FakeRunner(found=["copilot", "code", "git", "python"], answers=GOOD_TOOLS)
+        for argv in (["render", "--host", "vscode"], ["list", "--profile", "dev-a"], ["install", "--skip-mcp"], ["fetch"], ["doctor", "--offline"]):
+            with self.subTest(measure=argv):
+                code, out, err = self.cli(*argv, deps=self.deps(digest_tree=digest, runner=runner, vendor_skills=forbidden("vendor_skills")))
+                self.assertEqual(1, code, out)
+                self.assertIn("error: unresolved: cannot read a file", err)
+                self.assertNotIn("Traceback", err)
+        for argv in (["verify"], ["render", "--host", "vscode"], ["fetch"]):
+            with self.subTest(lint=argv):
+                code, out, err = self.cli(*argv, deps=self.deps(lint_skill=lint, runner=runner, vendor_skills=forbidden("vendor_skills")))
+                self.assertEqual(1, code, out)
+                self.assertIn("error: unresolved: cannot read a file", err)
+                self.assertNotIn("Traceback", err)
 
     def test_an_error_of_the_toolchain_and_a_usage_error_keep_their_codes_and_an_unexpected_error_is_not_hidden(self):
         def refuse(args, deps, root):

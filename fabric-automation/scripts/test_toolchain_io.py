@@ -1240,7 +1240,18 @@ class RetryTests(unittest.TestCase):
 class MakeWritableTests(unittest.TestCase):
     """Only Windows needs the read-only attribute cleared before a delete. Elsewhere the mode of a file is left alone, because a hard link
     shares it with every other name of the same file (found on the hosted Linux runner: a chmod before the delete made the other name
-    of the file unreadable)."""
+    of the file unreadable). On Windows the attribute is shared in the same way, so a file with a second name is left alone there too
+    (found in round 9: clearing it through the name in a cache folder made a read-only file outside the folder writable)."""
+
+    def two_names(self, tmp):
+        """Two names of one file in `tmp`; skips the test where the file system has no hard links."""
+        first, second = Path(tmp) / "first", Path(tmp) / "second"
+        first.write_text("keep me", encoding="utf-8")
+        try:
+            os.link(str(first), str(second))
+        except (OSError, NotImplementedError, AttributeError):
+            self.skipTest("this file system has no hard links")
+        return first, second
 
     def test_on_windows_the_read_only_attribute_is_cleared(self):
         with mock.patch.object(toolchain_io, "WINDOWS", True), mock.patch.object(toolchain_io.os, "chmod") as chmod:
@@ -1251,6 +1262,62 @@ class MakeWritableTests(unittest.TestCase):
         with mock.patch.object(toolchain_io, "WINDOWS", False), mock.patch.object(toolchain_io.os, "chmod") as chmod:
             toolchain_io.make_writable("some-file")
         chmod.assert_not_called()
+
+    def test_on_windows_a_file_with_one_name_is_made_writable(self):
+        with mock.patch.object(toolchain_io, "WINDOWS", True), mock.patch.object(toolchain_io.os, "stat", return_value=mock.Mock(st_nlink=1)), \
+                mock.patch.object(toolchain_io.os, "chmod") as chmod:
+            toolchain_io.make_writable("some-file")
+        chmod.assert_called_once_with("some-file", stat.S_IWRITE)
+
+    def test_on_windows_a_file_with_more_than_one_name_is_left_alone(self):
+        for names in (2, 3):
+            with self.subTest(names=names), mock.patch.object(toolchain_io, "WINDOWS", True), \
+                    mock.patch.object(toolchain_io.os, "stat", return_value=mock.Mock(st_nlink=names)), mock.patch.object(toolchain_io.os, "chmod") as chmod:
+                toolchain_io.make_writable("some-file")
+                chmod.assert_not_called()
+
+    def test_on_windows_a_path_that_cannot_be_examined_is_handled_as_it_was_before(self):
+        for failure in (FileNotFoundError(2, "gone"), PermissionError(13, "denied"), OSError(22, "invalid")):
+            with self.subTest(failure=type(failure).__name__), mock.patch.object(toolchain_io, "WINDOWS", True), \
+                    mock.patch.object(toolchain_io.os, "stat", side_effect=failure), mock.patch.object(toolchain_io.os, "chmod") as chmod:
+                toolchain_io.make_writable("some-file")
+                chmod.assert_called_once_with("some-file", stat.S_IWRITE)
+
+    def test_the_number_of_names_is_read_from_the_file_system_where_the_rule_is_the_one_of_windows(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            first, second = self.two_names(tmp)
+            with mock.patch.object(toolchain_io, "WINDOWS", True), mock.patch.object(toolchain_io.os, "chmod") as chmod:
+                toolchain_io.make_writable(second)
+                chmod.assert_not_called()
+                second.unlink()
+                toolchain_io.make_writable(first)
+                chmod.assert_called_once_with(first, stat.S_IWRITE)
+
+    @unittest.skipUnless(WINDOWS, "the read-only attribute is a Windows matter")
+    def test_the_other_name_of_a_read_only_file_stays_read_only(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            outside, inside = self.two_names(tmp)
+            try:
+                os.chmod(outside, stat.S_IREAD)
+                toolchain_io.make_writable(inside)
+                self.assertFalse(os.stat(outside).st_mode & stat.S_IWRITE, "the other name of the file became writable")
+                self.assertEqual("keep me", outside.read_text(encoding="utf-8"))
+                with self.assertRaises(PermissionError):
+                    inside.unlink()  # the system still refuses the delete: it is the caller's error to report
+            finally:
+                os.chmod(outside, stat.S_IWRITE)
+
+    @unittest.skipUnless(WINDOWS, "the read-only attribute is a Windows matter")
+    def test_a_read_only_file_with_one_name_is_made_writable_and_can_be_deleted(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "object"
+            path.write_text("x", encoding="utf-8")
+            os.chmod(path, stat.S_IREAD)
+            with self.assertRaises(PermissionError):
+                path.unlink()
+            toolchain_io.make_writable(path)
+            path.unlink()
+            self.assertFalse(path.exists())
 
     def test_the_mode_of_a_file_that_has_a_second_name_is_not_changed_when_the_system_is_not_windows(self):
         with tempfile.TemporaryDirectory() as tmp:

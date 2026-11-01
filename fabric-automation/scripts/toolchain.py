@@ -81,7 +81,12 @@ SHA256_RE = re.compile(r"sha256:[0-9a-f]{64}")
 COMMIT_RE = re.compile(r"[0-9a-f]{40}")
 DATE_RE = re.compile(r"\d{4}-\d{2}-\d{2}")
 MIN_VERSION_RE = re.compile(r"\d+(?:\.\d+)*")
-EXACT_VERSION_RE = re.compile(r"\d+(?:\.\d+)+(?:(?:-|\+|(?=[A-Za-z]))[0-9A-Za-z][0-9A-Za-z.+-]*)?")
+# What may follow the numbers of a version: -beta.2, +build, a letter right after them (1.8.0rc1) or after a dot (1.8.0.post1, 1.8.0.dev3).
+# A dot that no letter follows, and a dot that would end the suffix, close a sentence ("fab 1.8.0.") and are not part of the version.
+# read_version reads the same grammar.
+VERSION_SUFFIX = r"(?:(?:-|\+|\.(?=[A-Za-z])|(?=[A-Za-z]))[0-9A-Za-z](?:[0-9A-Za-z.+-]*[0-9A-Za-z+-])?)?"
+EXACT_VERSION_RE = re.compile(r"\d+(?:\.\d+)+" + VERSION_SUFFIX)
+READ_VERSION_RE = re.compile(r"(\d+(?:\.\d+)+)(" + VERSION_SUFFIX + ")")
 NPM_EXACT_RE = re.compile(r"\d+\.\d+\.\d+(?:[-+][0-9A-Za-z][0-9A-Za-z.+-]*)?")
 LOCK_VERSION_RE = re.compile(r"[^\s\x00-\x1f\x7f]{1,64}")
 NPM_NAME_RE = re.compile(r"(?:@[a-z0-9][a-z0-9._-]*/)?[a-z0-9][a-z0-9._-]*")
@@ -206,12 +211,26 @@ def write_stdout(text):
 
 
 def remove_tree(path):
-    """Remove a folder, also one with read-only files, and wait for what Windows refuses to delete for a moment."""
+    """Remove a folder, also one with read-only files, and wait for what Windows refuses to delete for a moment.
+
+    What is not a real folder is unlinked: a file, or a link, whose target is left alone."""
     def retry(function, target, _info):
         toolchain_io.make_writable(target)
         function(target)
 
-    toolchain_io.retrying(lambda: shutil.rmtree(path, onerror=retry))
+    def unlink_link():
+        try:
+            os.unlink(path)
+        except OSError:
+            os.rmdir(path)  # Windows removes a junction like an empty folder
+
+    if is_link(path):
+        toolchain_io.retrying(unlink_link)
+    elif os.path.isdir(path):
+        toolchain_io.retrying(lambda: shutil.rmtree(path, onerror=retry))
+    else:
+        toolchain_io.make_writable(path)
+        toolchain_io.retrying(lambda: os.unlink(path))
 
 
 def display_path(path, root, home):
@@ -883,8 +902,10 @@ def _check_contract(contract, where, out):
             _enum(contract.get("era"), where + ".era", out, ("legacy", "modern"))
             _text(contract.get("protocol"), where + ".protocol", out, DATE_RE)
             if _keys(contract.get("server"), where + ".server", out, ("name", "version")):
-                _text(contract["server"].get("name"), where + ".server.name", out, SERVER_NAME_RE)
-                _text(contract["server"].get("version"), where + ".server.version", out, SERVER_VERSION_RE)
+                for key, pattern in (("name", SERVER_NAME_RE), ("version", SERVER_VERSION_RE)):
+                    value = contract["server"].get(key)
+                    if _text(value, "%s.server.%s" % (where, key), out, pattern) and toolchain_mcp.suspect(value):
+                        out.append("%s.server.%s: must not read like a token, a host name or an address" % (where, key))
             _text(contract.get("package_version"), where + ".package_version", out, LOCK_VERSION_RE)
             _text(contract.get("launch"), where + ".launch", out, SHA256_RE)
             _date(contract.get("captured"), where + ".captured", out)
@@ -1266,6 +1287,11 @@ def select_shared(manifest, lock, entries):
 def instruction_problems(profile, base):
     out = []
     for rel in profile["instructions"]:
+        parts = rel.split("/")[:-1]
+        linked = next(("/".join(parts[:n]) for n in range(1, len(parts) + 1) if is_link(Path(base).joinpath(*parts[:n]))), None)
+        if linked is not None:
+            out.append("instructions '%s' is behind a link: its folder '%s' is a link" % (rel, linked))
+            continue
         try:
             info = os.lstat(Path(base) / rel)
         except OSError:
@@ -1655,44 +1681,33 @@ def check_shared_coverage(source, shared, deps, git_dir, commit):
 
 
 def resolve_source(source, deps, store):
-    """The lock entry of one skill source: the ref, the commit, every plugin's skills with their digests and the shared folders."""
+    """The lock entry of one skill source: the ref, the commit, every plugin's skills with their digests and the shared folders.
+
+    The cache folder of the commit is fetched anew every time: whatever is already there is not trusted, and `fetch_git` replaces it."""
     ref = deps.resolve_git_ref(source["repo"], source["track"], deps.runner)
     commit = ref.get("commit")
     if not (isinstance(commit, str) and COMMIT_RE.fullmatch(commit)):
         raise toolchain_sources.SourceError("unresolved: no commit")
     git_dir = Path(store) / ".cache" / commit[:12]
     declared = shared_by_plugin(source)
-
-    def read_all():
-        plugins, shared = {}, {}
-        for p in source["plugins"]:
-            folders = declared.get(p["name"], ())
-            if folders:
-                info = deps.read_plugin(git_dir, commit, p["path"], deps.runner, shared=folders)
-                held = info.get("shared") if isinstance(info, dict) else None
-                for folder in folders:
-                    entry = held.get(folder) if isinstance(held, dict) else None
-                    if not isinstance(entry, dict):
-                        raise toolchain_sources.SourceError("missing: the shared folder %s is not reported" % folder)
-                    shared[folder] = {"plugin": p["name"], "digest": entry.get("digest"), "files": entry.get("files"), "bytes": entry.get("bytes")}
-            else:
-                info = deps.read_plugin(git_dir, commit, p["path"], deps.runner)
-            plugins[p["name"]] = plugin_entry(p, info)
-        check_shared_coverage(source, shared, deps, git_dir, commit)
-        return plugins, dict(sorted(shared.items()))
-
-    fresh = not git_dir.is_dir()
-    if fresh:
-        git_dir.parent.mkdir(parents=True, exist_ok=True)
-        deps.fetch_git(source["repo"], commit, git_dir, deps.runner)
-    try:
-        plugins, shared = read_all()
-    except toolchain_sources.SourceError:
-        if fresh:
-            raise
-        remove_tree(git_dir)
-        deps.fetch_git(source["repo"], commit, git_dir, deps.runner)
-        plugins, shared = read_all()
+    git_dir.parent.mkdir(parents=True, exist_ok=True)
+    deps.fetch_git(source["repo"], commit, git_dir, deps.runner)
+    plugins, shared = {}, {}
+    for p in source["plugins"]:
+        folders = declared.get(p["name"], ())
+        if folders:
+            info = deps.read_plugin(git_dir, commit, p["path"], deps.runner, shared=folders)
+            held = info.get("shared") if isinstance(info, dict) else None
+            for folder in folders:
+                entry = held.get(folder) if isinstance(held, dict) else None
+                if not isinstance(entry, dict):
+                    raise toolchain_sources.SourceError("missing: the shared folder %s is not reported" % folder)
+                shared[folder] = {"plugin": p["name"], "digest": entry.get("digest"), "files": entry.get("files"), "bytes": entry.get("bytes")}
+        else:
+            info = deps.read_plugin(git_dir, commit, p["path"], deps.runner)
+        plugins[p["name"]] = plugin_entry(p, info)
+    check_shared_coverage(source, shared, deps, git_dir, commit)
+    shared = dict(sorted(shared.items()))
     tag = ref.get("tag") if source["track"]["kind"] == "tag" else None
     entry = {"repo": source["repo"], "tag": tag, "commit": commit, "plugins": dict(sorted(plugins.items()))}
     if shared:
@@ -1702,17 +1717,20 @@ def resolve_source(source, deps, store):
 
 def probe_environment(spec, base, eula, license_envs=()):
     """The variables that a probe declares to the server it starts: the ones the variant names, each from the operator's environment
-    or else its default, and the license variable of this server when the operator set it.
+    or else its default, and the license variable of this server when the operator set it. A variable that the operator set to an empty
+    text counts as not set (the license variable too).
 
     Nothing else of the operator's environment is in it. The probe adds the few variables that every process needs and the registry
     settings (toolchain_mcp.capture_env), and a token or a password of the operator's shell never reaches a server.
     The kit never sets a license variable. It is handed on only to the server that declares it, and only when the operator set it."""
     own = eula["env"] if eula else None
-    env = {own: base[own]} if own is not None and own in base else {}
+    env = {own: base[own]} if own is not None and base.get(own) else {}
     for name, item in spec.items():
         if name == own or name in license_envs:
             continue
-        value = base.get(item["from_env"], item.get("default"))
+        value = base.get(item["from_env"])
+        if value is None or value == "":  # an empty value counts as not set, the way ${NAME:-default} reads it in a host file
+            value = item.get("default")
         if value is not None:
             env[name] = value
     return env
@@ -1727,8 +1745,8 @@ def _clean_label(value):
 
 
 def _server_label(value, pattern):
-    """What a server calls itself, or "unknown" when that is not a plain label (a path, an address, a long text)."""
-    return value if isinstance(value, str) and pattern.fullmatch(value) else "unknown"
+    """What a server calls itself, or "unknown" when that is not a plain label (a path, an address, a long text, a token or a host name)."""
+    return value if isinstance(value, str) and pattern.fullmatch(value) and not toolchain_mcp.suspect(value) else "unknown"
 
 
 def capture_contract(manifest, packages, server, variant, deps):
@@ -1821,24 +1839,48 @@ def strip_generated(lock):
     return {key: value for key, value in lock.items() if key != "generated"}
 
 
-def refresh_digest(manifest, old, deps):
+def lock_package_problems(manifest, lock):
+    """(missing, differs): the declared packages that the lock lacks, and the pinned ones that it does not lock at the version that the manifest pins.
+
+    A package that follows `latest` is whatever the lock holds, so it is never a difference."""
+    missing, differs = [], []
+    for key, package in declared_packages(manifest).items():
+        entry = (lock.get("packages") or {}).get(key)
+        if entry is None:
+            missing.append("package %s" % key)
+        elif package["track"] != "latest" and entry.get("version") != package["track"]:
+            held = "no resolved version" if entry.get("version") is None else "version %s" % _shown(entry["version"])
+            differs.append("the lock has %s for package %s, but the manifest pins %s" % (held, key, package["track"]))
+    return missing, differs
+
+
+def refresh_digest(manifest, old, deps, profiles=None):
     """`lock --no-network`: (lock, notes). The old lock with the digest of the edited manifest and nothing else changed, except that a
     captured contract is dropped when its variant launches differently now.
 
-    That is only honest when the lock still agrees with the manifest about where the skills come from, and a captured contract
-    stays only while its variant launches the way it did when the contract was captured."""
+    That is only honest when the lock still agrees with the manifest about where the skills come from and which versions the packages
+    are pinned to, and a captured contract stays only while its variant launches the way it did when the contract was captured.
+    Given the profiles, a contract of a variant that no profile uses is left out, as `lock` leaves it out, and not replaced by a placeholder."""
     missing, differs = lock_source_problems(manifest, old)
     if missing or differs:
         raise ToolchainError("a changed source or plugin path needs a lock with the network",
                              ["the lock has no entry for %s" % m for m in missing] + differs)
+    missing, differs = lock_package_problems(manifest, old)
+    if missing or differs:
+        raise ToolchainError("a changed package pin needs a lock with the network",
+                             ["the lock has no entry for %s" % m for m in missing] + differs)
     lock = copy.deepcopy(dict(old))
     lock["inputs_digest"] = inputs_digest(manifest)
+    used = None if profiles is None else {"%s/%s" % pair for pair in used_variants(manifest, profiles)}
     notes = []
-    for key, contract in lock["contracts"].items():
+    for key, contract in list(lock["contracts"].items()):
         sid, _, variant = key.partition("/")
         launch = current_launch(manifest, lock["packages"], sid, variant)
         if contract.get("status") == "captured" and launch is not None and contract.get("launch") != launch:
-            lock["contracts"][key] = skipped("launch changed")
+            if used is None or key in used:
+                lock["contracts"][key] = skipped("launch changed")
+            else:
+                del lock["contracts"][key]
             notes.append("dropped the captured contract of %s: its launch changed" % key)
     lock["generated"] = deps.today() if strip_generated(lock) != strip_generated(old) else old["generated"]
     return Lock(lock), notes
@@ -2127,11 +2169,18 @@ def select_hosts(manifest, deps, requested, defaults=None):
 
 
 def repo_skill_folders(base):
-    """The skills this repository owns under <toolchain folder>/skills: {name: folder}."""
+    """The skills this repository owns under <toolchain folder>/skills: {name: folder}. A link is refused: they are read from real folders only."""
     root = Path(base) / "skills"
+    if is_link(root):
+        raise ToolchainError("toolchain/skills is a link; the toolchain reads the skills of this repository from real folders only")
     if not root.is_dir():
         return {}
-    found = {p.name: p for p in sorted(root.iterdir()) if p.is_dir() and (p / "SKILL.md").is_file()}
+    found = {}
+    for entry in sorted(root.iterdir()):
+        if entry.is_dir() and (entry / "SKILL.md").is_file():
+            if is_link(entry):
+                raise ToolchainError("toolchain/skills/%s is a link; the toolchain reads the skills of this repository from real folders only" % _shown(entry.name))
+            found[entry.name] = entry
     for name in found:
         if not SKILL_RE.fullmatch(name):
             raise ToolchainError("toolchain/skills/%s: a skill folder is named with lower-case letters, digits and hyphens" % _shown(name))
@@ -2163,8 +2212,21 @@ def read_marker(path):
     return data
 
 
+def _pack_folder_problem(deps, folder, digest, what, linked):
+    """The FAIL for a folder of the local pack that is behind a link, cannot be measured or differs from the lock; None when it holds the locked content."""
+    if linked:
+        return ("FAIL", "the local pack holds %s behind a link; the toolchain reads the pack from real folders only" % what)
+    measured = _measured(deps, folder)
+    if measured is None:
+        return ("FAIL", "the local pack holds %s that cannot be measured (it is not a readable folder)" % what)
+    if measured != digest:
+        return ("FAIL", "the local pack holds %s with content that differs from the lock" % what)
+    return None
+
+
 def store_problems(store, skills, lock, deps, shared=()):
-    """[(level, message)] about the local pack: absent or stale (WARN), or a skill or shared folder that does not match the lock (FAIL)."""
+    """[(level, message)] about the local pack: absent or stale (WARN), or a skill or shared folder that does not match the lock, is behind a link
+    or cannot be measured (FAIL). A link inside a folder is measured as part of its content, so it makes the content differ."""
     manifest_path = Path(store) / "MANIFEST.json"
     if not manifest_path.is_file():
         return [("WARN", "the local pack has no MANIFEST.json")]
@@ -2177,14 +2239,18 @@ def store_problems(store, skills, lock, deps, shared=()):
     listed_shared = pack.get("shared") if isinstance(pack, dict) and isinstance(pack.get("shared"), dict) else {}
     if not isinstance(pack, dict) or pack.get("lock_inputs_digest") != lock["inputs_digest"]:
         out.append(("WARN", "the local pack was built from another lock"))
+    skills_dir = Path(store) / "skills"
     for skill in skills:
-        folder = Path(store) / "skills" / skill["name"]
-        if skill["name"] not in listed or listed[skill["name"]].get("digest") != skill["digest"]:
+        folder = skills_dir / skill["name"]
+        entry = listed.get(skill["name"])
+        if not isinstance(entry, dict) or entry.get("digest") != skill["digest"]:
             out.append(("WARN", "the local pack does not list skill %s at the locked digest" % skill["name"]))
         elif not folder.is_dir():
             out.append(("WARN", "the local pack lacks the folder of skill %s" % skill["name"]))
-        elif deps.digest_tree(folder)["digest"] != skill["digest"]:
-            out.append(("FAIL", "the local pack holds skill %s with content that differs from the lock" % skill["name"]))
+        else:
+            problem = _pack_folder_problem(deps, folder, skill["digest"], "skill " + skill["name"], is_link(skills_dir) or is_link(folder))
+            if problem:
+                out.append(problem)
     for item in shared:
         folder = Path(store) / item["folder"]
         entry = listed_shared.get(item["folder"])
@@ -2192,8 +2258,10 @@ def store_problems(store, skills, lock, deps, shared=()):
             out.append(("WARN", "the local pack does not list shared folder %s at the locked digest" % item["folder"]))
         elif not folder.is_dir():
             out.append(("WARN", "the local pack lacks the shared folder %s" % item["folder"]))
-        elif deps.digest_tree(folder)["digest"] != item["digest"]:
-            out.append(("FAIL", "the local pack holds the shared folder %s with content that differs from the lock" % item["folder"]))
+        else:
+            problem = _pack_folder_problem(deps, folder, item["digest"], "the shared folder " + item["folder"], is_link(folder))
+            if problem:
+                out.append(problem)
     return out
 
 
@@ -2297,9 +2365,10 @@ def _check_project_files(project, deps, manifest, profiles, lock, f):
             f.add("PASS", "V5", "%s equals the rendering of profile %s" % (rel, name))
 
 
-def _entries_missing(path, host, rendering, label, level, f, needs_one=False):
+def _entries_missing(path, host, rendering, label, level, f, needs_one=False, hint=None):
     """Compare the servers of a host file with a rendering. With needs_one the file is compared only when it already holds a server
-    of the rendering: a user file that holds none was not written by this kit, so what it lacks is not a defect."""
+    of the rendering: a user file that holds none was not written by this kit, so what it lacks is not a defect.
+    The `hint`, the command that puts the servers in place, ends each line that it is given for."""
     container = "servers" if host == "vscode" else "mcpServers"
     try:
         current = read_json(path, label)
@@ -2310,11 +2379,12 @@ def _entries_missing(path, host, rendering, label, level, f, needs_one=False):
     servers = servers if isinstance(servers, dict) else {}
     if needs_one and not any(sid in servers for sid in rendering[container]):
         return
+    tail = " (%s)" % hint if hint else ""
     for sid, entry in rendering[container].items():
         if sid not in servers:
-            f.add(level, "V9", "%s lacks the server %s" % (label, sid))
+            f.add(level, "V9", "%s lacks the server %s%s" % (label, sid, tail))
         elif servers[sid] != entry:
-            f.add(level, "V9", "%s holds a different entry for the server %s" % (label, sid))
+            f.add(level, "V9", "%s holds a different entry for the server %s%s" % (label, sid, tail))
 
 
 def has_skills(resolved):
@@ -2327,14 +2397,15 @@ def hosts_label(path, owners):
     return path if len(owners) < 2 else "%s (%s)" % (path, ", ".join(owners))
 
 
-def skills_dir_problems(project, deps, resolved, directory, label, marker):
+def skills_dir_problems(project, deps, resolved, directory, label, marker, hint):
     """What the marker and the disk say about one skills folder compared with what the profile needs:
     (skill problems, shared-folder problems) as plain sentences. A skill the profile needs must be in the marker and on disk with
-    the locked digest; a managed entry that the profile does not need is left over."""
+    the locked digest; a managed entry that the profile does not need is left over. `hint` is the install command that puts the
+    profile in place for the hosts of this folder."""
     name = resolved["name"]
     skills, shared = [], []
     if marker["profile"] != name:
-        skills.append("%s was installed for profile %s, not profile %s (%s --profile %s)" % (label, marker["profile"], name, INSTALL_HINT, name))
+        skills.append("%s was installed for profile %s, not profile %s (%s)" % (label, marker["profile"], name, hint))
     needed = {s["name"]: ("locked", s["digest"]) for s in resolved["skills"]}
     needed.update({r["name"]: ("repo", r["digest"]) for r in resolved["repo_skills"]})
     for skill, (kind, digest) in needed.items():
@@ -2345,7 +2416,10 @@ def skills_dir_problems(project, deps, resolved, directory, label, marker):
         elif not folder.is_dir():
             skills.append("managed skill %s is missing from %s" % (skill, label))
         else:
-            if deps.digest_tree(folder)["digest"] != recorded:
+            measured = _measured(deps, folder)
+            if measured is None:
+                skills.append("managed skill %s in %s cannot be measured (it is not a readable folder)" % (skill, label))
+            elif measured != recorded:
                 skills.append("managed skill %s in %s differs from its recorded digest" % (skill, label))
             if recorded != digest:
                 skills.append("repo-owned skill %s changed since it was installed in %s" % (skill, label) if kind == "repo"
@@ -2360,19 +2434,23 @@ def skills_dir_problems(project, deps, resolved, directory, label, marker):
             shared.append((where, "of profile %s is not installed (the skills in %s link to it)" % (name, label)))
         elif not folder.is_dir():
             shared.append((where, "is missing (the skills in %s link to it)" % label))
-        elif deps.digest_tree(folder)["digest"] != item["digest"]:
-            shared.append((where, "differs from the lock"))
+        else:
+            measured = _measured(deps, folder)
+            if measured is None:
+                shared.append((where, "cannot be measured (it is not a readable folder)"))
+            elif measured != item["digest"]:
+                shared.append((where, "differs from the lock"))
     wanted_shared = {item["folder"] for item in resolved["shared"]}
     shared.extend((project.shown(directory.parent / folder, deps), "is left over from profile %s" % marker["profile"])
                   for folder in recorded_shared if folder not in wanted_shared)
     return skills, shared
 
 
-def _check_skills_dir(project, deps, lock, resolved, directory, label, required, f):
+def _check_skills_dir(project, deps, lock, resolved, directory, label, required, hint, f):
     marker_path = directory / MARKER
     if not marker_path.is_file():
         if required:
-            f.add("FAIL", "V9", "%s has no managed skills marker (run: python scripts/toolchain.py install --apply)" % label)
+            f.add("FAIL", "V9", "%s has no managed skills marker (%s)" % (label, hint))
         return
     try:
         marker = read_marker(marker_path)
@@ -2381,14 +2459,14 @@ def _check_skills_dir(project, deps, lock, resolved, directory, label, required,
         return
     if marker["lock"] != lock_digest(lock):
         f.add("FAIL", "V9", "%s was installed from another lock: the marker is stale" % label)
-    skills, shared = skills_dir_problems(project, deps, resolved, directory, label, marker)
+    skills, shared = skills_dir_problems(project, deps, resolved, directory, label, marker, hint)
     for problem in skills:
         f.add("FAIL", "V9", problem)
     for where, detail in shared:
         f.add("FAIL", "V9", "shared folder %s %s" % (where, detail))
 
 
-def _check_precedence(project, manifest, resolved, name, f, check="V9", hint=CLAUDE_HINT):
+def _check_precedence(project, manifest, resolved, name, f, check, hint):
     """Copilot CLI reads a project .mcp.json before .github/mcp.json, so one that is not the rendering of the profile hides the pinned servers."""
     claude, copilot = manifest["hosts"].get("claude-code"), manifest["hosts"].get("copilot-cli")
     if not claude or not copilot:
@@ -2405,21 +2483,24 @@ def _check_precedence(project, manifest, resolved, name, f, check="V9", hint=CLA
               % (claude["mcp_project"], copilot["mcp_project"], name, hint))
 
 
-def install_command(profile, default, hosts=()):
+def install_command(profile, default, hosts=(), scope="project"):
     """The install command that puts `profile` in place for `hosts`: --host for a host that install does not pick on its own (Claude Code),
-    --profile unless the profile is the default one, because that is what install and render --write-project do without it."""
+    --profile unless the profile is the default one, because that is what install and render --write-project do without it, and
+    --scope user when the folder or file that a report is about is the user's, because install writes the project's without it."""
     command = INSTALL_HINT
     if any(host not in DEFAULT_HOSTS for host in hosts):
         command += " --host " + " ".join(hosts)
     if profile != default:
         command += " --profile " + profile
+    if scope == "user":
+        command += " --scope user"
     return command
 
 
-def mcp_hint(host, profile=None, default=None):
+def mcp_hint(host, profile, default):
     """What to run for a project MCP file that is missing or differs: render --write-project writes the Copilot CLI and VS Code files of the
     default profile, and install writes the .mcp.json of Claude Code and every other profile."""
-    if profile is not None and profile != default:
+    if profile != default:
         return install_command(profile, default, [host])
     return CLAUDE_HINT if host == "claude-code" else RENDER_HINT
 
@@ -2451,6 +2532,7 @@ def _check_tool_pins(manifest, deps, resolved, f):
 
 def _check_live(project, deps, manifest, profiles, lock, f, hosts, names, store):
     hosts = select_hosts(manifest, deps, hosts, DEFAULT_HOSTS)
+    default = manifest["default_profile"]
     if not hosts:
         f.add("INFO", "V9", "no host binary found on PATH, so there is nothing live to check (pass --host)")
     for name in names:
@@ -2471,19 +2553,22 @@ def _check_live(project, deps, manifest, profiles, lock, f, hosts, names, store)
                 if path.is_file():
                     _entries_missing(path, host, rendering, spec["mcp_project"], "FAIL", f)
                 else:
-                    f.add("FAIL", "V9", "%s is missing, so %s has no MCP servers for profile %s (%s)" % (spec["mcp_project"], host, name, mcp_hint(host)))
+                    f.add("FAIL", "V9", "%s is missing, so %s has no MCP servers for profile %s (%s)"
+                          % (spec["mcp_project"], host, name, mcp_hint(host, name, default)))
             if host == "copilot-cli":
-                _check_precedence(project, manifest, resolved, name, f)
+                _check_precedence(project, manifest, resolved, name, f, "V9", install_command(name, default, ["claude-code"]))
             if spec.get("mcp_user"):
                 user = Path(expand_home(spec["mcp_user"], deps.home))
                 if user.is_file():
-                    _entries_missing(user, host, rendering, project.shown(user, deps), "WARN", f, needs_one=True)
-            folders.setdefault(project.root / spec["skills_project"], [spec["skills_project"], [], has])[1].append(host)
+                    _entries_missing(user, host, rendering, project.shown(user, deps), "WARN", f, needs_one=True,
+                                     hint=install_command(name, default, [host], "user"))
+            folders.setdefault(project.root / spec["skills_project"], [spec["skills_project"], [], has, "project"])[1].append(host)
             if spec.get("skills_user"):
                 directory = Path(expand_home(spec["skills_user"], deps.home))
-                folders.setdefault(directory, [project.shown(directory, deps), [], False])[1].append(host)
-        for directory, (text, owners, required) in folders.items():
-            _check_skills_dir(project, deps, lock, resolved, directory, hosts_label(text, owners), required, f)
+                folders.setdefault(directory, [project.shown(directory, deps), [], False, "user"])[1].append(host)
+        for directory, (text, owners, required, scope) in folders.items():
+            _check_skills_dir(project, deps, lock, resolved, directory, hosts_label(text, owners), required,
+                              install_command(name, default, owners, scope), f)
         pack = project.store(store)
         if (pack / "MANIFEST.json").is_file() and resolved["skills"]:
             for level, message in store_problems(pack, resolved["skills"], lock, deps, resolved["shared"]):
@@ -2520,6 +2605,10 @@ def _check_contracts(manifest, profiles, lock, deps, names, f):
             if contract["package_version"] != lock["packages"][package_key(server["package"])]["version"]:
                 f.add("WARN", "V10", "contract %s was captured for package version %s, not the locked one" % (key, contract["package_version"]))
                 continue
+            # profile_findings already fails every profile that uses it (V10); a launch line that nobody reviewed is not run
+            if contract.get("launch") != launch_digest(launch):
+                f.add("WARN", "V10", "contract %s was not launched: it was captured for another launch (capture it again with python scripts/toolchain.py lock --contracts)" % key)
+                continue
             try:
                 live = deps.probe_stdio([launch["command"]] + launch["args"],
                                         env=bounded_environment(probe_environment(launch["env"], deps.env, eula, license_variables(manifest)), contract["captured"]),
@@ -2528,7 +2617,7 @@ def _check_contracts(manifest, profiles, lock, deps, names, f):
                 f.add("FAIL", "V10", "contract %s could not be checked: %s" % (key, unavailable_from(exc)["reason"]))
                 continue
             delta = deps.contract_diff(contract["tools"], live.get("tools") or {})
-            drift = ["%s %s" % (k, ", ".join(sorted(delta.get(k, [])))) for k in ("added", "removed", "changed") if delta.get(k)]
+            drift = ["%s %s" % (k, ", ".join(_clean_label(name) for name in sorted(delta.get(k, [])))) for k in ("added", "removed", "changed") if delta.get(k)]
             if drift:
                 f.add("FAIL", "V10", "contract drift in %s: tools %s" % (key, "; ".join(drift)))
             else:
@@ -2793,9 +2882,11 @@ def cmd_lock(args, deps, root):
     if args.no_network:
         if old is None:
             raise ToolchainError("--no-network needs an existing lock: " + LOCK_HINT)
-        new, notes = refresh_digest(project.manifest, old, deps)
+        new, notes = refresh_digest(project.manifest, old, deps, project.profiles)
     else:
-        new, notes = build_lock(project.manifest, project.profiles, old, deps, project.store(), args.contracts, args.only)
+        store = project.store()
+        refuse_resolve_links(project, deps, store)
+        new, notes = build_lock(project.manifest, project.profiles, old, deps, store, args.contracts, args.only)
     for note in notes:
         print("note: " + note)
     if args.check:
@@ -2818,7 +2909,9 @@ def cmd_update(args, deps, root):
     project = Project(root).load(lock="skip")
     manifest, profiles = project.manifest, project.profiles
     old = load_lock(project.lock_path) if project.lock_path.is_file() else None
-    new, notes = build_lock(manifest, profiles, old, deps, project.store(), args.contracts)
+    store = project.store()
+    refuse_resolve_links(project, deps, store)
+    new, notes = build_lock(manifest, profiles, old, deps, store, args.contracts)
     diff = diff_locks(old, new, deps)
     changed = old is None or strip_generated(new) != strip_generated(old)
     breaks = what_breaks(manifest, profiles, old, new)
@@ -2848,20 +2941,12 @@ def cmd_fetch(args, deps, root):
     project = Project(root).load(fresh=True)
     manifest, profiles, lock = project.manifest, project.profiles, project.lock
     names = [project.profile_name(n) for n in args.profile] if args.profile else [n for n, p in profiles["profiles"].items() if p["skills"]]
+    deps = deps.derive(lint_skill=_lint_once(deps.lint_skill))  # every selected profile is resolved, and a repo-owned skill is linted once
     selection, shared = set(), set()
-    repo_lint = None
     for name in names:
-        entries, problems = select_skills(manifest, lock, profiles["profiles"][name])
-        folders, folder_problems = select_shared(manifest, lock, entries)
-        problems = problems + folder_problems
-        if profiles["profiles"][name]["skills"]:
-            if repo_lint is None:  # the skills of this repository are skills of the profile too, and a finding in their text fails in every mode
-                repo_lint = repo_skill_findings(repo_skill_folders(project.dir), deps)
-            problems.extend("repo-owned skill %s: %s" % pair for pair in repo_lint)
-        if problems:
-            raise ToolchainError("profile %s cannot load its skills" % name, ["profile %s: %s" % (name, p) for p in problems])
-        selection.update((e["source"], e["plugin"], e["name"]) for e in entries)
-        shared.update((s["source"], s["folder"]) for s in folders)
+        resolved = resolve_profile(manifest, profiles, lock, name, deps=deps)
+        selection.update((s["source"], s["plugin"], s["name"]) for s in resolved["skills"])
+        shared.update((s["source"], s["folder"]) for s in resolved["shared"])
     if not selection:
         print("nothing to fetch: the selected profiles load no skill")
         return 0
@@ -2897,13 +2982,16 @@ def apply_op(op):
 
 
 def copy_tree(source, target):
-    """Copy a folder of files. A symbolic link is refused: skills are copied, never linked."""
+    """Copy a folder of files. A link is refused, the folder itself and everything in it: skills are copied, never linked."""
+    refusal = ToolchainError("%s holds a symbolic link; skills are copied, never linked" % Path(source).name)
+    if is_link(source):
+        raise refusal
     for folder, dirs, names in os.walk(source):
         relative = Path(folder).relative_to(source)
         (Path(target) / relative).mkdir(parents=True, exist_ok=True)
         for entry in dirs + names:
-            if (Path(folder) / entry).is_symlink():
-                raise ToolchainError("%s holds a symbolic link; skills are copied, never linked" % Path(source).name)
+            if is_link(Path(folder) / entry):
+                raise refusal
         for name in names:
             shutil.copyfile(Path(folder) / name, Path(target) / relative / name)
 
@@ -2951,6 +3039,12 @@ def refuse_store_links(project, deps, store):
     when the folder itself is a link: what lies above it is the user's choice."""
     store, root = Path(os.path.abspath(store)), Path(os.path.abspath(project.root))
     refuse_links(store, root if root in store.parents else store.parent, project.root, deps.home)
+
+
+def refuse_resolve_links(project, deps, store):
+    """What `lock` and `update` resolve into: the pack folder and what lies above it, as for a fetch, and the folder of the git caches in it."""
+    refuse_store_links(project, deps, store)
+    refuse_links(Path(store) / ".cache", store, project.root, deps.home)
 
 
 def _copier(source, dest, digest, deps, what, guard):
@@ -3021,19 +3115,25 @@ def store_op(project, deps, resolved, store):
     return make_op("add", "+ store %s: fetch %d skill(s) (%s)" % (label, len(selection), sorted({m for _l, m in problems})[0]), apply=run)
 
 
+def _measured(deps, folder):
+    """The digest of a folder, or None for one that cannot be measured (a file in its place, a file in it that cannot be read)."""
+    try:
+        return deps.digest_tree(folder)["digest"]
+    except toolchain_sources.SourceError:
+        return None
+
+
 def _has_content(deps, folder, digest):
     """Whether a folder that the kit did not install holds exactly the pinned content. A folder that cannot be measured does not."""
-    try:
-        return deps.digest_tree(folder)["digest"] == digest
-    except toolchain_sources.SourceError:
-        return False
+    return _measured(deps, folder) == digest
 
 
 def _managed_ops(kind, wanted, managed, base, base_label, force, deps, guard):
     """The operations that make `base` hold the wanted folders: (ops, what the marker should record afterwards).
 
     `kind` is "skill" or "shared". The marker says what the kit installed and with which content. A managed folder whose content
-    is no longer the recorded one was edited by its owner, so it is neither replaced nor removed without --force."""
+    is no longer the recorded one was edited by its owner, so it is neither replaced nor removed without --force. One that cannot
+    be measured counts as edited."""
     noun = "shared folder" if kind == "shared" else kind
     ending = "the profile no longer needs it" if kind == "shared" else "it left the profile"
     ops, target = [], {}
@@ -3056,7 +3156,7 @@ def _managed_ops(kind, wanted, managed, base, base_label, force, deps, guard):
                 ops.append(make_op("conflict", "! %s %s: %s/%s exists and is not managed by the toolchain (use --force to replace it)"
                                    % (kind, name, base_label, name)))
         else:
-            actual = deps.digest_tree(dest)["digest"]
+            actual = _measured(deps, dest)
             if actual == item["digest"]:
                 ops.append(make_op("same", "= %s %s" % (kind, name)))
                 target[name] = item["digest"]
@@ -3071,7 +3171,7 @@ def _managed_ops(kind, wanted, managed, base, base_label, force, deps, guard):
         if name in wanted or not os.path.lexists(folder):
             continue
         guard(folder)
-        if not force and deps.digest_tree(folder)["digest"] != managed[name]:
+        if not force and _measured(deps, folder) != managed[name]:
             ops.append(make_op("conflict", "! %s %s: modified since it was installed; use --force to remove it" % (kind, name)))
             target[name] = managed[name]
         else:
@@ -3268,7 +3368,7 @@ def at_least(found, minimum):
 
 def read_version(text):
     """(numbers, suffix) of the first version that a text holds: ((4, 0, 0), '-beta.4') for 'tool 4.0.0-beta.4'; None when it holds no number."""
-    match = re.search(r"(\d+(?:\.\d+)+)([-+][0-9A-Za-z][0-9A-Za-z.+-]*)?", text) or re.search(r"(\d+)()", text)
+    match = READ_VERSION_RE.search(text) or re.search(r"(\d+)()", text)
     return (tuple(int(part) for part in match.group(1).split(".")), match.group(2) or "") if match else None
 
 
@@ -3350,7 +3450,7 @@ def _doctor_lock(project, manifest, profiles, name, f):
     return lock
 
 
-def _doctor_skills(project, deps, resolved, rel, owners, f, hint=INSTALL_HINT):
+def _doctor_skills(project, deps, resolved, rel, owners, f, hint):
     """The managed skills of one skills folder, printed once for the hosts that share it. `hint` is the install command that puts them right."""
     directory = project.root / rel
     check = "host %s skills" % ", ".join(owners)
@@ -3364,7 +3464,7 @@ def _doctor_skills(project, deps, resolved, rel, owners, f, hint=INSTALL_HINT):
     except ToolchainError:
         f.add("WARN", check, "the managed marker in %s is unreadable" % rel)
         return
-    skills, shared = skills_dir_problems(project, deps, resolved, directory, rel, marker)
+    skills, shared = skills_dir_problems(project, deps, resolved, directory, rel, marker, hint)
     for problem in skills:
         f.add("FAIL", check, problem)
     if marker["lock"] != resolved["lock"]:
@@ -3564,7 +3664,7 @@ def main(argv=None, deps=None):
             if problem != str(exc):
                 print("  - %s" % problem, file=sys.stderr)
         return 2 if isinstance(exc, UsageError) else 1
-    except OSError as exc:  # a full disk or a locked file: a sentence without paths, never a traceback
+    except (OSError, toolchain_sources.SourceError) as exc:  # a full disk, a locked file, a folder that cannot be read: a sentence without paths, never a traceback
         print("error: %s" % (toolchain_io.safe_detail(exc) or type(exc).__name__), file=sys.stderr)
         return 1
 

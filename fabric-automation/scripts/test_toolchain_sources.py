@@ -2,8 +2,9 @@
 """Tests for toolchain_sources.py: directory and git digests, skill lint, git and package resolvers, and vendoring a pinned pack.
 
 Git is real. A small repository is built once with `git fast-import` in a temp folder and used through file:// URLs, with the
-user's and the system's git configuration switched off. The package resolvers run against a fake runner that answers from a
-table, so no network and no npm are used. Run from the project folder:
+user's and the system's git configuration switched off. A few tests make a throw-away certificate with the openssl command line
+(they are skipped where there is none) and run git against a server on the loopback address. The package resolvers run against a
+fake runner that answers from a table, so no network and no npm are used. Run from the project folder:
 
     python -m unittest scripts.test_toolchain_sources -v
 """
@@ -11,13 +12,18 @@ table, so no network and no npm are used. Run from the project folder:
 import base64
 import contextlib
 import hashlib
+import http.client
+import http.server
 import json
 import os
 import shutil
+import socket
+import ssl
 import stat
 import subprocess
 import sys
 import tempfile
+import threading
 import types
 import unittest
 from pathlib import Path
@@ -63,8 +69,8 @@ def make_folder_link(link, target):
 
 
 def remove_folder_link(link):
-    """Remove what make_folder_link made, never what it points to."""
-    if os.path.lexists(link):
+    """Remove what make_folder_link made, never what it points to. Nothing is done when the link is gone or a real folder has taken its place."""
+    if is_any_link(link):
         try:
             os.unlink(link)
         except OSError:
@@ -1191,16 +1197,23 @@ class FetchGitTests(unittest.TestCase):
         ts.fetch_git(FX.url, FX.commits[3], self.dest, self.runner)
         self.assertEqual(spec_digest(GOOD_FILES), ts.digest_git_tree(self.dest, FX.commits[3], "plugins/alpha/skills/good-skill", self.runner))
 
-    def test_a_second_call_for_the_same_commit_does_not_fetch_again(self):
+    def test_a_second_call_for_the_same_commit_makes_a_new_cache_and_fetches_again(self):
+        # Changed on purpose in round 9: this test used to check that the second call did not fetch. A cache folder that is already there is
+        # never reused, because what it holds cannot be trusted.
         ts.fetch_git(FX.url, FX.commits[3], self.dest, self.runner)
+        (self.dest / "stray.txt").write_text("left by the first call", encoding="utf-8")
         self.runner.calls.clear()
-        ts.fetch_git(FX.url, FX.commits[3], self.dest, self.runner)
-        self.assertFalse(any("fetch" in argv for argv in self.runner.argvs()))
+        self.assertEqual(self.dest, ts.fetch_git(FX.url, FX.commits[3], self.dest, self.runner))
+        self.assertEqual(["init", "fetch"], [word for argv in self.runner.argvs() for word in ("init", "fetch") if word in argv],
+                         "the second call must make a new repository and fetch into it")
+        self.assertTrue(self.has(self.dest, FX.commits[3]))
+        self.assertFalse((self.dest / "stray.txt").exists(), "the old folder was reused")
 
-    def test_another_commit_can_join_an_existing_cache(self):
+    def test_another_commit_does_not_join_an_existing_cache_it_replaces_it(self):
+        # Changed on purpose in round 9: this test used to check that a second commit joined the cache of the first.
         ts.fetch_git(FX.url, FX.commits[2], self.dest, self.runner)
         ts.fetch_git(FX.url, FX.commits[3], self.dest, self.runner)
-        self.assertTrue(self.has(self.dest, FX.commits[2]))
+        self.assertFalse(self.has(self.dest, FX.commits[2]), "the old cache was kept")
         self.assertTrue(self.has(self.dest, FX.commits[3]))
 
     def test_git_runs_anonymously_and_the_file_protocol_only_for_file_urls(self):
@@ -1244,7 +1257,8 @@ class FetchGitTests(unittest.TestCase):
             self.assertEqual([], fake.calls)
 
 
-NETWORK_DROPPED = ("GIT_CONFIG_COUNT", "GIT_CONFIG_PARAMETERS", "GIT_ASKPASS", "GIT_SSH", "GIT_SSH_COMMAND", "SSH_ASKPASS")
+NETWORK_ONLY_DROPPED = ("GIT_ASKPASS", "GIT_SSH", "GIT_SSH_COMMAND", "SSH_ASKPASS", "NETRC", "GIT_SSL_CERT", "GIT_SSL_KEY", "GIT_SSL_CERT_PASSWORD_PROTECTED")
+NETWORK_DROPPED = ("GIT_CONFIG_COUNT", "GIT_CONFIG_PARAMETERS") + NETWORK_ONLY_DROPPED
 
 
 @unittest.skipUnless(HAS_GIT, "git is not installed")
@@ -1281,7 +1295,8 @@ class PrivateGitSettingsTests(unittest.TestCase):
             options = argv[1:subcommand]
             self.assertIn("protocol.ext.allow=never", options, label)
             self.assertIn("credential.helper=", options, label)
-            for setting in ("protocol.ext.allow=never", "credential.helper="):
+            self.assertIn("http.emptyAuth=false", options, label)
+            for setting in ("protocol.ext.allow=never", "credential.helper=", "http.emptyAuth=false"):
                 self.assertEqual("-c", options[options.index(setting) - 1], label)
 
     def test_a_network_call_for_an_https_address_allows_https_only(self):
@@ -1324,7 +1339,7 @@ class PrivateGitSettingsTests(unittest.TestCase):
         for argv, env in local:
             self.check_private(env, argv[1:6])
             self.assertFalse(env.get("GIT_ALLOW_PROTOCOL"), argv[1:6])
-            for name in ("GIT_ASKPASS", "GIT_SSH", "GIT_SSH_COMMAND", "SSH_ASKPASS"):
+            for name in NETWORK_ONLY_DROPPED:
                 self.assertNotIn(name, env, argv[1:6])
 
     def test_the_private_environment_is_built_for_each_call(self):
@@ -1446,8 +1461,9 @@ class CwdRecordingRunner(RecordingRunner):
 
 
 class GitIsolationTests(unittest.TestCase):
-    """Git is told nothing about a repository of the operator: no variable names one, a call that has none of ours runs in an empty
-    folder of its own, and a cache folder holds the minimal configuration whatever it held before. No real git is needed."""
+    """Git is told nothing about a repository or a home folder of the operator: no variable names one, a call that has none of ours runs in
+    an empty folder of its own that is also its home, and a cache folder is removed and made again, with the minimal configuration,
+    whatever it held before. No real git is needed."""
 
     URL = "https://example.test/o/r.git"
     TRACK = {"kind": "tag", "pattern": "v*"}
@@ -1472,6 +1488,16 @@ class GitIsolationTests(unittest.TestCase):
         self.assertFalse(os.path.exists(cwd), "the folder was not removed")
         self.assertEqual(os.path.realpath(cwd), cwd)
         self.assertEqual(os.path.dirname(cwd), env.get("GIT_CEILING_DIRECTORIES"), "the ceiling is the parent of the folder")
+        self.assertHomeIsTheFolder(cwd, env)
+
+    def assertHomeIsTheFolder(self, cwd, env):
+        """The empty folder of the call is its home folder under every name that git or libcurl may look for it, and the names that
+        git on Windows builds a home folder from are removed."""
+        for name in ("HOME", "USERPROFILE", "XDG_CONFIG_HOME"):
+            self.assertEqual(cwd, env.get(name), "%s does not name the empty folder of the call" % name)
+        for name in ("HOMEDRIVE", "HOMEPATH"):
+            self.assertIn(name, env, name)
+            self.assertIsNone(env[name], "%s is not removed from the child" % name)
 
     def test_the_variables_that_name_a_repository_are_removed_from_every_call(self):
         for network, file_url in ((False, False), (True, False), (True, True)):
@@ -1497,6 +1523,48 @@ class GitIsolationTests(unittest.TestCase):
         self.resolve_fails(fake)
         self.resolve_fails(fake)
         self.assertEqual(2, len(set(fake.cwds)))
+
+    def test_a_network_call_turns_off_the_empty_credentials_that_answer_a_negotiate_challenge(self):
+        # git's default (http.emptyAuth=auto) asks again with empty credentials when a 401 advertises Negotiate, and libcurl with SSPI then
+        # answers with the logon session of the operator. A -c key that a git does not know is ignored, so an older git takes it harmlessly.
+        def assertTurnedOff(argv, label):
+            subcommand = min(index for index, word in enumerate(argv) if word in ("ls-remote", "fetch") or word.startswith("--git-dir"))
+            options = argv[1:subcommand]
+            self.assertIn("http.emptyAuth=false", options, label)
+            self.assertEqual("-c", options[options.index("http.emptyAuth=false") - 1], label)
+
+        for url in (self.URL, "file:///tc-nowhere/r.git"):
+            assertTurnedOff(ts._network_argv(url, "ls-remote", "--tags", url), url)
+        fake = FakeGit()
+        self.resolve_fails(fake)
+        ts.fetch_git(self.URL, "ab" * 20, self.dir / "cache", fake)
+        network = [argv for argv in fake.calls if "ls-remote" in argv or "fetch" in argv]
+        self.assertEqual(2, len(network))
+        for argv in network:
+            assertTurnedOff(argv, "ls-remote" if "ls-remote" in argv else "fetch")
+
+    def test_the_empty_folder_of_every_call_that_makes_one_is_also_its_home_folder(self):
+        fake = FakeGit()
+        self.resolve_fails(fake)
+        ts.fetch_git(self.URL, "ab" * 20, self.dir / "cache", fake)
+        folders = [(argv, fake.envs[index], fake.cwds[index]) for index, argv in enumerate(fake.calls) if fake.cwds[index]]
+        self.assertEqual(["ls-remote", "init", "fetch"], [next(word for word in ("ls-remote", "init", "fetch") if word in argv) for argv, _, _ in folders])
+        for argv, env, cwd in folders:
+            self.assertHomeIsTheFolder(cwd, env)
+
+    def test_the_child_has_the_empty_folder_as_its_home_whatever_the_operator_has_set(self):
+        # libcurl inside git reads ~/.netrc (and _netrc on Windows) and the file that NETRC names, and git offers the client certificate
+        # that GIT_SSL_CERT names: a call that is meant to be anonymous must not get any of them.
+        hostile = {"HOME": "operator-home", "USERPROFILE": "operator-profile", "XDG_CONFIG_HOME": "operator-xdg", "HOMEDRIVE": "Z:", "HOMEPATH": "\\operator",
+                   "NETRC": "operator-netrc", "GIT_SSL_CERT": "operator-cert", "GIT_SSL_KEY": "operator-key", "GIT_SSL_CERT_PASSWORD_PROTECTED": "1"}
+        with mock.patch.dict(os.environ, hostile):
+            fake = FakeGit()
+            self.resolve_fails(fake)
+            child = toolchain_io.merged_env(fake.envs[0])
+        for name in ("HOME", "USERPROFILE", "XDG_CONFIG_HOME"):
+            self.assertEqual(fake.cwds[0], child[name], name)
+        for name in ("HOMEDRIVE", "HOMEPATH", "NETRC", "GIT_SSL_CERT", "GIT_SSL_KEY", "GIT_SSL_CERT_PASSWORD_PROTECTED"):
+            self.assertNotIn(name, child, name)
 
     def test_the_folder_is_removed_when_the_runner_fails(self):
         class Boom:
@@ -1569,24 +1637,29 @@ class GitIsolationTests(unittest.TestCase):
         self.assertIn("--git-dir=" + absolute, fetch_argv)
         self.assertTrue(os.path.isfile(os.path.join(absolute, "config")))
 
-    def test_an_existing_cache_gets_the_minimal_configuration_before_anything_is_asked_of_it(self):
+    def test_an_existing_cache_is_removed_before_anything_is_asked_of_it(self):
+        # Changed on purpose in round 9: this test used to check that the old configuration was replaced before git was asked whether the
+        # commit was there. An old cache folder is no longer asked anything: it is removed.
         dest = self.dir / "old-cache"
         dest.mkdir()
         (dest / "config").write_text('[core]\n\tsshCommand = evil\n[url "elsewhere"]\n\tinsteadOf = %s\n' % self.URL, encoding="utf-8")
+        (dest / "stray.txt").write_text("left by an earlier call", encoding="utf-8")
         fake = FakeGit()
         ts.fetch_git(self.URL, "ab" * 20, dest, fake)
-        self.assertIn("cat-file", fake.calls[0], "the first call asks whether the commit is there")
-        self.assertEqual(MINIMAL_CONFIG, fake.configs[0], "the first call already saw the old configuration")
+        self.assertIn("init", fake.calls[0], "the first call makes the new repository: nothing is asked of the old folder")
+        self.assertIsNone(fake.configs[0], "the old configuration was still there when git made the new repository")
+        self.assertFalse((dest / "stray.txt").exists())
         self.assertEqual(MINIMAL_CONFIG, (dest / "config").read_bytes())
 
-    def test_a_cache_that_already_holds_the_commit_gets_the_minimal_configuration_too(self):
+    def test_a_cache_that_already_holds_the_commit_is_made_again_all_the_same(self):
+        # Changed on purpose in round 9: this test used to check that such a cache was kept after its configuration was replaced.
         dest = self.dir / "full-cache"
         dest.mkdir()
         (dest / "config").write_text("[core]\n\tfsmonitor = evil\n", encoding="utf-8")
         fake = FakeGit()
-        fake.fetched = True
+        fake.fetched = True  # every question whether the commit is there is answered with yes
         ts.fetch_git(self.URL, "ab" * 20, dest, fake)
-        self.assertEqual(1, len(fake.calls))
+        self.assertEqual(["init", "fetch", "cat-file"], [word for argv in fake.calls for word in ("init", "fetch", "cat-file") if word in argv])
         self.assertEqual(MINIMAL_CONFIG, (dest / "config").read_bytes())
 
     def test_the_cache_is_configured_again_right_after_git_made_it(self):
@@ -1672,6 +1745,107 @@ class GitIsolationTests(unittest.TestCase):
                 ts.fetch_git(self.URL, "ab" * 20, dest, FakeGit())
         self.assertEqual("unresolved", caught.exception.code)
         self.assertNotIn(str(dest), str(caught.exception))
+
+    def test_an_old_cache_is_removed_with_the_removal_of_the_module_that_never_follows_a_link(self):
+        dest = self.dir / "old-cache"
+        dest.mkdir()
+        with mock.patch.object(ts, "_remove", wraps=ts._remove) as removed:
+            ts.fetch_git(self.URL, "ab" * 20, dest, FakeGit())
+        self.assertIn(dest, [Path(call.args[0]) for call in removed.call_args_list])
+
+    def test_a_cache_that_cannot_be_removed_is_a_source_error_and_git_is_not_run(self):
+        dest = self.dir / "stuck-cache"
+        dest.mkdir()
+        (dest / "config").write_text("keep me", encoding="utf-8")
+        fake = FakeGit()
+        with mock.patch.object(ts, "_remove", side_effect=PermissionError("denied")):
+            with self.assertRaises(ts.SourceError) as caught:
+                ts.fetch_git(self.URL, "ab" * 20, dest, fake)
+        self.assertEqual("unresolved: cannot remove the old cache folder", str(caught.exception))
+        self.assertEqual([], fake.calls)
+        self.assertEqual("keep me", (dest / "config").read_text(encoding="utf-8"))
+
+    def test_a_cache_folder_that_cannot_be_made_is_a_source_error_and_git_is_not_run(self):
+        fake = FakeGit()
+        with mock.patch.object(ts.Path, "mkdir", side_effect=OSError("denied")):
+            with self.assertRaises(ts.SourceError) as caught:
+                ts.fetch_git(self.URL, "ab" * 20, self.dir / "new-cache", fake)
+        self.assertEqual("unresolved: cannot make the cache folder", str(caught.exception))
+        self.assertEqual([], fake.calls)
+
+    def test_a_configuration_that_cannot_be_replaced_after_git_made_the_folder_is_a_source_error_and_git_does_not_fetch(self):
+        real, fake = ts._remove, FakeGit()
+
+        def refusing(path):
+            if os.path.basename(str(path)) == "config":
+                raise PermissionError("denied")
+            real(path)
+
+        with mock.patch.object(ts, "_remove", side_effect=refusing):
+            with self.assertRaises(ts.SourceError) as caught:
+                ts.fetch_git(self.URL, "ab" * 20, self.dir / "new-cache", fake)
+        self.assertEqual("unresolved: cannot write the cache configuration", str(caught.exception))
+        self.assertEqual(["init"], [word for argv in fake.calls for word in ("init", "fetch") if word in argv])
+
+    def test_a_configuration_that_git_init_leaves_as_a_folder_or_as_a_second_name_of_a_file_is_replaced_by_the_minimal_one(self):
+        # git init copies a template into the new repository, so what a template leaves behind is not trusted either
+        outside = self.dir / "outside.cfg"
+        outside.write_text("keep me", encoding="utf-8")
+
+        class Templated(FakeGit):
+            def __init__(self, shape):
+                super().__init__()
+                self.shape = shape
+
+            def run(self, argv, **kwargs):
+                if "init" in argv:
+                    config = Path(argv[-1]) / "config"
+                    config.parent.mkdir(parents=True, exist_ok=True)
+                    if self.shape == "folder":
+                        (config / "inner").mkdir(parents=True)
+                    else:
+                        os.link(str(outside), str(config))
+                return super().run(argv, **kwargs)
+
+        for shape in ("folder", "second name of a file"):
+            with self.subTest(shape):
+                if shape != "folder":
+                    try:
+                        os.link(str(outside), str(self.dir / "probe-link"))
+                    except (OSError, NotImplementedError, AttributeError):
+                        self.skipTest("this file system has no hard links")
+                dest = self.dir / ("template-" + shape.split()[0])
+                ts.fetch_git(self.URL, "ab" * 20, dest, Templated(shape))
+                self.assertTrue((dest / "config").is_file())
+                self.assertEqual(MINIMAL_CONFIG, (dest / "config").read_bytes())
+                self.assertEqual("keep me", outside.read_text(encoding="utf-8"))
+
+    def test_the_other_name_of_a_read_only_file_in_an_old_cache_keeps_its_protection_and_its_content(self):
+        # Found in round 9, on Windows: clearing the read-only attribute through the name in the cache cleared it for the file outside too.
+        outside = self.dir / "outside.cfg"
+        outside.write_text("keep me", encoding="utf-8")
+        os.chmod(outside, stat.S_IREAD)
+        self.addCleanup(os.chmod, outside, stat.S_IWRITE)
+        dest = self.dir / "linked-cache"
+        dest.mkdir()
+        try:
+            os.link(str(outside), str(dest / "config"))
+        except (OSError, NotImplementedError, AttributeError):
+            self.skipTest("this file system has no hard links")
+        before = os.stat(outside).st_mode
+        refusal = None
+        with mock.patch.object(toolchain_io, "RETRY_DELAYS", (0, 0)):
+            try:
+                ts.fetch_git(self.URL, "ab" * 20, dest, FakeGit())
+            except ts.SourceError as caught:
+                refusal = str(caught)
+        self.assertEqual(before, os.stat(outside).st_mode, "the protection of the other name of the file changed")
+        self.assertEqual("keep me", outside.read_text(encoding="utf-8"))
+        if WINDOWS:  # the system refuses to delete a read-only file, and nothing clears the attribute of a file that has two names
+            self.assertEqual("unresolved: cannot remove the old cache folder", refusal)
+            self.assertTrue((dest / "config").exists())
+        else:  # deleting a file depends on its folder
+            self.assertIsNone(refusal)
 
 
 @unittest.skipUnless(HAS_GIT, "git is not installed")
@@ -1799,6 +1973,348 @@ class HostileRepositoryTests(unittest.TestCase):
         self.assertEqual(outer, Path(cwd).parent)
         self.assertEqual([], listing)
         self.assertEqual(str(outer), recorder.calls[0][1]["GIT_CEILING_DIRECTORIES"])
+
+
+def marker_program(folder, name):
+    """(marker file, shell command) for a setting that makes git run a program: the program leaves the marker (git runs it with sh, on every system)."""
+    marker = Path(folder) / (name + "-ran.txt")
+    script = Path(folder) / (name + ".sh")
+    script.write_text("echo ran > '%s'\nexit 1\n" % marker.as_posix(), encoding="utf-8", newline="\n")
+    return marker, "sh '%s'" % script.as_posix()
+
+
+@unittest.skipUnless(HAS_GIT, "git is not installed")
+class StaleCacheTests(unittest.TestCase):
+    """A cache folder that is already there is never trusted and never reused: it is removed, and a new one is made and fetched into. What an old
+    folder can hold is wider than its configuration file: a commondir file that sends git to the configuration of another repository, a link
+    that sends what git writes to another place, a hook, an alternates file. Real git. Each test first shows that plain git is affected by
+    what the old folder holds, so that it cannot pass for want of a vector."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.dir = Path(os.path.realpath(self.tmp.name))
+
+    def git(self, *args):
+        merged = {name: value for name, value in os.environ.items() if name.upper() not in REPOSITORY_VARIABLES}
+        merged.update(GIT_ENV)
+        return subprocess.run(["git"] + list(args), env=merged, capture_output=True, text=True, timeout=120, check=False)
+
+    def plain_fetch(self, cache):
+        return self.git("-c", "protocol.file.allow=always", "--git-dir=" + str(cache), "fetch", "--quiet", "--depth", "1", "--no-tags", FX.url, FX.commits[3])
+
+    def bare(self, name):
+        path = self.dir / name
+        self.assertEqual(0, self.git("init", "--bare", "--quiet", str(path)).returncode)
+        return path
+
+    def has(self, cache, commit=None):
+        return self.git("--git-dir=" + str(cache), "cat-file", "-e", (commit or FX.commits[3]) + "^{commit}").returncode == 0
+
+    def test_a_commondir_file_in_an_old_cache_does_not_send_git_to_the_configuration_of_another_repository(self):
+        def old_cache(name):
+            marker, command = marker_program(self.dir, name)
+            common = self.bare(name + "-common.git")
+            (common / "config").write_text('[core]\n\trepositoryformatversion = 0\n\tbare = true\n[remote "%s"]\n\tuploadpack = %s\n' % (FX.url, command),
+                                           encoding="utf-8", newline="\n")
+            cache = self.bare(name + "-cache.git")
+            (cache / "commondir").write_text(common.as_posix() + "\n", encoding="utf-8", newline="\n")
+            return cache, common, marker
+
+        control, _, control_marker = old_cache("control")
+        self.plain_fetch(control)
+        self.assertTrue(control_marker.exists(), "premise: plain git runs the program that the configuration of the common folder names")
+        cache, common, marker = old_cache("ours")
+        before = tree_listing(common)
+        self.assertEqual(cache, ts.fetch_git(FX.url, FX.commits[3], cache, RecordingRunner()))
+        self.assertFalse(marker.exists(), "git ran the program that the configuration of the common folder names")
+        self.assertFalse((cache / "commondir").exists(), "the old commondir file is still there")
+        self.assertTrue(self.has(cache))
+        self.assertEqual(MINIMAL_CONFIG, (cache / "config").read_bytes())
+        self.assertEqual(before, tree_listing(common), "something was written into the other repository or changed in it")
+
+    def linked_cache(self, name):
+        """An old cache whose objects folder is a link to a folder outside it that holds files of its own, and that folder."""
+        cache = self.bare(name + "-cache.git")
+        outside = self.dir / (name + "-outside")
+        shutil.copytree(str(cache / "objects"), str(outside))
+        (outside / "keep.txt").write_bytes(b"keep\n")
+        (outside / "pack" / "nested.txt").write_bytes(b"nested\n")
+        shutil.rmtree(str(cache / "objects"))
+        if not make_folder_link(cache / "objects", outside):
+            self.skipTest("this account cannot make a folder link")
+        self.addCleanup(remove_folder_link, cache / "objects")
+        return cache, outside
+
+    def test_a_link_inside_an_old_cache_is_removed_and_never_followed(self):
+        control, control_outside = self.linked_cache("control")
+        before = tree_listing(control_outside)
+        self.plain_fetch(control)
+        self.assertNotEqual(before, tree_listing(control_outside), "premise: plain git writes into the folder that the link names")
+        cache, outside = self.linked_cache("ours")
+        before = tree_listing(outside)
+        self.assertEqual(cache, ts.fetch_git(FX.url, FX.commits[3], cache, RecordingRunner()))
+        self.assertEqual(before, tree_listing(outside), "something was written into, or deleted from, the folder that the link names")
+        self.assertFalse(is_any_link(cache / "objects"), "the link is still in the cache")
+        self.assertTrue(self.has(cache))
+
+    def test_a_hook_in_an_old_cache_is_not_run(self):
+        def old_cache(name):
+            marker = self.dir / (name + "-hook-ran.txt")
+            cache = self.bare(name + ".git")
+            hook = cache / "hooks" / "reference-transaction"
+            hook.write_text("#!/bin/sh\necho ran > '%s'\nexit 0\n" % marker.as_posix(), encoding="utf-8", newline="\n")
+            os.chmod(hook, 0o755)
+            return cache, marker
+
+        control, control_marker = old_cache("control")
+        self.plain_fetch(control)
+        self.assertTrue(control_marker.exists(), "premise: plain git runs the reference-transaction hook of the cache")
+        cache, marker = old_cache("ours")
+        ts.fetch_git(FX.url, FX.commits[3], cache, RecordingRunner())
+        self.assertFalse(marker.exists(), "git ran the hook of the old cache")
+        self.assertFalse((cache / "hooks" / "reference-transaction").exists())
+        self.assertTrue(self.has(cache))
+
+    def test_an_old_cache_is_removed_whatever_it_holds_and_a_new_one_is_made_and_fetched_into(self):
+        runner = IsolatedRunner()
+        cache = self.bare("junk.git")
+        (cache / "objects" / "info").mkdir(parents=True, exist_ok=True)
+        (cache / "objects" / "info" / "alternates").write_text(FX.git_dir.as_posix() + "/objects\n", encoding="utf-8", newline="\n")
+        (cache / "junk" / "deep").mkdir(parents=True)
+        (cache / "junk" / "deep" / "file.txt").write_bytes(b"junk")
+        (cache / "refs" / "heads" / "main").write_text(FX.commits[3] + "\n", encoding="utf-8", newline="\n")
+        self.assertTrue(self.has(cache), "premise: through its alternates file the old cache already holds the commit")
+        ts.fetch_git(FX.url, FX.commits[3], cache, runner)
+        self.assertEqual(["init", "fetch"], [word for argv in runner.argvs() for word in ("init", "fetch") if word in argv],
+                         "a cache that already holds the commit must be made again and fetched into")
+        for stale in ("junk", "objects/info/alternates", "refs/heads/main"):
+            self.assertFalse((cache / stale).exists(), stale)
+        self.assertTrue(self.has(cache))
+        self.assertEqual(MINIMAL_CONFIG, (cache / "config").read_bytes())
+
+    def test_a_file_where_the_cache_should_be_is_replaced_by_a_new_cache(self):
+        dest = self.dir / "cache-that-is-a-file"
+        dest.write_text("not a folder", encoding="utf-8")
+        ts.fetch_git(FX.url, FX.commits[3], dest, RecordingRunner())
+        self.assertTrue(dest.is_dir())
+        self.assertTrue(self.has(dest))
+
+
+def find_openssl():
+    """The openssl command line: the first on the search path, or else the one that Git for Windows keeps beside git. None when there is none."""
+    found = shutil.which("openssl")
+    if found:
+        return found
+    git = shutil.which("git")
+    if git:
+        root = os.path.dirname(os.path.dirname(os.path.realpath(git)))
+        for parts in (("usr", "bin", "openssl.exe"), ("mingw64", "bin", "openssl.exe")):
+            path = os.path.join(root, *parts)
+            if os.path.isfile(path):
+                return path
+    return None
+
+
+class _TlsHandler(http.server.BaseHTTPRequestHandler):
+    """Answers every request with 401 and the challenges that the server holds (a Basic one unless a test sets others), and notes the path,
+    the Authorization header and whether the client sent a certificate."""
+
+    protocol_version = "HTTP/1.1"
+
+    def log_message(self, *args):
+        pass
+
+    def handle(self):
+        try:
+            self.request.do_handshake()
+        except (ssl.SSLError, OSError):
+            return
+        super().handle()
+
+    def do_GET(self):
+        self.server.seen.append((self.path, self.headers.get("Authorization"), bool(self.connection.getpeercert())))
+        self.send_response(401)
+        for challenge in self.server.challenges:
+            self.send_header("WWW-Authenticate", challenge)
+        self.send_header("Content-Length", "0")
+        self.end_headers()
+
+
+class _TlsServer(http.server.ThreadingHTTPServer):
+    daemon_threads = True
+    DEFAULT_CHALLENGES = ['Basic realm="tc"']
+
+    def __init__(self, context):
+        super().__init__(("127.0.0.1", 0), _TlsHandler)
+        self.context, self.seen, self.challenges = context, [], list(self.DEFAULT_CHALLENGES)
+
+    def get_request(self):
+        sock, address = self.socket.accept()
+        return self.context.wrap_socket(sock, server_side=True, do_handshake_on_connect=False), address
+
+    def handle_error(self, request, client_address):
+        pass
+
+
+class TrustingRunner(toolchain_io.SystemRunner):
+    """The real runner, with the throw-away CA of the test handed to git on its command line, so that the environment of the call is the one
+    that the module makes and nothing else about it is changed."""
+
+    def __init__(self, options):
+        self.options = list(options)
+        self.calls = []
+
+    def run_bytes(self, argv, *, cwd=None, env=None, timeout=60, input=None):
+        argv = list(argv)
+        if argv[:1] == ["git"]:
+            argv[1:1] = self.options
+        self.calls.append((argv, cwd, dict(env or {})))
+        return super().run_bytes(argv, cwd=cwd, env=env, timeout=timeout, input=input)
+
+
+@unittest.skipUnless(HAS_GIT, "git is not installed")
+class AnonymousGitTests(unittest.TestCase):
+    """Git that is meant to be anonymous sends nothing of the operator. libcurl inside git reads `.netrc` (and `_netrc` on Windows) in the home
+    folder and the file that NETRC names, and sends the credentials in it to whatever host answers 401; git offers the client certificate that
+    GIT_SSL_CERT names to any server that asks for one. Real git against a server on the loopback address with a throw-away certificate
+    (made with the openssl command line; the tests are skipped where there is none). Each test first shows that plain git sends them, so that it
+    cannot pass for want of a vector."""
+
+    BASIC = "Basic " + base64.b64encode(b"u:p").decode("ascii")
+
+    @classmethod
+    def setUpClass(cls):
+        openssl = find_openssl()
+        if openssl is None:
+            raise unittest.SkipTest("there is no openssl command line to make a throw-away certificate with")
+        cls.tmp = tempfile.TemporaryDirectory()
+        cls.addClassCleanup(cls.tmp.cleanup)
+        cls.dir = Path(os.path.realpath(cls.tmp.name))
+        cls.make_certificates(openssl)
+        context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        context.load_cert_chain(str(cls.dir / "server.pem"), str(cls.dir / "server.key"))
+        context.verify_mode = ssl.CERT_OPTIONAL
+        context.load_verify_locations(str(cls.dir / "ca.pem"))
+        cls.server = _TlsServer(context)
+        cls.port = cls.server.server_address[1]
+        threading.Thread(target=cls.server.serve_forever, daemon=True).start()
+        cls.addClassCleanup(cls.server.server_close)
+        cls.addClassCleanup(cls.server.shutdown)
+        cls.home, cls.bare_home, cls.work = cls.dir / "home", cls.dir / "bare-home", cls.dir / "work"
+        for folder in (cls.home, cls.bare_home, cls.work):
+            folder.mkdir()
+        for name in (".netrc", "_netrc"):
+            (cls.home / name).write_text("machine 127.0.0.1 login u password p\ndefault login u password p\n", encoding="utf-8", newline="\n")
+        # Git for Windows ignores http.sslCAInfo with its default backend (schannel) when its system configuration is off, as it is here
+        cls.trust = ["-c", "http.sslCAInfo=" + (cls.dir / "ca.pem").as_posix()] + (["-c", "http.sslBackend=openssl"] if WINDOWS else [])
+
+    @classmethod
+    def make_certificates(cls, openssl):
+        def run(*args):
+            done = subprocess.run([openssl] + list(args), cwd=str(cls.dir), capture_output=True, text=True, timeout=120, check=False)
+            if done.returncode != 0:
+                raise unittest.SkipTest("openssl could not make a throw-away certificate")
+
+        files = {"ca.cnf": "[req]\ndistinguished_name = dn\nprompt = no\nx509_extensions = ca\n[dn]\nCN = tc-test-ca\n"
+                           "[ca]\nbasicConstraints = critical,CA:TRUE\nkeyUsage = critical,keyCertSign,cRLSign\n",
+                 "leaf.cnf": "[req]\ndistinguished_name = dn\nprompt = no\n[dn]\nCN = tc-test-leaf\n",
+                 "server.ext": "subjectAltName = IP:127.0.0.1,DNS:localhost\nbasicConstraints = CA:FALSE\nextendedKeyUsage = serverAuth\n"
+                               "keyUsage = digitalSignature,keyEncipherment\n",
+                 "client.ext": "basicConstraints = CA:FALSE\nextendedKeyUsage = clientAuth\nkeyUsage = digitalSignature\n"}
+        for name, text in files.items():
+            (cls.dir / name).write_text(text, encoding="utf-8", newline="\n")
+        run("req", "-x509", "-newkey", "rsa:2048", "-nodes", "-keyout", "ca.key", "-out", "ca.pem", "-days", "2", "-config", "ca.cnf")
+        for name in ("server", "client"):
+            run("req", "-new", "-newkey", "rsa:2048", "-nodes", "-keyout", name + ".key", "-out", name + ".csr", "-config", "leaf.cnf")
+            run("x509", "-req", "-in", name + ".csr", "-CA", "ca.pem", "-CAkey", "ca.key", "-CAcreateserial", "-out", name + ".pem", "-days", "2",
+                "-extfile", name + ".ext")
+        (cls.dir / "client-all.pem").write_bytes((cls.dir / "client.pem").read_bytes() + (cls.dir / "client.key").read_bytes())  # the certificate and its key in one file
+
+    def setUp(self):
+        self.server.seen.clear()
+        self.server.challenges[:] = self.server.DEFAULT_CHALLENGES
+
+    def url(self, host="127.0.0.1"):
+        return "https://%s:%d/repo.git" % (host, self.port)
+
+    @contextlib.contextmanager
+    def operator(self, home, **extra):
+        """This process as the process of an operator whose home folder is `home`, under every name that Windows and the others use for it."""
+        values = {"HOME": str(home), "USERPROFILE": str(home)}
+        drive, tail = os.path.splitdrive(str(home))
+        if drive:
+            values.update(HOMEDRIVE=drive, HOMEPATH=tail)
+        values.update(extra)
+        with mock.patch.dict(os.environ, values):
+            yield
+
+    def plain_git(self, host="127.0.0.1"):
+        """What the server sees of plain git: this process environment, except for what could ask a person for a password or read the
+        configuration files of the operator."""
+        env = {name: value for name, value in os.environ.items() if not name.upper().startswith("GIT_CONFIG_") and name.upper() not in ("GIT_ASKPASS", "SSH_ASKPASS")}
+        env.update(GIT_ENV)
+        self.server.seen.clear()
+        subprocess.run(["git"] + self.trust + ["-c", "credential.helper=", "-c", "protocol.ext.allow=never", "ls-remote", "--tags", self.url(host)],
+                       cwd=str(self.work), env=env, capture_output=True, timeout=120, check=False)
+        return list(self.server.seen)
+
+    def check_anonymous(self, host="127.0.0.1", requests=None):
+        """resolve_git_ref and fetch_git each make their request without an Authorization header and without a client certificate, and when
+        `requests` is given they ask the server exactly that many times."""
+        track = {"kind": "tag", "pattern": "v*"}
+        for label, call in (("resolve_git_ref", lambda runner: ts.resolve_git_ref(self.url(host), track, runner)),
+                            ("fetch_git", lambda runner: ts.fetch_git(self.url(host), "ab" * 20, self.dir / "cache", runner))):
+            self.server.seen.clear()
+            with self.assertRaises(ts.SourceError) as caught:
+                call(TrustingRunner(self.trust))
+            self.assertEqual("network: authentication required", str(caught.exception), label)
+            seen = list(self.server.seen)
+            self.assertTrue(seen, "%s: the server was never reached, so nothing was shown" % label)
+            self.assertEqual([None] * len(seen), [authorization for _, authorization, _ in seen], "%s sent an Authorization header" % label)
+            self.assertFalse(any(certificate for _, _, certificate in seen), "%s offered a client certificate" % label)
+            if requests is not None:
+                self.assertEqual(requests, len(seen), "%s asked the server again after the 401: it answered the challenge with empty credentials" % label)
+
+    def test_plain_git_sends_the_credentials_of_the_netrc_in_the_home_folder_and_ours_sends_none(self):
+        with self.operator(self.home):
+            if self.BASIC not in [authorization for _, authorization, _ in self.plain_git()]:
+                self.skipTest("this git did not send the credentials of the netrc, or does not trust the throw-away certificate")
+            self.check_anonymous()
+
+    def test_the_default_entry_of_a_netrc_goes_to_any_host_of_plain_git_and_to_none_of_ours(self):
+        with self.operator(self.home):
+            if self.BASIC not in [authorization for _, authorization, _ in self.plain_git("localhost")]:
+                self.skipTest("this git did not send the default entry of the netrc to localhost")
+            self.check_anonymous("localhost")
+
+    def test_plain_git_reads_the_netrc_that_the_variable_names_and_ours_does_not(self):
+        with self.operator(self.bare_home, NETRC=str(self.home / ".netrc")):
+            if self.BASIC not in [authorization for _, authorization, _ in self.plain_git()]:
+                self.skipTest("this git does not read the file that NETRC names")
+            self.check_anonymous()
+
+    def test_plain_git_offers_the_client_certificate_that_the_environment_names_and_ours_offers_none(self):
+        with self.operator(self.bare_home, GIT_SSL_CERT=str(self.dir / "client-all.pem")):
+            if not any(certificate for _, _, certificate in self.plain_git()):
+                self.skipTest("this git did not offer the client certificate, or does not trust the throw-away certificate")
+            self.check_anonymous()
+
+    def test_plain_git_answers_a_negotiate_or_ntlm_challenge_with_empty_credentials_and_ours_asks_the_server_once_only(self):
+        # http.emptyAuth is auto by default: when a 401 advertises Negotiate (or NTLM, where libcurl has it) git asks again with empty
+        # credentials, and libcurl with SSPI or GSS-API then answers with the logon session of the operator. Whether that answer carries a
+        # token depends on the machine (where none can be made it carries no header), so the second request is what is counted.
+        shown = False
+        for offered in (["Negotiate"], ["NTLM"], ["Negotiate", "NTLM"]):
+            with self.subTest("+".join(offered)), self.operator(self.bare_home):
+                self.server.challenges[:] = offered
+                control = self.plain_git()
+                if len(control) < 2:
+                    continue  # this git does not answer that challenge, so there is nothing to show for it
+                shown = True
+                self.check_anonymous(requests=1)
+        if not shown:
+            self.skipTest("this git answered no Negotiate or NTLM challenge with empty credentials")
 
 
 SHARED_FILES = {"shared.md": b"# Shared\nline two\n", "notebook-authoring/nb.md": b"# Notebook\n", "data.bin": b"\x00\x01\r\n\x02", "legacy.txt": b"caf\xe9\nsecond\n",
@@ -2124,14 +2640,25 @@ class VendorTests(unittest.TestCase):
         after = {p.relative_to(self.store).as_posix(): p.read_bytes() for p in self.store.rglob("*") if p.is_file() and ".cache" not in p.parts}
         self.assertEqual(before, after)
 
-    def test_a_damaged_skill_is_rewritten_from_the_cache_without_a_new_fetch(self):
+    def test_a_damaged_skill_is_rewritten_from_a_new_fetch_into_a_new_cache(self):
+        # Changed on purpose in round 9: this test used to check that the cache of the first run was used without a new fetch. A cache folder
+        # that is already there is never reused.
         self.vendor([("fx", "alpha", "good-skill")])
         self.assertEqual(1, len(self.fetches()))
+        cache = self.store / ".cache" / FX.commits[3][:12]
+        (cache / "stray.txt").write_text("left by the first run\n")
         (self.store / "skills" / "good-skill" / "SKILL.md").write_text("tampered\n")
         self.runner.calls.clear()
         self.vendor([("fx", "alpha", "good-skill")])
-        self.assertEqual([], self.fetches())
+        self.assertEqual(1, len(self.fetches()), "the cache of the commit was reused")
+        self.assertFalse((cache / "stray.txt").exists())
         self.assertEqual(self.digest_of("alpha", "good-skill"), ts.digest_tree(self.store / "skills" / "good-skill")["digest"])
+
+    def test_one_call_fetches_each_commit_once_however_many_skills_and_shared_folders_come_from_it(self):
+        self.add_shared()
+        self.vendor([("fx", "alpha", "good-skill"), ("fx", "beta", "other-skill")], shared=[("fx", "common")])
+        self.assertEqual(1, len(self.fetches()))
+        self.assertEqual(1, len([argv for argv in self.runner.argvs() if "init" in argv]))
 
     def test_the_locked_commit_is_fetched_into_a_cache_named_after_it(self):
         self.vendor([("fx", "alpha", "good-skill")])
@@ -2369,15 +2896,19 @@ class VendorTests(unittest.TestCase):
         self.assertEqual([], self.runner.calls)
         self.assertEqual(before, self.snapshot())
 
-    def test_a_damaged_shared_folder_is_rewritten_from_the_cache_without_a_new_fetch(self):
+    def test_a_damaged_shared_folder_is_rewritten_from_a_new_fetch_into_a_new_cache(self):
+        # Changed on purpose in round 9: this test used to check that the cache of the first run was used without a new fetch.
         info = self.add_shared()
         self.vendor([("fx", "alpha", "good-skill")], shared=[("fx", "common")])
         self.assertEqual(1, len(self.fetches()))
+        cache = self.store / ".cache" / FX.commits[3][:12]
+        (cache / "stray.txt").write_text("left by the first run\n")
         (self.store / "common" / "shared.md").write_text("tampered\n")
         (self.store / "common" / "extra.md").write_text("added\n")
         self.runner.calls.clear()
         self.vendor([("fx", "alpha", "good-skill")], shared=[("fx", "common")])
-        self.assertEqual([], self.fetches())
+        self.assertEqual(1, len(self.fetches()), "the cache of the commit was reused")
+        self.assertFalse((cache / "stray.txt").exists())
         self.assertEqual(info["digest"], ts.digest_tree(self.store / "common")["digest"])
         self.assertFalse((self.store / "common" / "extra.md").exists())
 
@@ -2562,10 +3093,11 @@ class VendorRetryTests(unittest.TestCase):
                     chmod.assert_called_once_with(path, stat.S_IWRITE)
                 self.assertFalse(path.exists())
                 real = shutil.rmtree
+                handed_on = mock.Mock()
 
                 def failing_once(target, *args, **kwargs):
                     handler = kwargs.get("onexc") or kwargs.get("onerror")
-                    handler(os.unlink, str(folder / "inner.txt"), (PermissionError, PermissionError("x"), None) if "onerror" in kwargs else PermissionError("x"))
+                    handler(handed_on, str(folder / "inner.txt"), (PermissionError, PermissionError("x"), None) if "onerror" in kwargs else PermissionError("x"))
                     return real(target, *args, **kwargs)
                 with mock.patch.object(toolchain_io, "WINDOWS", windows), mock.patch.object(toolchain_io.os, "chmod") as chmod, \
                         mock.patch.object(shutil, "rmtree", side_effect=failing_once):
@@ -2573,7 +3105,17 @@ class VendorRetryTests(unittest.TestCase):
                 self.assertEqual(windows, chmod.called, "a folder whose delete failed once")
                 if windows:
                     chmod.assert_called_once_with(str(folder / "inner.txt"), stat.S_IWRITE)
+                handed_on.assert_called_once_with(str(folder / "inner.txt"))
                 self.assertFalse(folder.exists())
+
+    def test_a_read_only_file_in_a_folder_is_removed_with_the_folder(self):
+        folder = Path(self.tmp.name) / "read-only-folder"
+        folder.mkdir()
+        inner = folder / "inner.txt"
+        inner.write_text("x", encoding="utf-8")
+        os.chmod(inner, stat.S_IREAD)
+        ts._remove(folder)
+        self.assertFalse(folder.exists())
 
 
 class VendorLinkTests(unittest.TestCase):
@@ -2778,6 +3320,21 @@ class VendorLinkTests(unittest.TestCase):
         self.assertEqual(self.lock["skill_sources"]["fx"]["plugins"]["alpha"]["skills"]["good-skill"]["digest"],
                          ts.digest_tree(self.store / "skills" / "good-skill")["digest"])
 
+    def test_a_link_inside_an_old_cache_is_removed_and_not_followed_and_the_pack_is_still_served(self):
+        # The folder of the git caches and the cache of the commit are not links, but something inside the cache is: what git writes there
+        # would go to the folder outside. The old cache is never reused, so it is removed with the link in it, and nothing outside changes.
+        self.prepare()
+        cache = self.store / ".cache" / FX.commits[3][:12]
+        self.link(cache / "objects")
+        (self.store / "skills" / "good-skill" / "SKILL.md").write_bytes(b"damaged\n")
+        before = tree_listing(self.outside)
+        manifest = self.vendor()
+        self.assertEqual(["good-skill", "other-skill"], sorted(manifest["skills"]))
+        self.assertEqual(self.lock["skill_sources"]["fx"]["plugins"]["alpha"]["skills"]["good-skill"]["digest"],
+                         ts.digest_tree(self.store / "skills" / "good-skill")["digest"])
+        self.assertEqual(before, tree_listing(self.outside), "something was written into, or deleted from, the folder that the link names")
+        self.assertFalse(is_any_link(cache / "objects"), "the link is still in the cache")
+
     # ---- the same rules with a link test that finds links in plain folders (runs wherever no link can be made) ----
 
     def test_every_place_that_is_reported_as_a_link_is_refused(self):
@@ -2939,6 +3496,11 @@ def status_only(code):
     return HttpResult(code, {}, b"", None)
 
 
+def unreadable(status, error):
+    """An answer whose status arrived and whose body could not be read."""
+    return HttpResult(status, {}, b"", error)
+
+
 NPM_URL = "https://registry.npmjs.org/@microsoft%2Ffabric-mcp"
 JSDELIVR_URL = "https://data.jsdelivr.com/v1/packages/npm/@microsoft/fabric-mcp"
 INTEGRITY = "sha512-" + "A" * 86 + "=="
@@ -2947,6 +3509,7 @@ FEED_URL = "https://" + INTERNAL_HOST + "/org/_packaging/feed/npm/registry/@micr
 NPM_ERROR = "npm error code E404\nnpm error 404 Not Found - GET " + FEED_URL + " - Not found\nnpm error 404\nnpm error host " + INTERNAL_HOST + "\n"
 NPM_ARGV = ["npm", "view", "@microsoft/fabric-mcp", "version", "dist.integrity", "--json"]
 BLOCKED = {NPM_URL: HttpResult(0, {}, b"", "tls")}  # the official registry cannot be reached
+BODY_ERRORS = ("too-large", "timeout", "dns", "refused", "tls", "reset", "protocol", "connect", "error")  # why the body of an answer could not be read
 
 
 def npm_ok(payload):
@@ -2964,6 +3527,35 @@ def assert_clean(test, result):
     if result.get("status") == "unresolved":
         test.assertEqual({"status", "reason", "detail"}, set(result))
         test.assertRegex(result["detail"], r"^[A-Za-z0-9 ._:=/-]{0,80}$")
+
+
+class StageFailureTests(unittest.TestCase):
+    """What an HTTP answer that gave no usable document comes to: not found only for a received 404 or 410, whatever became of its body."""
+
+    def test_the_words_of_a_body_error_are_the_ones_the_real_runner_can_report(self):
+        exceptions = (socket.timeout(), socket.gaierror(), ConnectionRefusedError(), ssl.SSLError(), ConnectionResetError(),
+                      http.client.IncompleteRead(b""), OSError(), ValueError())
+        self.assertEqual(set(BODY_ERRORS), {toolchain_io.classify_exception(exc) for exc in exceptions} | {"too-large"})
+
+    def test_a_received_404_or_410_is_not_found_with_or_without_a_readable_body(self):
+        for status in (404, 410):
+            for error in (None,) + BODY_ERRORS:
+                with self.subTest(status=status, error=error):
+                    self.assertEqual(("registry not found", "notfound"), ts._stage_failure("registry", status, error))
+
+    def test_any_other_status_and_no_answer_at_all_are_network_problems_with_or_without_a_readable_body(self):
+        for status in (0, 301, 400, 401, 403, 405, 429, 500, 502, 503):
+            for error in (None,) + BODY_ERRORS:
+                with self.subTest(status=status, error=error):
+                    label, kind = ts._stage_failure("registry", status, error)
+                    self.assertEqual("network", kind)
+                    if error:
+                        self.assertEqual("registry " + error, label)
+                    else:
+                        self.assertEqual("registry failed" if status == 0 else "registry http %d" % status, label)
+        for error in BODY_ERRORS:
+            with self.subTest(status=200, error=error):
+                self.assertEqual(("registry " + error, "network"), ts._stage_failure("registry", 200, error))
 
 
 class NpmTests(unittest.TestCase):
@@ -3111,7 +3703,7 @@ class NpmTests(unittest.TestCase):
             self.assertEqual(mismatch, result, label)
 
     def test_a_registry_that_cannot_be_reached_does_not_stop_the_command_line_answer(self):
-        # Only an official registry that gave no answer at all leaves the command line alone: the operator's own configuration may be the only way out.
+        # Only an official registry that could not tell (no answer, a refusal or an outage, a body that could not be read) leaves the command line alone: the operator's own configuration may be the only way out.
         wanted = {"status": "resolved", "version": "1.6.0", "integrity": INTEGRITY, "via": "npm-cli"}
         for label, answer in (("tls", failed("tls")), ("dns", failed("dns")), ("timeout", failed("timeout")), ("500", status_only(500)),
                               ("503", status_only(503)), ("429", status_only(429)), ("403", status_only(403)),
@@ -3127,6 +3719,33 @@ class NpmTests(unittest.TestCase):
             self.assertEqual(mismatch, self.resolve(runner), label)
         runner = FakeRunner(npm=npm_ok({"version": "9.9.9", "dist.integrity": INTEGRITY}))
         self.assertEqual(mismatch, self.resolve(runner), "the table has no entry, which the fake answers with 404")
+
+    def test_a_registry_that_answers_with_not_found_beats_the_command_line_even_when_its_body_could_not_be_read(self):
+        # Found in round 9: a 404 whose body was too large was taken for a network problem, and the command line then stood alone.
+        mismatch = {"status": "unresolved", "reason": "unresolved", "detail": "mismatch"}
+        for status in (404, 410):
+            for error in BODY_ERRORS:
+                with self.subTest(status=status, error=error):
+                    runner = FakeRunner(npm=npm_ok({"version": "9.9.9", "dist.integrity": INTEGRITY}), http={NPM_URL: unreadable(status, error)})
+                    self.assertEqual(mismatch, self.resolve(runner))
+
+    def test_not_found_with_a_body_that_could_not_be_read_is_not_found_when_there_is_no_command_line_either(self):
+        for status in (404, 410):
+            for error in BODY_ERRORS:
+                with self.subTest(status=status, error=error):
+                    runner = FakeRunner(npm=CommandResult(127, "", "not found"), http={NPM_URL: unreadable(status, error)})
+                    result = self.resolve(runner)
+                    self.assertEqual({"status": "unresolved", "reason": "unresolved", "detail": "npm missing - registry not found"}, result)
+                    assert_clean(self, result)
+
+    def test_a_registry_that_gave_no_verdict_still_leaves_the_command_line_alone_when_its_body_could_not_be_read_either(self):
+        wanted = {"status": "resolved", "version": "1.6.0", "integrity": INTEGRITY, "via": "npm-cli"}
+        answers = [("%d with %s" % (status, error), unreadable(status, error)) for status in (200, 403, 429, 500, 502, 503) for error in BODY_ERRORS]
+        answers += [("no answer: " + error, failed(error)) for error in BODY_ERRORS]
+        for label, answer in answers:
+            with self.subTest(label):
+                runner = FakeRunner(npm=npm_ok({"version": "1.6.0", "dist.integrity": INTEGRITY}), http={NPM_URL: answer})
+                self.assertEqual(wanted, self.resolve(runner))
 
     def test_a_registry_whose_answer_is_unusable_beats_the_command_line(self):
         mismatch = {"status": "unresolved", "reason": "unresolved", "detail": "mismatch"}
@@ -3360,6 +3979,16 @@ class PypiTests(unittest.TestCase):
             self.assertEqual("unresolved", result["status"])
             assert_clean(self, result)
 
+    def test_a_not_found_answer_stays_not_found_when_its_body_could_not_be_read_and_any_other_status_stays_a_network_problem(self):
+        for status in (404, 410):
+            for error in BODY_ERRORS:
+                result, _ = self.resolve({self.URL: unreadable(status, error)})
+                self.assertEqual(("unresolved", "not found"), (result["reason"], result["detail"]), (status, error))
+        for status in (403, 429, 503):
+            for error in BODY_ERRORS:
+                result, _ = self.resolve({self.URL: unreadable(status, error)})
+                self.assertEqual(("network", error), (result["reason"], result["detail"]), (status, error))
+
     def test_bad_names_are_refused_before_any_call(self):
         for name in ("-x", "a b", "", "a/b", "a;b", "..", "a?x=1"):
             runner = FakeRunner()
@@ -3516,6 +4145,16 @@ class NugetTests(unittest.TestCase):
             result, _ = self.resolve(None, table={self.URL: answer})
             self.assertEqual("network", result["reason"])
             assert_clean(self, result)
+
+    def test_a_not_found_answer_stays_not_found_when_its_body_could_not_be_read_and_any_other_status_stays_a_network_problem(self):
+        for status in (404, 410):
+            for error in BODY_ERRORS:
+                result, _ = self.resolve(None, table={self.URL: unreadable(status, error)})
+                self.assertEqual(("unresolved", "not found"), (result["reason"], result["detail"]), (status, error))
+        for status in (403, 429, 503):
+            for error in BODY_ERRORS:
+                result, _ = self.resolve(None, table={self.URL: unreadable(status, error)})
+                self.assertEqual(("network", error), (result["reason"], result["detail"]), (status, error))
 
     def test_bad_ids_are_refused_before_any_call(self):
         for name in ("-x", "a b", "", "a/b", "a;b", "a?x"):

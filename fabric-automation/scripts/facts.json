@@ -231,7 +231,7 @@
      "claim": "uv 0.13.6 is published on PyPI and is the latest release (the toolchain job installs it with pipx; a newer one is reported as drift)", "cited_in": "ci/fabric-automation-facts.yml"},
     {"id": "page-runner-image-ubuntu-2404", "kind": "page", "url": "https://raw.githubusercontent.com/actions/runner-images/main/images/ubuntu/Ubuntu2404-Readme.md", "raw": true,
      "all": ["- Node\\.js 22\\.\\d+\\.\\d+", "\\.NET Core SDK: [^\\n]*10\\.0\\.\\d+", "- Pipx \\d+\\.\\d+\\.\\d+"], "stable": false,
-     "claim": "the ubuntu-24.04 runner image lists Node.js 22, a .NET 10 SDK (which provides dnx) and pipx, which the toolchain job relies on", "cited_in": "ci/fabric-automation-facts.yml"},
+     "claim": "the ubuntu-24.04 runner image lists Node.js 22, a .NET 10 SDK and pipx, which the toolchain job relies on", "cited_in": "ci/fabric-automation-facts.yml"},
     {"id": "page-pbi-authoring-row-limit", "kind": "page", "url": "https://learn.microsoft.com/en-us/power-bi/developer/mcp/power-bi-authoring-mcp",
      "all": ["DAX query execution tools have a hard limit of 100,000 rows", "can.t change other Power BI metadata, such as report pages or semantic model diagram layouts"], "stable": false,
      "claim": "the Power BI Authoring MCP page says that the DAX query execution tools have a hard limit of 100,000 rows and that the server cannot change report pages or semantic model diagram layouts", "cited_in": "docs/research/raw/t10-toolchain-grounding.md section 9"},
