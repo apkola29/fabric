@@ -1078,9 +1078,102 @@
       }
     },
     "bicep-mcp/default": {
-      "status": "unavailable",
-      "reason": "spawn-failed",
-      "detail": "not found"
+      "status": "captured",
+      "era": "modern",
+      "protocol": "2026-07-28",
+      "server": {
+        "name": "unknown",
+        "version": "unknown"
+      },
+      "package_version": "0.48.1",
+      "launch": "sha256:f09b1a56a11e1dc65b81e8f5fd96685344af3b2af6c60a64ce809c253c14bd28",
+      "captured": "2026-11-01",
+      "tools": {
+        "build_bicep": {
+          "schema": "sha256:3f535df9adae1ab73c6ab0d35e8e7a6b4df90c593e4bfa716fb94ead73d5b7f7",
+          "read_only": true,
+          "destructive": false,
+          "idempotent": true
+        },
+        "build_bicepparam": {
+          "schema": "sha256:c1c17aed4f6eb32f4e3bfd54a16b5bc8611e230c6ba574da74c08f47ad77729a",
+          "read_only": true,
+          "destructive": false,
+          "idempotent": true
+        },
+        "decompile_arm_parameters_file": {
+          "schema": "sha256:c17626cde2040f569284b373db42039ee9adc5b4e3d6e57c5d6c545e516f830a",
+          "read_only": true,
+          "destructive": false,
+          "idempotent": true
+        },
+        "decompile_arm_template_file": {
+          "schema": "sha256:2d5dd7d1e5d7ce3ec6620012824efcd1d55605c2b805a6f1a26ba3b17bbe73cc",
+          "read_only": true,
+          "destructive": false,
+          "idempotent": true
+        },
+        "format_bicep_file": {
+          "schema": "sha256:659ed350237ff72e25dc71ba36e7fff88036553c9928e6fab9a9892781bbaff1",
+          "read_only": true,
+          "destructive": false,
+          "idempotent": true
+        },
+        "get_azure_resource_type_schema": {
+          "schema": "sha256:cebfe728bea517340ab23b317a40a52ff42cf5766fa60e5ee946436f2f68c835",
+          "read_only": true,
+          "destructive": false,
+          "idempotent": true
+        },
+        "get_bicep_best_practices": {
+          "schema": "sha256:efddc7bd8bbcef73a14eb1ace1ffdaec81e518ef1e13c1e9271d0b8acb694a49",
+          "read_only": true,
+          "destructive": false,
+          "idempotent": true
+        },
+        "get_deployment_snapshot": {
+          "schema": "sha256:0ec1876ce2e397e70e5f6baafba530824e545bab057ff9d6f99589e97bfec87b",
+          "read_only": true,
+          "destructive": false,
+          "idempotent": true
+        },
+        "get_extension_resource_type_schema": {
+          "schema": "sha256:de9ccc364d2eff704795f588454d54df81a46eb7fd91fe9c77bf127680eb86d0",
+          "read_only": true,
+          "destructive": false,
+          "idempotent": true
+        },
+        "get_file_references": {
+          "schema": "sha256:659ed350237ff72e25dc71ba36e7fff88036553c9928e6fab9a9892781bbaff1",
+          "read_only": true,
+          "destructive": false,
+          "idempotent": true
+        },
+        "list_avm_metadata": {
+          "schema": "sha256:efddc7bd8bbcef73a14eb1ace1ffdaec81e518ef1e13c1e9271d0b8acb694a49",
+          "read_only": true,
+          "destructive": false,
+          "idempotent": true
+        },
+        "list_azure_resource_types": {
+          "schema": "sha256:89fb87bf5a458eb7cd429b0edf765d9ab28bc685542912a1beaedb58f8027002",
+          "read_only": true,
+          "destructive": false,
+          "idempotent": true
+        },
+        "list_extension_resource_types": {
+          "schema": "sha256:b49fa094d48a6e8530e18175573007fbe57646629063b34718a5674a4af527b5",
+          "read_only": true,
+          "destructive": false,
+          "idempotent": true
+        },
+        "list_well_known_extensions": {
+          "schema": "sha256:efddc7bd8bbcef73a14eb1ace1ffdaec81e518ef1e13c1e9271d0b8acb694a49",
+          "read_only": true,
+          "destructive": false,
+          "idempotent": true
+        }
+      }
     },
     "fabric-core/default": {
       "status": "needs-sign-in"
