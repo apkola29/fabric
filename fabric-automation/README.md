@@ -25,6 +25,7 @@ Design and research for the **Fabric Code Factory**: an autonomous, Git-backed w
 | [Research digest](docs/03-landscape-research.md) | The landscape in one document, with the quality-gate catalogue and the threat model. |
 | [Brief](docs/00-brief.md) | The idea, the way of working, and the research rules. |
 | [Reviews](docs/reviews/) | The cross-verification, the three-model design review, the disposition of every finding, the design closure check, the verification rounds that followed it, and the verification log. |
+| [Verification material](verification/README.md) | The briefs that the reviewers and the implementers were given, what the implementers reported, and the scripts behind the mutation, replay, Linux and fresh-clone numbers of the records. |
 | [Research](docs/research/) | The raw reports behind the digest. |
 | [Archive](docs/archive/) | Version 0.1 of the design and the register. |
 
