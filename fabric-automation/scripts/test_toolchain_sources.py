@@ -1566,6 +1566,24 @@ class GitIsolationTests(unittest.TestCase):
         for name in ("HOMEDRIVE", "HOMEPATH", "NETRC", "GIT_SSL_CERT", "GIT_SSL_KEY", "GIT_SSL_CERT_PASSWORD_PROTECTED"):
             self.assertNotIn(name, child, name)
 
+    def test_what_the_operator_sets_for_a_proxy_reaches_the_child_as_it_is(self):
+        # A proxy that asks for a password is reached with the credential that the operator put in its address (and git asks for it up front
+        # when the operator sets GIT_HTTP_PROXY_AUTHMETHOD): it goes to the proxy that the operator named, as it does for any program, and to no
+        # repository. The kit does not take it away, because a call through such a proxy could not work without it; the README says so.
+        address = "http://user:" + "pw" + "@proxy.test:3128"
+        proxy = {"HTTPS_PROXY": address, "HTTP_PROXY": address, "ALL_PROXY": address, "NO_PROXY": "localhost", "GIT_HTTP_PROXY_AUTHMETHOD": "basic"}
+        for network in (False, True):
+            with self.subTest(network=network):
+                overlay = ts._git_env(network, False)
+                for name in list(proxy) + [name.lower() for name in proxy if name != "GIT_HTTP_PROXY_AUTHMETHOD"]:
+                    self.assertNotIn(name, overlay, "the overlay says nothing about %s, so the child keeps what the operator set" % name)
+        with mock.patch.dict(os.environ, proxy):
+            fake = FakeGit()
+            self.resolve_fails(fake)
+            child = toolchain_io.merged_env(fake.envs[0])
+        for name, value in proxy.items():
+            self.assertEqual(value, child.get(name), name)
+
     def test_the_folder_is_removed_when_the_runner_fails(self):
         class Boom:
             def __init__(self):

@@ -4465,6 +4465,25 @@ class InstallSafetyTests(InstallBase):
                 toolchain.remove_tree(link)
             self.assertEqual((3, 2), (unlink_link.call_count, rmdir.call_count))
 
+    def test_a_link_that_windows_holds_for_a_moment_is_waited_for_and_not_taken_for_a_missing_folder(self):
+        link = self.root / "busy-file-link"
+        write(link, "x")
+        with mock.patch.object(toolchain.toolchain_io, "WINDOWS", True), mock.patch.object(toolchain.toolchain_io, "RETRY_DELAYS", (0, 0, 0)), \
+                mock.patch.object(toolchain, "is_link", lambda p: Path(p) == link), \
+                mock.patch.object(os, "unlink", side_effect=[PermissionError(13, "Access is denied"), PermissionError(13, "Access is denied"), None]) as unlink, \
+                mock.patch.object(os, "rmdir", side_effect=NotADirectoryError(20, "The directory name is invalid")) as rmdir:
+            toolchain.remove_tree(link)
+        self.assertEqual((3, 2), (unlink.call_count, rmdir.call_count), "the link is tried again after each pause, and removing it as a folder never fits a file")
+
+    def test_a_link_that_cannot_be_removed_reports_what_unlinking_said_and_not_what_removing_a_folder_said(self):
+        link = self.root / "stuck-link"
+        write(link, "x")
+        with mock.patch.object(toolchain.toolchain_io, "RETRY_DELAYS", ()), mock.patch.object(toolchain, "is_link", lambda p: Path(p) == link), \
+                mock.patch.object(os, "unlink", side_effect=PermissionError(13, "Access is denied")), \
+                mock.patch.object(os, "rmdir", side_effect=NotADirectoryError(20, "The directory name is invalid")):
+            with self.assertRaises(PermissionError):
+                toolchain.remove_tree(link)
+
     def test_a_link_is_unlinked_by_remove_tree_and_never_walked(self):
         folder = self.root / "declared-link"
         write(folder / "keep.txt", "x")
@@ -5180,6 +5199,59 @@ class LinkTests(InstallBase):
         with self.linked(base / "skills" / "notes", base / "skills" / "readme.md"):
             self.assertEqual(["router"], sorted(toolchain.repo_skill_folders(base)))
 
+    def test_a_link_inside_a_skill_of_this_repository_is_refused_at_any_depth(self):
+        base = self.root / "toolchain"
+        skill = base / "skills" / "router"
+        write(skill / "refs" / "deep.md", "deep\n")
+        write(skill / "zeta.md", "last\n")
+        said = "toolchain/skills/%s is a link; the toolchain reads the skills of this repository from real folders only"
+        for linked, shown in ((skill / "SKILL.md", "router/SKILL.md"), (skill / "refs", "router/refs"),
+                              (skill / "refs" / "deep.md", "router/refs/deep.md"), (skill / "zeta.md", "router/zeta.md")):
+            with self.subTest(link=shown), self.linked(linked):
+                with self.assertRaises(toolchain.ToolchainError) as caught:
+                    toolchain.repo_skill_folders(base)
+                self.assertEqual(said % shown, str(caught.exception))
+        self.assertEqual(["router"], sorted(toolchain.repo_skill_folders(base)))
+
+    def test_every_command_that_reads_the_skills_of_this_repository_stops_at_a_link_inside_one(self):
+        skill = self.root / "toolchain" / "skills" / "router"
+        write(skill / "refs" / "deep.md", "deep\n")
+        said = "toolchain/skills/router/refs/deep.md is a link; the toolchain reads the skills of this repository from real folders only"
+        with self.linked(skill / "refs" / "deep.md"):
+            code, out, err = self.cli("verify")
+            self.assertEqual(1, code)
+            self.assertIn("[FAIL] V8: " + said, out)
+            for argv in (["render", "--host", "load-plan"], ["install", "--skip-mcp"], ["fetch"], ["list"]):
+                with self.subTest(argv=argv):
+                    code, out, err = self.cli(*argv, deps=self.deps(runner=self.runner, vendor_skills=forbidden("vendor_skills")))
+                    self.assertEqual(1, code, out)
+                    self.assertIn(said, err)
+                    self.assertNotIn("Traceback", err)
+
+    def assert_no_link_inside_a_skill_of_this_repository(self, make_link):
+        base = self.root / "toolchain"
+        skill, outside = base / "skills" / "router", self.tmp / "outside-of-the-skill"
+        write(outside / "secret.md", "outside the repository\n")
+        for where in (skill / "linked", skill / "refs" / "linked"):
+            where.parent.mkdir(parents=True, exist_ok=True)
+            make_link(where, outside)
+            with self.subTest(link=where.relative_to(skill).as_posix()):
+                with self.assertRaises(toolchain.ToolchainError) as caught:
+                    toolchain.repo_skill_folders(base)
+                self.assertEqual("toolchain/skills/router/%s is a link; the toolchain reads the skills of this repository from real folders only"
+                                 % where.relative_to(skill).as_posix(), str(caught.exception))
+                code, out, err = self.cli("render", "--host", "load-plan")
+                self.assertEqual(1, code)
+                self.assertIn("is a link", err)
+            self.drop_link(where)
+        self.assertEqual(["router"], sorted(toolchain.repo_skill_folders(base)))
+
+    def test_a_real_junction_inside_a_skill_of_this_repository_is_refused(self):
+        self.assert_no_link_inside_a_skill_of_this_repository(self.make_junction)
+
+    def test_a_real_symbolic_link_inside_a_skill_of_this_repository_is_refused(self):
+        self.assert_no_link_inside_a_skill_of_this_repository(self.make_symlink)
+
     def test_every_command_that_reads_the_skills_of_this_repository_stops_at_a_link_there(self):
         said = "toolchain/skills/router is a link; the toolchain reads the skills of this repository from real folders only"
         with self.linked(self.root / "toolchain" / "skills" / "router"):
@@ -5346,6 +5418,13 @@ class LinkTests(InstallBase):
         pack["skills"]["gamma"] = "not an object"
         write(self.store / "MANIFEST.json", toolchain.dump_json(pack))
         self.assertEqual([("WARN", "the local pack does not list skill gamma at the locked digest")], problems())
+
+    def test_a_pack_listing_with_a_shared_entry_that_is_not_an_object_is_a_warning_and_not_a_crash(self):
+        problems = self.pack()
+        pack = read_json(self.store / "MANIFEST.json")
+        pack["shared"]["common"] = "not an object"
+        write(self.store / "MANIFEST.json", toolchain.dump_json(pack))
+        self.assertEqual([("WARN", "the local pack does not list shared folder common at the locked digest")], problems())
 
 
 class SharedInstallTests(InstallBase):
@@ -5869,14 +5948,27 @@ class HostTests(InstallBase):
             data["mcpServers"]["docs"]["url"] = "https://changed.example.invalid/mcp"
             write(path, toolchain.dump_json(data))
         hint = self.PREFIX + "install --apply --scope user"
+        replace = hint + " --skip-skills --force"
         lines = self.cli("verify", "--live", "--host", "copilot-cli", deps=self.deps(runner=self.runner))[1].splitlines()
         self.assertIn("[WARN] V9: $HOME/.copilot/mcp-config.json lacks the server npm-srv (%s)" % hint, lines)
-        self.assertIn("[WARN] V9: $HOME/.copilot/mcp-config.json holds a different entry for the server docs (%s)" % hint, lines)
+        self.assertIn("[WARN] V9: $HOME/.copilot/mcp-config.json holds a different entry for the server docs (%s)" % replace, lines,
+                      "install keeps an entry of the user's own unless it is forced, and the skills are not what this line is about")
         self.assertIn("[FAIL] V9: .github/mcp.json lacks the server npm-srv", lines)
         self.assertIn("[FAIL] V9: .github/mcp.json holds a different entry for the server docs", lines)
         lines = self.cli("verify", "--live", "--host", "copilot-cli", "--profile", "dev-c", deps=self.deps(runner=self.runner))[1].splitlines()
-        self.assertIn("[WARN] V9: $HOME/.copilot/mcp-config.json holds a different entry for the server docs (%s --profile dev-c --scope user)" % hint.replace(" --scope user", ""),
-                      lines, "the profile is named before the scope")
+        self.assertIn("[WARN] V9: $HOME/.copilot/mcp-config.json holds a different entry for the server docs (%s --profile dev-c --scope user --skip-skills --force)"
+                      % hint.replace(" --scope user", ""), lines, "the profile is named before the scope")
+        self.run_the_hint(replace)
+        self.assertEqual(original["mcpServers"]["docs"], read_json(user_file)["mcpServers"]["docs"], "the entry that differed is replaced")
+        self.assertEqual(original["mcpServers"]["npm-srv"], read_json(user_file)["mcpServers"]["npm-srv"], "and the one that was missing is added")
+        self.assertFalse((self.home / ".copilot" / "skills").exists(), "no skill was installed by it")
+        self.assertNotIn("$HOME/.copilot/mcp-config.json", self.cli("verify", "--live", "--host", "copilot-cli", deps=self.deps(runner=self.runner))[1])
+        data = copy.deepcopy(original)
+        data["mcpServers"]["docs"]["url"] = "https://changed.example.invalid/mcp"
+        write(user_file, toolchain.dump_json(data))
+        code, out, _ = self.cli(*hint[len(self.PREFIX):].split(), deps=self.deps(runner=self.runner))
+        self.assertEqual(1, code, "the command of the plain hint stops at an entry that differs, which is why the line about it names --force: " + out)
+        self.assertIn("! mcp-user copilot-cli $HOME/.copilot/mcp-config.json: server docs differs (use --force to replace it)", out)
         data = copy.deepcopy(original)
         del data["mcpServers"]["npm-srv"]
         write(user_file, toolchain.dump_json(data))
@@ -5884,6 +5976,17 @@ class HostTests(InstallBase):
         self.assertEqual(original["mcpServers"]["npm-srv"], read_json(user_file)["mcpServers"]["npm-srv"], "what the user file lacked is put back")
         out = self.cli("verify", "--live", "--host", "copilot-cli", deps=self.deps(runner=self.runner))[1]
         self.assertNotIn("$HOME/.copilot/mcp-config.json", out)
+
+    def test_user_level_files_are_compared_for_a_dev_profile_only_because_install_writes_none_for_an_agent_profile(self):
+        self.assertEqual(0, self.install("--apply", "--scope", "user", "--host", "copilot-cli")[0])
+        self.assertTrue((self.home / ".copilot" / "skills" / toolchain.MARKER).is_file())
+        self.assertTrue((self.home / ".copilot" / "mcp-config.json").is_file())
+        self.assertEqual(2, self.install("--apply", "--scope", "user", "--host", "copilot-cli", "--profile", "agent-ok")[0], "install refuses it")
+        self.assertEqual(0, self.install("--apply", "--host", "copilot-cli", "--profile", "agent-ok")[0])
+        code, out, _ = self.cli("verify", "--live", "--host", "copilot-cli", "--profile", "agent-ok", deps=self.deps(runner=self.runner))
+        self.assertEqual(0, code, out)
+        self.assertNotIn("$HOME", out, "nothing is reported about a place that no command of the kit could put right for this profile")
+        self.assertIn("[PASS] V2: profile agent-ok", out)
 
     def test_doctor_looks_at_the_project_only_so_its_hints_name_no_scope(self):
         self.assertEqual(0, self.install("--apply", "--scope", "user", "--host", "copilot-cli", "vscode")[0])
@@ -5970,6 +6073,33 @@ class InstalledStateTests(InstallBase):
         self.assertNotIn("router in .github/skills is left over", out)
         self.assertEqual(0, self.install("--apply", "--host", "copilot-cli", "--profile", "agent-ok")[0])
         self.assertEqual(0, self.live("--host", "copilot-cli", "--profile", "agent-ok")[0])
+
+    def test_doctor_names_the_host_in_the_hint_for_a_skills_folder_that_was_installed_for_another_profile(self):
+        self.assertEqual(0, self.install("--apply", "--host", "claude-code")[0])
+        out = self.doctor("--host", "claude-code", "--profile", "agent-ok")[1]
+        self.assertIn("[FAIL] host claude-code skills: .claude/skills was installed for profile dev-a, not profile agent-ok "
+                      "(run: python scripts/toolchain.py install --apply --host claude-code --profile agent-ok)", out)
+
+    def test_a_project_mcp_file_that_is_not_text_is_a_finding_of_verify_and_of_doctor_and_not_a_crash(self):
+        self.assertEqual(0, self.install("--apply", "--host", "copilot-cli", "vscode")[0])
+        render = "(run: python scripts/toolchain.py render --write-project)"
+        for rel, host in ((".github/mcp.json", "copilot-cli"), (".vscode/mcp.json", "vscode")):
+            with self.subTest(file=rel):
+                original = (self.root / rel).read_bytes()
+                (self.root / rel).write_bytes(b"\xff\xfe not text")
+                code, out, err = self.cli("verify")
+                self.assertEqual((1, ""), (code, err), out)
+                self.assertIn("[FAIL] V5: %s differs from the rendering of profile dev-a %s" % (rel, render), out)
+                report = json.loads(self.cli("verify", "--json")[1])
+                self.assertEqual((False, 1), (report["ok"], report["failures"]))
+                code, out, err = self.doctor()
+                self.assertEqual("", err)
+                self.assertIn("[WARN] host %s mcp: %s differs from the rendering of profile dev-a %s" % (host, rel, render), out)
+                report = json.loads(self.doctor("--json")[1])
+                self.assertIn({"level": "WARN", "check": "host %s mcp" % host,
+                               "message": "%s differs from the rendering of profile dev-a %s" % (rel, render)}, report["findings"])
+                (self.root / rel).write_bytes(original)
+        self.assertEqual(0, self.cli("verify")[0])
 
     def test_a_skill_folder_that_the_marker_does_not_list_is_not_installed(self):
         self.assertEqual(0, self.install("--apply", "--host", "copilot-cli")[0])

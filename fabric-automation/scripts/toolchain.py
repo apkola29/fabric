@@ -221,8 +221,11 @@ def remove_tree(path):
     def unlink_link():
         try:
             os.unlink(path)
-        except OSError:
-            os.rmdir(path)  # Windows removes a junction like an empty folder
+        except OSError as refused:
+            try:
+                os.rmdir(path)  # Windows removes a junction like an empty folder
+            except OSError:
+                raise refused from None  # what the link itself said: a file link that is held for a moment is a PermissionError, which is waited for
 
     if is_link(path):
         toolchain_io.retrying(unlink_link)
@@ -2169,7 +2172,8 @@ def select_hosts(manifest, deps, requested, defaults=None):
 
 
 def repo_skill_folders(base):
-    """The skills this repository owns under <toolchain folder>/skills: {name: folder}. A link is refused: they are read from real folders only."""
+    """The skills this repository owns under <toolchain folder>/skills: {name: folder}. A link is refused, the folder of a skill and anything
+    inside it: they are read from real folders only, and a link inside one would be measured as a text that names its target."""
     root = Path(base) / "skills"
     if is_link(root):
         raise ToolchainError("toolchain/skills is a link; the toolchain reads the skills of this repository from real folders only")
@@ -2178,8 +2182,10 @@ def repo_skill_folders(base):
     found = {}
     for entry in sorted(root.iterdir()):
         if entry.is_dir() and (entry / "SKILL.md").is_file():
-            if is_link(entry):
-                raise ToolchainError("toolchain/skills/%s is a link; the toolchain reads the skills of this repository from real folders only" % _shown(entry.name))
+            linked = link_inside(entry)
+            if linked is not None:
+                raise ToolchainError("toolchain/skills/%s is a link; the toolchain reads the skills of this repository from real folders only"
+                                     % _shown(linked.relative_to(root).as_posix()))
             found[entry.name] = entry
     for name in found:
         if not SKILL_RE.fullmatch(name):
@@ -2359,16 +2365,22 @@ def _check_project_files(project, deps, manifest, profiles, lock, f):
         path = project.root / rel
         if not path.is_file():
             f.add("FAIL", "V5", "%s is missing (%s)" % (rel, RENDER_HINT))
-        elif read_text_lf(path, rel) != dump_json(render(host, resolved)):
-            f.add("FAIL", "V5", "%s differs from the rendering of profile %s (%s)" % (rel, name, RENDER_HINT))
-        else:
+            continue
+        try:
+            same = read_text_lf(path, rel) == dump_json(render(host, resolved))
+        except ToolchainError:
+            same = False  # a file that cannot be read as text is not the rendering
+        if same:
             f.add("PASS", "V5", "%s equals the rendering of profile %s" % (rel, name))
+        else:
+            f.add("FAIL", "V5", "%s differs from the rendering of profile %s (%s)" % (rel, name, RENDER_HINT))
 
 
-def _entries_missing(path, host, rendering, label, level, f, needs_one=False, hint=None):
+def _entries_missing(path, host, rendering, label, level, f, needs_one=False, hint=None, replace_hint=None):
     """Compare the servers of a host file with a rendering. With needs_one the file is compared only when it already holds a server
     of the rendering: a user file that holds none was not written by this kit, so what it lacks is not a defect.
-    The `hint`, the command that puts the servers in place, ends each line that it is given for."""
+    The `hint`, the command that puts the servers in place, ends each line that it is given for; a line about an entry that differs
+    ends with `replace_hint` when there is one, because install keeps an entry of the user's own unless it is forced."""
     container = "servers" if host == "vscode" else "mcpServers"
     try:
         current = read_json(path, label)
@@ -2380,11 +2392,12 @@ def _entries_missing(path, host, rendering, label, level, f, needs_one=False, hi
     if needs_one and not any(sid in servers for sid in rendering[container]):
         return
     tail = " (%s)" % hint if hint else ""
+    replace_tail = " (%s)" % (replace_hint or hint) if (replace_hint or hint) else ""
     for sid, entry in rendering[container].items():
         if sid not in servers:
             f.add(level, "V9", "%s lacks the server %s%s" % (label, sid, tail))
         elif servers[sid] != entry:
-            f.add(level, "V9", "%s holds a different entry for the server %s%s" % (label, sid, tail))
+            f.add(level, "V9", "%s holds a different entry for the server %s%s" % (label, sid, replace_tail))
 
 
 def has_skills(resolved):
@@ -2483,10 +2496,12 @@ def _check_precedence(project, manifest, resolved, name, f, check, hint):
               % (claude["mcp_project"], copilot["mcp_project"], name, hint))
 
 
-def install_command(profile, default, hosts=(), scope="project"):
+def install_command(profile, default, hosts=(), scope="project", replace_mcp=False):
     """The install command that puts `profile` in place for `hosts`: --host for a host that install does not pick on its own (Claude Code),
     --profile unless the profile is the default one, because that is what install and render --write-project do without it, and
-    --scope user when the folder or file that a report is about is the user's, because install writes the project's without it."""
+    --scope user when the folder or file that a report is about is the user's, because install writes the project's without it.
+    With replace_mcp the command replaces the MCP entries that differ and nothing else: --force replaces whatever differs, a skill that
+    somebody edited included, so the skills are left out."""
     command = INSTALL_HINT
     if any(host not in DEFAULT_HOSTS for host in hosts):
         command += " --host " + " ".join(hosts)
@@ -2494,6 +2509,8 @@ def install_command(profile, default, hosts=(), scope="project"):
         command += " --profile " + profile
     if scope == "user":
         command += " --scope user"
+    if replace_mcp:
+        command += " --skip-skills --force"
     return command
 
 
@@ -2557,13 +2574,15 @@ def _check_live(project, deps, manifest, profiles, lock, f, hosts, names, store)
                           % (spec["mcp_project"], host, name, mcp_hint(host, name, default)))
             if host == "copilot-cli":
                 _check_precedence(project, manifest, resolved, name, f, "V9", install_command(name, default, ["claude-code"]))
-            if spec.get("mcp_user"):
+            user_level = resolved["mode"] == "dev"  # install writes no user-level file or folder for an agent or executor profile, so there is nothing to compare
+            if spec.get("mcp_user") and user_level:
                 user = Path(expand_home(spec["mcp_user"], deps.home))
                 if user.is_file():
                     _entries_missing(user, host, rendering, project.shown(user, deps), "WARN", f, needs_one=True,
-                                     hint=install_command(name, default, [host], "user"))
+                                     hint=install_command(name, default, [host], "user"),
+                                     replace_hint=install_command(name, default, [host], "user", replace_mcp=True))
             folders.setdefault(project.root / spec["skills_project"], [spec["skills_project"], [], has, "project"])[1].append(host)
-            if spec.get("skills_user"):
+            if spec.get("skills_user") and user_level:
                 directory = Path(expand_home(spec["skills_user"], deps.home))
                 folders.setdefault(directory, [project.shown(directory, deps), [], False, "user"])[1].append(host)
         for directory, (text, owners, required, scope) in folders.items():
@@ -3013,6 +3032,18 @@ def is_link(path):
         return False
     tag = getattr(info, "st_reparse_tag", None)
     return tag is None or ((tag & 0xFFFF0FFF) != 0x9000001A and tag != 0x80000021)
+
+
+def link_inside(folder):
+    """The folder itself when it is a link, else a link below it at any depth, else None. Each entry is tested before the walk goes into
+    it, and the first link ends the walk, so the walk never enters a link, also not a junction, which os.walk would follow."""
+    if is_link(folder):
+        return Path(folder)
+    for current, dirs, names in os.walk(folder):
+        for entry in dirs + names:
+            if is_link(Path(current) / entry):
+                return Path(current) / entry
+    return None
 
 
 def link_label(path, root, home):
@@ -3486,10 +3517,15 @@ def _doctor_hosts(project, deps, manifest, resolved, hosts, f):
         path = project.root / spec["mcp_project"]
         if not path.is_file():
             f.add("WARN", "host %s mcp" % host, "%s is missing (%s)" % (spec["mcp_project"], mcp_hint(host, name, default)))
-        elif read_text_lf(path, spec["mcp_project"]) != dump_json(render(host, resolved)):
-            f.add("WARN", "host %s mcp" % host, "%s differs from the rendering of profile %s (%s)" % (spec["mcp_project"], name, mcp_hint(host, name, default)))
         else:
-            f.add("PASS", "host %s mcp" % host, "%s equals the rendering of profile %s" % (spec["mcp_project"], name))
+            try:
+                same = read_text_lf(path, spec["mcp_project"]) == dump_json(render(host, resolved))
+            except ToolchainError:
+                same = False  # a file that cannot be read as text is not the rendering
+            if same:
+                f.add("PASS", "host %s mcp" % host, "%s equals the rendering of profile %s" % (spec["mcp_project"], name))
+            else:
+                f.add("WARN", "host %s mcp" % host, "%s differs from the rendering of profile %s (%s)" % (spec["mcp_project"], name, mcp_hint(host, name, default)))
         if host == "copilot-cli":
             _check_precedence(project, manifest, resolved, name, f, "host copilot-cli mcp", install_command(name, default, ["claude-code"]))
     folders = {}

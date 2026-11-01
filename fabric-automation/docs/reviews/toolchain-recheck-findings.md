@@ -1,0 +1,71 @@
+# Closure check of the toolchain kit after the third review: findings, checks and outcomes
+
+The fixes of the third review ([toolchain-delta-findings.md](toolchain-delta-findings.md)) were published as commit `2231f55f7a`, and the validate workflow passed on Linux for it (run 41292342224). The three families that had written that review then looked at the result a fourth time, each in its own clean clone and each at the slice it had reviewed before: whether its own findings were closed, a read of the whole diff of its slice for defects in the fixes themselves, and mutations of the new safeguards. This file says what they decided, what new they found, how each point was checked, what was changed and how the change was proved. The replies are kept as the reviewers wrote them, with only the notation normalised.
+
+| Reviewer | Model | Slice | Reply | New findings | Mutations |
+|---|---|---|---|---|---|
+| A | Gemini 4 Argon | The command line: `scripts/toolchain.py` and its tests | [toolchain-recheck-gemini.md](toolchain-recheck-gemini.md) | 5 (1 Medium, 4 Low), and one more point in the diff review that it did not number | 37 on copies of the new safeguards, 2 survived; the 6 that survived the third review were run again and are killed |
+| B | GPT 6.1 Sol | The helper modules: processes and HTTP, the MCP probe, Git, skills and packages | [toolchain-recheck-gpt.md](toolchain-recheck-gpt.md) | 1 (Medium as the reviewer rated it) | 21 on copies, none survived |
+| C | Grok 4.7 | The data, the documents, the workflows and a first run from a clean clone | [toolchain-recheck-grok.md](toolchain-recheck-grok.md) | 1 (Low) | none (it read the documents and ran the kit) |
+
+## What the reviewers decided about the items of the third review
+
+The 21 items of the third review (R-D1-1 to R-D1-10, R-D2-1 to R-D2-8, R-D3-1, R-D3-2 and R-C-5, which the third review had left open) were tried again by repeating each reproduction against the new tree.
+
+| Decision | Items |
+|---|---|
+| Closed (19) | R-D1-1, R-D1-2, R-D1-4, R-D1-5, R-D1-6, R-D1-8, R-D1-9, R-D1-10 (reviewer A); R-D2-1 to R-D2-8 (reviewer B, each in the scenario that it had reproduced, the real TLS tests included); R-D3-1, R-D3-2 and R-C-5 for `--yes` (reviewer C) |
+| Partly closed (2) | R-D1-3 (reviewer A: a link inside a skill of this repository was still accepted by every command but `install`, R-E1-2) and R-D1-7 (reviewer A: the hints that name `--scope user` were wrong for an agent or executor profile and for an entry that differs, R-E1-1) |
+
+The two author's decisions that reviewer A was asked to judge were upheld: R-D1-8 for the server name and version only (it confirmed in the committed lock that three real tool names of the pinned Fabric server, `onelake_create-shortcut-adls-gen2`, `onelake_create-shortcut-amazon-s3` and `onelake_create-shortcut-s3-compatible`, are read as a token by the probe's rule), and R-D1-4 as a warning plus a refusal to launch, because V10 already fails the profile. The six mutations that survived the third review are all killed on the new tree. For R-C-5 reviewer C repeated the part about `--yes` with the same SDK (10.0.403): after or before the package, for `dotnet tool exec` and for `dnx`, the tool received no argument, and an invented option after the package reached it. It did not see the banner of the first use that the author had seen, and said so; see the first point of "What the author added to the review" for why.
+
+## How each new finding was handled
+
+The author re-read the cited code and reproduced the finding, or checked it against the primary source, before accepting or rejecting anything. Nothing was rejected. By the author's ratings that is 0 High, 1 Medium and 7 Low (the reviewers had rated 2 Medium, 5 Low and one point that they did not rate).
+
+## Findings of reviewer A (the command line)
+
+| ID | Finding | Rated | After the check | What was done |
+|---|---|---|---|---|
+| R-E1-1 | `verify --live` compares the user-level skills folder and MCP file for every profile. For an `agent` or `executor` profile that cannot be put right: `install` refuses `--scope user` for it, so a developer's user-level install of a `dev` profile fails every agent profile (every skill "is not installed", the others "left over"), and the hint names a command that exits with 2. The hint for an MCP entry that differs names a command that stops at that entry (exit 1) | Medium | Medium (reproduced: the hinted command exits 2 for an agent profile and 1 at a differing entry; a test that kept the user-level state of a `dev` profile and verified an agent profile failed on the old rule) | The user-level files and folders are compared for a `dev` profile only, and the README row of V9 says so. The line about an entry that differs ends with `install --apply ... --scope user --skip-skills --force`: `--force` replaces whatever differs (a skill that somebody edited included), so the skills are left out, and the entry is replaced after a backup of the file. The test now runs that command and the plain one, and the old test had hidden the problem by rewriting the differing entry before it ran the hint |
+| R-E1-2 | `repo_skill_folders` refuses a link at the folder of a skill of this repository but not inside it, so `verify`, `render`, `fetch` and `list` accept a link inside, which is measured as a text that names its target, and only `install` refuses it. The record of the third review said "at the folder or inside it" | Low | Low (reproduced with a declared link and with real junctions; the real symbolic links run on Linux) | One helper (`link_inside`) finds the folder itself, or a link at any depth below it, without entering a link, and `repo_skill_folders` refuses with the path of the link below the skills folder. The sentence of the third review is now true of the reading as it was of the copy |
+| R-E1-3 | `remove_tree` falls back from `os.unlink` to `os.rmdir`, which is meant for a junction. For a file link that Windows holds for a moment, `unlink` says access denied (waited for), and the fallback then says that the name is not a folder, which is not waited for and replaces the first error | Low | Low (the code read and the two errors reproduced with the system's own error types; a real file symbolic link cannot be made on the author's machine, so the Windows timing with a real lock is UNVERIFIED) | When the fallback fails too, the error of the unlink is raised: a busy file link is waited for, and what an operator reads is what removing the link said |
+| R-E1-4 | A `.github/mcp.json` or `.vscode/mcp.json` that is not valid UTF-8 ends `verify` and `doctor` with one error line, and `--json` prints nothing, where `.mcp.json` is a finding | Low | Low (reproduced) | Both treat a file that cannot be read as text as a file that differs from the rendering: a failure of V5 for `verify` and a warning for `doctor`, each with the hint that writes the file again |
+| R-E1-5 | Two mutations survive: the host in the hint of `doctor` for a skills folder that was installed for another profile, and an entry of the `shared` part of the pack listing that is not an object | Low | Low (reproduced) | One test each; both mutations are killed |
+| R-E1-6 | The reviewer's diff review, not numbered: a `fetch` without `--profile` stops on an `agent` profile when the lock holds an unresolved package, because `fetch` now resolves each profile as `render` does | Low | Low (reproduced in a scratch copy with the npm package of the Fabric server unresolved: `verify` fails V3 for the five agent and executor profiles, and `fetch` stops with the same reason; `fetch --profile dev-factory` fetched 56 skills and 1,335 files in 36 seconds with a warning) | No code change: it is the intended result of R-D1-1, and the lock is already refused by `verify`. The README says what happens and which command still works |
+
+## Findings of reviewer B (the helper modules)
+
+| ID | Finding | Rated | After the check | What was done |
+|---|---|---|---|---|
+| R-E2-1 | The Git calls that are meant to be anonymous still pass a proxy address with a user name and a password (`HTTPS_PROXY`), and with `GIT_HTTP_PROXY_AUTHMETHOD=basic` Git sends it up front. A test with a loopback proxy and made-up credentials showed it. The README says that the call "sends no credential" | Medium | Low (the code read, and the reviewer's own experiment accepted: the credential goes to the proxy that the operator configured, never to a repository, and a call through an authenticating proxy could not work without it; the README had already said that a proxy is honoured, but not that this includes its credential) | No change to the behaviour. The README says that the call is anonymous towards the repository and not towards an authenticating proxy that the operator configured, and that the probe of an MCP server, which runs code that nobody reviewed, gets such an address without the credential. A test pins the decision: no variable of a proxy is in the overlay of a Git call, whether or not it makes a network call. Three mutations that remove a proxy variable are killed by it |
+
+## Findings of reviewer C (the data, the documents and the first run)
+
+| ID | Finding | Rated | After the check | What was done |
+|---|---|---|---|---|
+| R-E3-1 | The VS Code rendering of the Bicep server has `${env:DOTNET_NOLOGO}` and the other three without a default, where Copilot CLI and Claude Code have `${NAME:-default}`, so an unset variable does not switch the first use of the .NET CLI off when VS Code starts the server | Low | Low (reproduced by rendering the profile `dev-azure` for the three hosts; the capability table of the VS Code reference lists `${env:NAME}` for the VS Code format and `${NAME:-default}` only for the portable `.mcp.json` formats) | No change to the rendering. A literal default for VS Code would also take away the way an operator accepts the Power BI license (that variable has the default `false`, and the operator sets it in the environment), so the kit writes no literal. The README says what VS Code receives and what that means: a variable that the environment of VS Code does not hold is not switched on there, the first use of the CLI then writes to the error stream once per user, and the protocol is not disturbed. VS Code was not run |
+
+Reviewer C also saw that a `fetch --profile` writes the local pack to the selection, so that `verify --live` for another profile then warns that the pack does not list its skills (a warning, and `install` fetches again), and that a second `fetch` while the pack already matches the lock leaves the cache folder alone (it is removed when a commit is needed, which is what the README says).
+
+## The mutations that survived
+
+Reviewer A's 35 other mutations were killed, and so were all 21 of reviewer B.
+
+| Mutation | What covers it now |
+|---|---|
+| `doctor` passing the hint without the host of the folder to `skills_dir_problems` (N36) | `test_doctor_names_the_host_in_the_hint_for_a_skills_folder_that_was_installed_for_another_profile` |
+| A `shared` entry of the pack listing that is not an object, read without the test (N37) | `test_a_pack_listing_with_a_shared_entry_that_is_not_an_object_is_a_warning_and_not_a_crash` |
+
+## What the author added to the review
+
+1. **The first use of the SDK, repeated.** Reviewer C could not see the banner of the first use of the SDK that the author had seen, with a fresh home folder. The author ran the SDK 10.0.403 and the small tool package again with a fresh `DOTNET_CLI_HOME`, the folder in which the SDK keeps this state (on Windows a fresh HOME or USERPROFILE does not move it, and the reviewer's machine already had older SDKs). Without the four variables the error stream held 1,069 characters, starting with the welcome banner and the telemetry notice, the certificate sentinel was written, and the output stream held only what the tool printed (no argument, so `--yes` had been taken by the SDK). With the four variables the error stream was empty and no certificate sentinel was written. That is the observation of the third review, with its method written down.
+2. **The tests, and the mutations of the author.** The command line went from 628 to 638 tests and the sources module from 307 to 308; the other two modules did not change (118 and 146). The author applied 21 mutations to the new safeguards, each with a test that kills it: the old fallback of `remove_tree` and the one that raises the second error; the check inside a skill of this repository dropped, restricted to files, restricted to folders, and without the test of the folder itself; the two reads of the mcp files without the guard; the user-level folder, the user-level file and an `agent`-inclusive rule of the user level; the plain hint for a differing entry, a replace line that is the plain tail, a replace command that keeps the skills or does not force, and a call site that gives no replace hint; the two mutations that survived; and three mutations that remove a proxy variable. All 21 were killed.
+3. **A Linux probe before the publication**, as in the third review: the current project files on a throw-away branch with the validate workflow dispatched there.
+
+## What was not changed, and what is still open
+
+- R-E1-6, R-E2-1 and R-E3-1 are documented and not changed (above).
+- R-E1-3 is not reproduced with a real file symbolic link under a real lock: the author cannot make a symbolic link, and the hosted Linux runner has no lock. The fix is the error handling, which the test drives with the errors that the system gives.
+- The fixes of this round were not reviewed by a model family. They are small (one helper, two guards, one condition, a hint and a few lines of text), the author proved each with mutations, and a Linux probe ran the whole suite. A reader who wants a fifth look has the diff from `2231f55f7a`.
+- What the third review listed as open stays so: the exposure to a Negotiate challenge on a domain-joined machine is UNVERIFIED, the dependencies of the Real-Time Intelligence server and of the two command-line tools are not locked by hash, nothing has been run against a tenant, the Power BI authoring contracts are never captured, VS Code was not run, the SQL endpoint tool name needs a signed-in session, and the factory runtime is not built.
