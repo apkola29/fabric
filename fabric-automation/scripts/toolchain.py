@@ -2065,12 +2065,17 @@ def _short(value):
     return "none" if value is None else (str(value)[:12] if COMMIT_RE.fullmatch(str(value)) else str(value))
 
 
-def format_report(diff, breaks, markdown=False):
-    """The gap analysis as lines of text, or as Markdown for a CI step summary."""
+def format_report(diff, breaks, markdown=False, notes=(), show_notes=True, manifest_edited=False):
+    """The gap analysis as lines of text, or as Markdown for a CI step summary. `notes` are what the resolution said about itself: a note
+    that starts with 'kept' means that part of the check did not run (a package that could not be resolved now, a contract that could not
+    be captured), so 'no upstream change' is then said for what could be checked, and the notes follow the report when `show_notes`.
+    `manifest_edited` says that the lock inputs changed while nothing changed upstream: exit 3 of the check, and the reader has to know why."""
     lines = []
     heading = (lambda t: "## " + t) if markdown else (lambda t: t)
     bullet = "- " if markdown else "  "
     sub = "  - " if markdown else "    "
+    if manifest_edited:
+        lines.append("The lock inputs changed (the manifest was edited); nothing changed upstream.")
     if diff["sources"]:
         lines.append(heading("Skill sources"))
         for s in diff["sources"]:
@@ -2102,13 +2107,17 @@ def format_report(diff, breaks, markdown=False):
             parts = ["%s %s" % (k, ", ".join(c[k])) for k in ("added", "removed", "changed") if c[k]]
             lines.append("%s%s: %s -> %s%s" % (bullet, c["key"], _short(c["old"]), _short(c["new"]), "; tools " + "; ".join(parts) if parts else ""))
     if not any(diff.values()):
-        lines.append("No upstream change.")
+        partial = any(note.startswith("kept ") for note in notes)
+        lines.append("No upstream change was found, but part of the check did not run (see the notes)." if partial else "No upstream change.")
     lines.append(heading("What breaks"))
     if not breaks:
         lines.append(bullet + "nothing: every profile still verifies")
     for b in breaks:
         lines.append("%sprofile %s%s" % (bullet, b["profile"], " (newly broken)" if b["newly_broken"] else ""))
         lines.extend(sub + p for p in b["problems"])
+    if notes and show_notes:
+        lines.append(heading("Notes"))
+        lines.extend(bullet + note for note in notes)
     return lines
 
 
@@ -2924,7 +2933,19 @@ def cmd_lock(args, deps, root):
     return 0
 
 
+def clear_summary(path):
+    """A summary that an earlier check left behind must not outlive a check that did not finish: it is removed before the work starts."""
+    try:
+        Path(path).unlink()
+    except FileNotFoundError:
+        pass
+    except OSError as exc:
+        raise ToolchainError("cannot replace the summary file: %s" % (exc.strerror or exc.__class__.__name__))
+
+
 def cmd_update(args, deps, root):
+    if args.summary_file:
+        clear_summary(args.summary_file)
     project = Project(root).load(lock="skip")
     manifest, profiles = project.manifest, project.profiles
     old = load_lock(project.lock_path) if project.lock_path.is_file() else None
@@ -2933,6 +2954,7 @@ def cmd_update(args, deps, root):
     new, notes = build_lock(manifest, profiles, old, deps, store, args.contracts)
     diff = diff_locks(old, new, deps)
     changed = old is None or strip_generated(new) != strip_generated(old)
+    manifest_edited = old is not None and changed and not any(diff.values())
     breaks = what_breaks(manifest, profiles, old, new)
     report = {"changed": changed, "notes": notes, **diff, "breaks": breaks}
     if args.json:
@@ -2942,11 +2964,9 @@ def cmd_update(args, deps, root):
             print("note: " + note)
         if old is None:
             print("There is no current lock: everything below is new.")
-        elif changed and not any(diff.values()):
-            print("The lock inputs changed (the manifest was edited); nothing changed upstream.")
-        print("\n".join(format_report(diff, breaks)))
+        print("\n".join(format_report(diff, breaks, notes=notes, show_notes=False, manifest_edited=manifest_edited)))
     if args.summary_file:
-        write_atomic(args.summary_file, "# Toolchain update check\n\n" + "\n".join(format_report(diff, breaks, markdown=True)) + "\n")
+        write_atomic(args.summary_file, "# Toolchain update check\n\n" + "\n".join(format_report(diff, breaks, markdown=True, notes=notes, manifest_edited=manifest_edited)) + "\n")
     if args.write:
         if breaks and not args.force:
             print("not written: %d profile(s) would not verify (use --force to write anyway)" % len(breaks), file=sys.stderr)

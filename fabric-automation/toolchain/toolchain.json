@@ -260,7 +260,7 @@
       "transport": "stdio",
       "status": "public-preview",
       "summary": "KQL, Eventhouse, Eventstreams and Activator.",
-      "docs": ["https://github.com/microsoft/fabric-rti-mcp"],
+      "docs": ["https://github.com/microsoft/fabric-rti-mcp", "https://learn.microsoft.com/en-us/fabric/real-time-intelligence/mcp-local-server"],
       "package": {"ecosystem": "pypi", "name": "microsoft-fabric-rti-mcp", "track": "latest"},
       "launch": {"command": "uvx", "args": ["{package}"]},
       "variants": {
@@ -321,11 +321,11 @@
       "url": "https://mcp.management.azure.com",
       "headers": {"x-mcp-toolset": "CostManagement"},
       "status": "unverified",
-      "summary": "The hosted Azure Resource Manager server with the toolset that the Azure cost skills call (their text names it azure-resource-manager-mcp). The server as a whole can also deploy and change resources, and the header only selects the cost toolset (the Azure cost plugin's own configuration), so the variant is declared read-write because nothing here could measure the toolset without a sign-in.",
+      "summary": "The hosted Azure Resource Manager server, as the Azure cost skills call it (their text names it azure-resource-manager-mcp). Its default tools already include template deployments and creating or updating resources, and the header x-mcp-toolset: CostManagement adds the optional cost tools (forecasts, budgets, alerts, and creating a budget); the page does not say that it removes any other tool. So the variant is declared read-write, and nothing here could measure the tool list without a sign-in.",
       "docs": ["https://github.com/Azure/Azure-Resource-Manager-MCP"],
       "variants": {
         "default": {
-          "summary": "Cost and pricing queries. A person signs in; the sign-in method is not documented in the plugin's configuration.",
+          "summary": "The whole server: cost and pricing queries, and also deployments and changes of resources. A person signs in; the sign-in method is not documented in the plugin's configuration.",
           "credentials": "entra-delegated", "network": "microsoft-cloud", "access": "read-write", "unattended": false
         }
       }

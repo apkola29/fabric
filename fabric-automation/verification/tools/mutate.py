@@ -38,7 +38,7 @@ def main(argv):
             src = os.path.join(spec["project"], folder)
             if os.path.isdir(src):
                 shutil.copytree(src, os.path.join(work, folder), ignore=shutil.ignore_patterns("__pycache__"))
-        for name in ("AGENTS.md",):
+        for name in ("AGENTS.md", "CLAUDE.md", "GEMINI.md"):
             if os.path.isfile(os.path.join(spec["project"], name)):
                 shutil.copy2(os.path.join(spec["project"], name), work)
         code, failed, ran, text = run_tests(work, spec["tests"], timeout)

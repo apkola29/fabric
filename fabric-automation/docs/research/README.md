@@ -1,6 +1,6 @@
 # Research
 
-Raw reports from nine research threads, written on 2026-10-30 by research agents working from live sources, and two later grounding notes. They are evidence, not conclusions. The digest ([03-landscape-research.md](../03-landscape-research.md)) and the design ([04-design.md](../04-design.md)) draw on them. Where a raw report and the digest disagree, the raw report wins, and the disagreement should be raised.
+Raw reports from nine research threads, written on 2026-10-30 by research agents working from live sources, and three later grounding notes. They are evidence, not conclusions. The digest ([03-landscape-research.md](../03-landscape-research.md)) and the design ([04-design.md](../04-design.md)) draw on them. Where a raw report and the digest disagree, the raw report wins, and the disagreement should be raised.
 
 | Report | Thread |
 |---|---|
@@ -14,7 +14,8 @@ Raw reports from nine research threads, written on 2026-10-30 by research agents
 | [t6-runtime-hosting.md](raw/t6-runtime-hosting.md) | Runtime, hosting, orchestration and model gateways |
 | [t7-patterns-evals.md](raw/t7-patterns-evals.md) | Intake, specification, iteration, verification, evaluation and metrics |
 | [o1-fabric-surface-grounding.md](raw/o1-fabric-surface-grounding.md) | Which Fabric MCP tools and official skills cover which factory operations, grounded in read-only calls |
-| [t10-toolchain-grounding.md](raw/t10-toolchain-grounding.md) | The Fabric, Power BI, Azure and GitHub MCP servers, the two skill repositories and the three hosts that load them: flags, versions, sign-in, update behaviour, with the experiments that were run on one host |
+| [t10-toolchain-grounding.md](raw/t10-toolchain-grounding.md) | The Fabric, Power BI, Azure and GitHub MCP servers, the two skill repositories and the three hosts that load them: flags, versions, sign-in, update behaviour, which instruction file each host reads, and the Fabric servers that the kit does not pin, with the experiments that were run on one host |
+| [t11-reference-frameworks.md](raw/t11-reference-frameworks.md) | The 16 Learn pages (Well-Architected for Fabric, Fabric security, lifecycle and architecture guidance) behind the `factory-standards` skill, with their dates and what was observed about them |
 
 Each report separates facts (with a source and a date) from inference, and marks what it could not confirm as UNVERIFIED. The cross-verification of their decision-driving claims is in [../reviews/xv-results.md](../reviews/xv-results.md).
 
