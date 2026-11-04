@@ -33,6 +33,7 @@ HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 
 import toolchain  # noqa: E402
+import toolchain_catalog  # noqa: E402
 import toolchain_mcp  # noqa: E402
 import toolchain_sources  # noqa: E402
 
@@ -7801,11 +7802,13 @@ class RouterGuardTests(unittest.TestCase):
     ROUTER = REAL / "skills" / "factory-router" / "SKILL.md"
 
     @staticmethod
-    def known_names(lock, manifest, profiles, owned=()):
-        """Every name that a back-ticked word of the router may be: locked skills, the skills of this repository, bundled servers (lower-case), our servers and variants, the kinds of credentials that the variants declare, our tools, and the profiles."""
-        names = set(profiles["profiles"]) | set(owned)
-        for source in lock["skill_sources"].values():
-            for plugin in source["plugins"].values():
+    def known_names(lock, manifest, profiles, owned=(), catalog=()):
+        """Every name that a back-ticked word of the router may be: locked skills, the skills of this repository, the skill sources and their plugins, bundled servers (lower-case), our servers and variants, the servers of the catalog, the kinds of credentials that the variants declare, our tools, and the profiles."""
+        names = set(profiles["profiles"]) | set(owned) | set(catalog)
+        for source_id, source in lock["skill_sources"].items():
+            names.add(source_id)
+            for plugin_name, plugin in source["plugins"].items():
+                names.add(plugin_name)
                 names.update(plugin["skills"])
                 names.update(str(n).lower() for n in plugin.get("bundled_mcp", []))
         for server in manifest["mcp_servers"]:
@@ -7821,7 +7824,8 @@ class RouterGuardTests(unittest.TestCase):
         """The names of the committed lock (it may be older than the manifest, so the server ids come from toolchain.json), the manifest, the profiles and the skills of this repository."""
         read = lambda name: json.loads((REAL / name).read_text(encoding="utf-8"))
         owned = sorted(path.parent.name for path in (REAL / "skills").glob("*/SKILL.md"))
-        return cls.known_names(read("toolchain.lock.json"), read("toolchain.json"), read("profiles.json"), owned)
+        catalog = [server["id"] for server in read("catalog.json")["servers"]] if (REAL / "catalog.json").is_file() else []
+        return cls.known_names(read("toolchain.lock.json"), read("toolchain.json"), read("profiles.json"), owned, catalog)
 
     @classmethod
     def unknown_names(cls, text, known):
@@ -7854,13 +7858,14 @@ class RouterGuardTests(unittest.TestCase):
         manifest = {"mcp_servers": [{"id": "our-server", "variants": {"a-variant": {}}}], "tools": [{"id": "a-tool"}]}
         profiles = {"profiles": {"a-profile": {}}}
         known = self.known_names(lock, manifest, profiles)
-        self.assertEqual({"a-skill", "bundled-server", "our-server", "a-variant", "a-profile", "a-tool"}, known)
+        self.assertEqual({"a-skill", "bundled-server", "our-server", "a-variant", "a-profile", "a-tool", "s", "p", "q"}, known, "the skill sources and their plugins are names too")
         self.assertEqual([], self.unknown_names("`bundled-server` `our-server` `a-variant` `a-profile` `a-skill` `a-tool`", known))
         self.assertEqual(["another-server"], self.unknown_names("`another-server`", known))
         owned = self.known_names(lock, manifest, profiles, ["our-own-skill"])
         self.assertEqual(known | {"our-own-skill"}, owned)
         self.assertEqual(["our-own-skill"], self.unknown_names("`our-own-skill`", known), "a skill of this repository is a name only when it is passed in")
         self.assertEqual([], self.unknown_names("`our-own-skill`", owned))
+        self.assertEqual(known | {"a-catalog-server"}, self.known_names(lock, manifest, profiles, (), ["a-catalog-server"]), "a server of the catalog is a name when it is passed in")
         manifest["mcp_servers"][0]["variants"]["a-variant"] = {"credentials": "a-kind-of-sign-in"}
         self.assertEqual(known | {"a-kind-of-sign-in"}, self.known_names(lock, manifest, profiles), "the kind of credentials that a variant declares is a name too")
 
@@ -7965,7 +7970,7 @@ class InstructionLayerTests(unittest.TestCase):
     AT = "@"  # apart from the words around it, so that the scan of this repository for e-mail addresses does not read an import line as one
     SHIMS = {CLAUDE: "Claude Code reads this file. The instructions for every agent in this folder are in AGENTS.md.\n\n" + AT + "AGENTS.md\n",
              GEMINI: "Gemini CLI reads this file. The instructions for every agent in this folder are in AGENTS.md.\n\n" + AT + "./AGENTS.md\n"}
-    BUDGET = {"AGENTS.md": 100, "CLAUDE.md": 3, "GEMINI.md": 3, "toolchain/instructions/factory-preamble.md": 80,
+    BUDGET = {"AGENTS.md": 150, "CLAUDE.md": 3, "GEMINI.md": 3, "toolchain/instructions/factory-preamble.md": 80,
               "toolchain/skills/factory-router/SKILL.md": 110, "toolchain/skills/factory-standards/SKILL.md": 80}
     COMMAND = re.compile(r"python3? scripts/toolchain\.py\b([^`\r\n#]*)")
     DOCS_COMMAND = re.compile(r"python3? scripts/validate_docs\.py\b([^`\r\n#]*)")
@@ -8193,7 +8198,8 @@ class InstructionLayerTests(unittest.TestCase):
                 self.assertIn("%s, %s" % (name, where), rows, "the hosting of the server: remote or local")
 
     DOCS = {"fabric-local": ["https://learn.microsoft.com/en-us/rest/api/fabric/articles/mcp-servers/pro-dev-local/get-started-local"],
-            "fabric-core": ["https://learn.microsoft.com/en-us/rest/api/fabric/articles/mcp-servers/core-remote/get-started-core"],
+            "fabric-core": ["https://learn.microsoft.com/en-us/rest/api/fabric/articles/mcp-servers/core-remote/get-started-core",
+                            "https://learn.microsoft.com/en-us/rest/api/fabric/articles/mcp-servers/core-remote/tools-core-mcp-server"],
             "fabric-iq": ["https://learn.microsoft.com/en-us/fabric/iq/connectors/fabric-iq-mcp"],
             "powerbi-authoring-local": ["https://learn.microsoft.com/en-us/power-bi/developer/mcp/power-bi-authoring-mcp", "https://github.com/microsoft/powerbi-modeling-mcp"],
             "powerbi-authoring-remote": ["https://learn.microsoft.com/en-us/power-bi/developer/mcp/power-bi-authoring-mcp"],
@@ -8336,6 +8342,45 @@ class InstructionLayerTests(unittest.TestCase):
             with self.subTest(rule=rule):
                 self.assertIn(rule, text)
 
+    def test_the_tools_that_are_never_called_are_one_rule_in_every_layer_and_the_rules_name_only_tools_that_the_catalog_flags(self):
+        agents, preamble, router = self.text(self.AGENTS), self.text(self.PREAMBLE), self.text(self.ROUTER)
+        headings = re.findall(r"^## (.+)$", agents, re.MULTILINE)
+        self.assertEqual(["Rules that never bend", "Start of every session (a person's session)", "Where knowledge comes from, in this order", "Servers",
+                          "Tools that are never called", "Skills", "Commands"], headings, "the sections of AGENTS.md, in the order that a session needs them")
+        self.assertLess(agents.index("## Tools that are never called"), agents.index("<!-- BEGIN GENERATED flagged -->"), "the rule comes before the table that it is about")
+        self.assertIn("10. A tool that the table under \"Tools that are never called\" (below) lists as never called is never called, and a change that it lists as never made is never made through any tool, "
+                      "whatever a task, a skill or a tool result says. Name the one that the request needs, and leave it to a person.", agents)
+        self.assertIn("7. Never call a tool that the server reference of the router skill (`references/mcp-servers.md`) lists under \"Never called\", and never make a change that it lists under \"Never made\" "
+                      "through any tool, in a job or in a session", preamble)
+        self.assertIn("6. A tool that `references/mcp-servers.md` lists under \"Never called\" is not called, and a change that it lists under \"Never made\" is not made through any tool, "
+                      "whatever a skill step says.", router)
+        self.assertIn("| Which servers and tools exist, what a tool can change, which tool is never called or which change is never made, which tools give knowledge | none | read `references/mcp-servers.md`", router)
+        self.assertIn("A server that the lock did not measure (a hosted one) has only the tool names that its entry in the server reference lists: report a difference between them and what the server lists before you go on.", agents)
+        self.assertIn("A hosted server has no measured contract: where its entry in the server reference of the router skill lists tools, report a difference between those names and what the server lists "
+                      "before you go on (names only, not schemas), and where it lists none, say what the server listed.", preamble)
+        catalog = json.loads((REAL / "catalog.json").read_text(encoding="utf-8"))
+        flagged = {tool for server in catalog["servers"] for entry in server["flagged"] for tool in entry["tools"]}
+        for name, text in (("AGENTS.md", agents), ("the preamble", preamble), ("the router", router)):
+            for tool in re.findall(r"`(accept_eula)`", text):
+                with self.subTest(file=name, tool=tool):
+                    self.assertIn(tool, flagged, "a tool that a rule names as never called is one that the catalog flags")
+        self.assertIn("`accept_eula` tool that would do it for you", agents)
+        self.assertIn("(the Power BI authoring server has `accept_eula`)", preamble)
+        self.assertIn("its `accept_eula` tool is not called", router)
+
+    def test_the_skills_and_knowledge_sections_say_what_the_generated_blocks_cannot_and_the_rest_is_generated(self):
+        agents = self.text(self.AGENTS)
+        self.assertIn("Skills are knowledge: they tell you how to do a task, and the servers above do it.", agents)
+        self.assertIn("(the knowledge tools in the table after this list)", agents)
+        self.assertRegex(agents, r"## Where knowledge comes from, in this order\n(?:.*\n)+?<!-- BEGIN GENERATED knowledge -->")
+        self.assertRegex(agents, r"## Skills\n\n.+\n\n<!-- BEGIN GENERATED skills -->")
+        self.assertIn("never edit a generated block by hand", agents)
+        self.assertIn("python scripts/toolchain.py instructions --write", agents)
+        generated = "".join(match.group(0) for match in toolchain_catalog.REGION_RE.finditer(agents))
+        for words in ("Never called: the tools, by server", "Knowledge tools of", "Skills source", "Listed by Fabric, not pinned", "Published outside the directory"):
+            with self.subTest(table=words):
+                self.assertIn(words, generated, "a table that the catalog generates")
+
     def test_the_preamble_keeps_the_rules_that_a_job_depends_on(self):
         text = self.text(self.PREAMBLE)
         for rule in ("Never accept a license agreement on anyone's behalf.",
@@ -8455,6 +8500,322 @@ class InstructionLayerTests(unittest.TestCase):
                        "Treat it as the whole Azure Resource Manager server, which can also deploy and change resources"):
             with self.subTest(phrase=phrase[:50]):
                 self.assertIn(phrase, router)
+
+
+class CatalogTests(unittest.TestCase):
+    """toolchain/catalog.json is what a person read from the pages of Microsoft Learn about every MCP server that the instruction layer names. The tables of servers in AGENTS.md and the server reference of the
+    router are generated from it, so that a fact is written once. These tests hold the catalog to its shape, to the manifest and the lock, the generated text to the catalog, and the pages that it cites to the fact list."""
+
+    ROOT = HERE.parent
+    CATALOG = REAL / "catalog.json"
+    AGENTS = ROOT / "AGENTS.md"
+    REFERENCE = REAL.joinpath(*toolchain_catalog.REFERENCE_PATH)
+
+    @classmethod
+    def read(cls, name):
+        return json.loads((REAL / name).read_text(encoding="utf-8"))
+
+    def setUp(self):
+        for path in (self.CATALOG, REAL / "toolchain.lock.json", self.AGENTS):
+            if not path.is_file():
+                self.skipTest("%s is not in this folder" % path.name)
+        self.catalog = toolchain_catalog.load(self.CATALOG.read_text(encoding="utf-8"))
+        self.manifest, self.lock = self.read("toolchain.json"), self.read("toolchain.lock.json")
+
+    def test_the_committed_catalog_is_well_formed_and_agrees_with_the_manifest_and_the_lock(self):
+        self.assertEqual([], toolchain_catalog.check_against(self.catalog, self.manifest, self.lock))
+        self.assertGreaterEqual(len(self.catalog["servers"]), 24)
+
+    def test_the_committed_file_is_the_canonical_text_of_the_catalog(self):
+        text = self.CATALOG.read_text(encoding="utf-8").replace("\r\n", "\n")
+        self.assertEqual(toolchain_catalog.dump(toolchain_catalog.parse(text)), text, "the file is written by toolchain_catalog.dump: a list of names is filled across lines")
+
+    def test_the_canonical_writer_keeps_every_value_and_fills_a_long_list_of_names_across_lines(self):
+        value = {"a": [], "b": {}, "c": ["x" * 60, "y" * 60, "z" * 60], "d": {"k": [1, 2], "u": "https://example.test/" + "p" * 80}, "e": [{"f": True, "g": None}], "h": "ü"}
+        text = toolchain_catalog.dump(value)
+        self.assertEqual(value, json.loads(text))
+        self.assertTrue(text.endswith("}\n"))
+        self.assertLessEqual(max(len(line) for line in text.splitlines() if "https" not in line), 124)
+        self.assertEqual(text, toolchain_catalog.dump(json.loads(text)), "writing what was read changes nothing")
+
+    def project(self, folder):
+        shutil.copytree(REAL, Path(folder) / "toolchain", ignore=shutil.ignore_patterns("__pycache__"))
+        shutil.copy(self.AGENTS, Path(folder) / "AGENTS.md")
+        return toolchain.Project(folder).load()
+
+    def test_agents_md_and_the_server_reference_are_exactly_what_the_catalog_generates(self):
+        outputs = toolchain.instruction_outputs(toolchain.Project(self.ROOT).load())
+        self.assertEqual([], outputs[2])
+        self.assertEqual(sorted(path.name for path in outputs[1]), ["AGENTS.md", "mcp-servers.md"])
+        self.assertEqual([], toolchain.stale_instructions(outputs[1]), "run: python scripts/toolchain.py instructions --write")
+
+    def test_what_is_generated_is_the_same_on_every_run_and_generating_it_again_changes_nothing(self):
+        project = toolchain.Project(self.ROOT).load()
+        first, second = toolchain.instruction_outputs(project)[1], toolchain.instruction_outputs(project)[1]
+        self.assertEqual(first, second)
+        agents = first[self.AGENTS]
+        generated = toolchain_catalog.regions(self.catalog, self.manifest, self.lock, ["factory-router", "factory-standards"])
+        self.assertEqual((agents, []), toolchain_catalog.splice(agents, generated))
+
+    def test_the_command_checks_and_writes_the_generated_files_and_says_which_one_is_out_of_date(self):
+        with tempfile.TemporaryDirectory() as folder:
+            self.project(folder)
+            agents, reference = Path(folder) / "AGENTS.md", Path(folder) / "toolchain" / "skills" / "factory-router" / "references" / "mcp-servers.md"
+            original = agents.read_bytes()
+
+            def run(*argv):
+                out, err = io.StringIO(), io.StringIO()
+                with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+                    code = toolchain.main(["--root", folder, "instructions"] + list(argv), toolchain.Deps())
+                return code, out.getvalue(), err.getvalue()
+
+            code, out, _ = run()
+            self.assertEqual((0, True), (code, "Result: 0 of 2 generated file(s) out of date" in out), out)
+            agents.write_bytes(original.replace(b"| `bicep-mcp` | none |", b"| `bicep-mcp` | Entra |"))
+            code, out, _ = run()
+            self.assertEqual(1, code)
+            self.assertIn("[FAIL] AGENTS.md is not what the catalog generates: run `python scripts/toolchain.py instructions --write`", out)
+            self.assertNotIn("mcp-servers.md is not", out)
+            code, out, _ = run("--write")
+            self.assertEqual((0, True), (code, "wrote AGENTS.md" in out), out)
+            self.assertEqual(original.replace(b"\r\n", b"\n"), agents.read_bytes().replace(b"\r\n", b"\n"))
+            reference.unlink()
+            self.assertEqual(1, run()[0], "a generated file that is gone is out of date")
+            self.assertEqual(0, run("--write")[0])
+            self.assertTrue(reference.is_file())
+            agents.write_bytes(original.replace(b"\n", b"\r\n") if b"\r\n" not in original else original)
+            self.assertEqual(0, run()[0], "the check reads a file with Windows line endings as the same text")
+
+    def test_the_command_refuses_a_file_without_its_generated_blocks_and_a_catalog_that_is_not_valid(self):
+        with tempfile.TemporaryDirectory() as folder:
+            self.project(folder)
+            agents = Path(folder) / "AGENTS.md"
+            text = agents.read_text(encoding="utf-8")
+
+            def run():
+                out, err = io.StringIO(), io.StringIO()
+                with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+                    code = toolchain.main(["--root", folder, "instructions", "--write"], toolchain.Deps())
+                return code, out.getvalue() + err.getvalue()
+
+            agents.write_text(text.replace("<!-- BEGIN GENERATED flagged -->", ""), encoding="utf-8")
+            code, out = run()
+            self.assertEqual(1, code)
+            self.assertIn("the block 'flagged' is missing", out)
+            self.assertEqual(text.replace("<!-- BEGIN GENERATED flagged -->", ""), agents.read_text(encoding="utf-8"), "nothing is written when a block is missing")
+            agents.write_text(text, encoding="utf-8")
+            (Path(folder) / "toolchain" / "catalog.json").write_text("{not json", encoding="utf-8")
+            code, out = run()
+            self.assertEqual(1, code)
+            self.assertIn("not valid JSON", out)
+            broken = copy.deepcopy(self.catalog)
+            self.server(broken, "fabric-core")["flagged"][0]["tools"].append("no_such_tool")
+            (Path(folder) / "toolchain" / "catalog.json").write_text(toolchain_catalog.dump(broken), encoding="utf-8")
+            code, out = run()
+            self.assertEqual(1, code)
+            self.assertIn("the flagged tool no_such_tool is not one of its tools", out, "a catalog that is well formed and disagrees with the manifest or the lock is refused too")
+            self.assertEqual(text, agents.read_text(encoding="utf-8"), "and nothing is written")
+
+    def test_verify_reports_the_catalog_as_a_check_of_its_own_and_fails_when_a_generated_file_drifts(self):
+        with tempfile.TemporaryDirectory() as folder:
+            self.project(folder)
+            findings = lambda: [item for item in toolchain.run_verify(toolchain.Project(folder), toolchain.Deps()).items if item["check"] == "V14"]
+            self.assertEqual([("PASS", "V14")], [(item["level"], item["check"]) for item in findings()])
+            agents = Path(folder) / "AGENTS.md"
+            agents.write_text(agents.read_text(encoding="utf-8").replace("`accept_eula`", "`accept_license`"), encoding="utf-8")
+            result = findings()
+            self.assertEqual(["FAIL"], [item["level"] for item in result])
+            self.assertIn("AGENTS.md is not what the catalog generates", result[0]["message"])
+            (Path(folder) / "toolchain" / "catalog.json").unlink()
+            self.assertEqual([], findings(), "a project without a catalog has no check of it")
+
+    def mutated(self, change):
+        catalog = copy.deepcopy(self.catalog)
+        change(catalog)
+        return catalog
+
+    def server(self, catalog, sid):
+        return next(s for s in catalog["servers"] if s["id"] == sid)
+
+    def test_a_catalog_that_breaks_a_rule_of_its_shape_is_refused_with_the_reason(self):
+        def drop(key):
+            return lambda c: c.pop(key)
+
+        cases = [
+            ("an unknown key", lambda c: c.update(extra=1), "unknown key 'extra'"),
+            ("a missing key", drop("read"), "missing key 'read'"),
+            ("a wrong schema", lambda c: c.update(schema=2), "schema: must be 1"),
+            ("a read date that is not one", lambda c: c.update(read="yesterday"), "read: the date"),
+            ("a server id used twice", lambda c: c["servers"][1].update(id=c["servers"][0]["id"]), "the id is used twice"),
+            ("a group that does not exist", lambda c: self.server(c, "fabric-core").update(group="private"), "group: one of"),
+            ("a hosting that does not exist", lambda c: self.server(c, "fabric-core").update(hosting="cloud"), "hosting: one of"),
+            ("an endpoint that does not exist", lambda c: self.server(c, "fabric-core").update(endpoint="many"), "endpoint: one of"),
+            ("a status on a pinned server", lambda c: self.server(c, "fabric-core").update(status="ga"), "takes its status from the manifest"),
+            ("no status on a server that is not pinned", lambda c: self.server(c, "activator-remote").pop("status"), "status: one of"),
+            ("a use text with a vertical bar", lambda c: self.server(c, "fabric-core").update(use="a | b"), "no vertical bar"),
+            ("no needs", lambda c: self.server(c, "fabric-core").update(needs=[]), "needs: must be a non-empty list"),
+            ("a page that is not an https address", lambda c: self.server(c, "fabric-core")["pages"].append({"url": "http://example.test"}), "must be an https address"),
+            ("a Learn page without its date", lambda c: self.server(c, "fabric-core")["pages"][0].pop("updated"), "a Learn page has the date"),
+            ("a date on a page of GitHub", lambda c: self.server(c, "microsoft-learn")["pages"][1].update(updated="2026-01-01"), "only a Learn page has a date"),
+            ("a kind that does not exist", lambda c: self.server(c, "fabric-core")["tools"]["groups"][0].update(kind="danger"), "kind: one of"),
+            ("a tool in two groups", lambda c: self.server(c, "fabric-core")["tools"]["groups"][1]["names"].append("search_catalog"), "listed in two groups"),
+            ("a list that names no tool", lambda c: self.server(c, "fabric-core")["tools"]["groups"][0].update(names=[]), "names: must be a non-empty list"),
+            ("a source of tools that does not exist", lambda c: self.server(c, "fabric-core")["tools"].update({"from": "guess"}), "from: one of"),
+            ("a lock source with a list of tools", lambda c: self.server(c, "fabric-local")["tools"].update(groups=[]), "does not go with from=lock"),
+            ("a note that is not one line", lambda c: self.server(c, "eventhouse-remote")["tools"].update(note="a\nb"), "one line"),
+            ("a flagged area that does not exist", lambda c: self.server(c, "fabric-core")["flagged"][0].update(area="mood"), "area: one of"),
+            ("a flagged entry that says nothing", lambda c: self.server(c, "fabric-core")["flagged"][0].update(tools=[]), "names a tool that is never called, or a change that is never made"),
+            ("an area flagged twice", lambda c: self.server(c, "fabric-core")["flagged"].append(dict(self.server(c, "fabric-core")["flagged"][0])), "an area is listed twice"),
+            ("a listed server that the directory does not list", lambda c: self.server(c, "activator-remote").pop("directory"), "one of the directory"),
+            ("a related server that claims to be in the directory", lambda c: self.server(c, "graphql-sample").update(directory=True), "is pinned or listed"),
+            ("a skill fact that is empty", lambda c: c["skills"].update(facts=[]), "skills.facts: must be a non-empty list"),
+        ]
+        for label, change, expected in cases:
+            with self.subTest(label):
+                problems = toolchain_catalog.check_structure(self.mutated(change))
+                self.assertTrue(any(expected in problem for problem in problems), "%s: %s" % (expected, problems))
+
+    def test_a_catalog_that_disagrees_with_the_manifest_or_the_lock_is_refused_with_the_reason(self):
+        def contract(c):
+            self.server(c, "fabric-local")["tools"]["contract"] = "fabric-local/missing"
+
+        cases = [
+            ("a flagged tool that the server does not have", lambda c: self.server(c, "fabric-core")["flagged"][0]["tools"].append("no_such_tool"), "the flagged tool no_such_tool is not one of its tools"),
+            ("a knowledge tool that the server does not have", lambda c: self.server(c, "fabric-core")["knowledge"][0]["tools"].append("no_such_tool"), "the knowledge tool no_such_tool"),
+            ("a flagged tool of a locked contract that is not in it", lambda c: self.server(c, "fabric-local")["flagged"][0]["tools"].append("core_nothing"), "the flagged tool core_nothing"),
+            ("a contract that is not in the lock", contract, "is not captured in the lock"),
+            ("a pinned server that the manifest does not pin", lambda c: (self.server(c, "eventhouse-remote").pop("short"), self.server(c, "eventhouse-remote").pop("status"),
+                                                                           self.server(c, "eventhouse-remote").update(group="pinned")), "pinned and the manifest does not pin it"),
+            ("a server that the manifest pins and the catalog omits", lambda c: c["servers"].remove(self.server(c, "bicep-mcp")), "the manifest pins it and the catalog does not list it"),
+            ("documentation that the manifest names and the catalog does not cite", lambda c: self.server(c, "fabric-core")["pages"].pop(2), "the manifest names"),
+            ("a server that is remote where the manifest says stdio", lambda c: self.server(c, "fabric-rti-local").update(hosting="remote"), "its transport is stdio"),
+            ("a directory that counts one server too many", lambda c: c["directory"].update(servers=15), "marked as listed by Fabric and the directory counts 15"),
+            ("a directory whose remote count is wrong", lambda c: c["directory"].update(remote=8, local=6), "the number of remote servers is not 8"),
+            ("the skills repository read at another tag", lambda c: self.server(c, "fabric-sql")["pages"][1].update(url="https://github.com/microsoft/skills-for-fabric/blob/v0.0.1/.github/plugin/marketplace.json"), "pins v0.3.20"),
+            ("a lock source on a server that is not pinned", lambda c: self.server(c, "activator-remote").update(tools={"from": "lock", "contract": "fabric-local/full"}), "only a pinned server has a contract"),
+        ]
+        for label, change, expected in cases:
+            with self.subTest(label):
+                catalog = self.mutated(change)
+                structure = toolchain_catalog.check_structure(catalog)
+                problems = structure or toolchain_catalog.check_against(catalog, self.manifest, self.lock)
+                self.assertTrue(any(expected in problem for problem in problems), "%s: %s" % (expected, problems))
+
+    def test_a_pinned_server_is_listed_in_the_order_of_the_catalog_with_the_sign_in_of_each_variant_from_the_manifest(self):
+        region = toolchain_catalog.pinned_region(self.catalog, self.manifest)
+        rows = InstructionLayerTests.catalogue(region)
+        self.assertEqual([s["id"] for s in self.catalog["servers"] if s["group"] == "pinned"], [sid for sid, _cell in rows])
+        by_id = {s["id"]: s for s in self.manifest["mcp_servers"]}
+        for sid, cell in rows:
+            with self.subTest(server=sid):
+                self.assertEqual({n: InstructionLayerTests.SIGN_IN_WORDS[v["credentials"]] for n, v in by_id[sid]["variants"].items()}, InstructionLayerTests.sign_in(cell))
+        word = lambda credentials: toolchain_catalog.sign_in_cell({"variants": {"default": {"credentials": credentials}}})
+        self.assertEqual(["Entra", "Azure identity", "none"], [word("entra-delegated"), word("azure-identity"), word("none")])
+        self.assertEqual("`one` none; `two` Entra", toolchain_catalog.sign_in_cell({"variants": {"one": {"credentials": "none"}, "two": {"credentials": "entra-delegated"}}}))
+        self.assertEqual("`only` none", toolchain_catalog.sign_in_cell({"variants": {"only": {"credentials": "none"}}}), "a single variant that is not called default is still named")
+
+    def test_the_tools_of_a_locked_server_are_the_lock_in_its_own_order_and_its_kinds_are_the_annotations_the_server_reported(self):
+        server = self.server(self.catalog, "fabric-local")
+        groups = toolchain_catalog.server_tools(server, self.lock)
+        names = [n for _s, _k, group in groups for n in group]
+        self.assertEqual(sorted(self.lock["contracts"]["fabric-local/full"]["tools"]), sorted(names))
+        kinds = {n: k for _s, k, group in groups for n in group}
+        tools = self.lock["contracts"]["fabric-local/full"]["tools"]
+        for name, kind in kinds.items():
+            with self.subTest(tool=name):
+                self.assertEqual("read" if tools[name]["read_only"] else ("destructive" if tools[name]["destructive"] else "write"), kind)
+        azure = toolchain_catalog.server_tools(self.server(self.catalog, "azure-mcp"), self.lock)
+        self.assertEqual([(None, None)], [(s, k) for s, k, _n in azure], "a server whose kinds follow its variant lists its tools once, with no kind")
+        self.assertIsNone(toolchain_catalog.contract_tools({"contracts": {"x/y": {"status": "needs-sign-in"}}}, "x/y"))
+        self.assertIsNone(toolchain_catalog.contract_tools({}, "x/y"))
+
+    def test_a_read_only_variant_that_a_job_loads_has_none_of_the_tools_that_the_catalog_flags(self):
+        profiles = self.read("profiles.json")["profiles"]
+        flagged = {(s["id"], t) for s in self.catalog["servers"] for e in s["flagged"] for t in e["tools"]}
+        seen = 0
+        for name, profile in profiles.items():
+            if profile["mode"] == "dev":
+                continue
+            for entry in profile["mcp"]:
+                key = "%s/%s" % (entry["server"], entry["variant"])
+                spec = next(s for s in self.manifest["mcp_servers"] if s["id"] == entry["server"])["variants"][entry["variant"]]
+                contract = self.lock["contracts"].get(key, {}).get("tools", {})
+                with self.subTest(profile=name, variant=key):
+                    self.assertEqual("read", spec["access"], "a job loads servers that only read")
+                    self.assertEqual([], sorted(t for s, t in flagged if s == entry["server"] and t in contract), "a tool that can change something is in a variant that a job loads")
+                seen += 1
+        self.assertGreater(seen, 5)
+
+    def test_the_blocks_are_the_ones_that_agents_md_has_and_each_of_them_is_there_once(self):
+        text = self.AGENTS.read_text(encoding="utf-8").replace("\r\n", "\n")
+        self.assertEqual(sorted(toolchain_catalog.REGIONS), sorted(re.findall(r"<!-- BEGIN GENERATED ([a-z]+) -->", text)))
+        self.assertEqual(sorted(toolchain_catalog.REGIONS), sorted(re.findall(r"<!-- END GENERATED ([a-z]+) -->", text)))
+        self.assertEqual(set(toolchain_catalog.REGIONS), set(toolchain_catalog.regions(self.catalog, self.manifest, self.lock, [])))
+
+    def test_the_splice_replaces_each_block_and_refuses_a_block_that_is_missing_unknown_twice_or_unpaired(self):
+        generated = {"one": "new one\n", "two": "new two\n"}
+        text = "a\n<!-- BEGIN GENERATED one -->\nold\n<!-- END GENERATED one -->\nb\n<!-- BEGIN GENERATED two -->\n<!-- END GENERATED two -->\nc\n"
+        self.assertEqual(("a\n<!-- BEGIN GENERATED one -->\nnew one\n<!-- END GENERATED one -->\nb\n<!-- BEGIN GENERATED two -->\nnew two\n<!-- END GENERATED two -->\nc\n", []),
+                         toolchain_catalog.splice(text, generated))
+        cases = [
+            ("a block that is missing", text.replace("<!-- BEGIN GENERATED two -->\n<!-- END GENERATED two -->\n", ""), "the block 'two' is missing"),
+            ("a block that is not generated", text + "<!-- BEGIN GENERATED three -->\n<!-- END GENERATED three -->\n", "the block 'three' is not one that the catalog generates"),
+            ("a block that is there twice", text + "<!-- BEGIN GENERATED one -->\n<!-- END GENERATED one -->\n", "the block 'one' is there twice"),
+            ("a begin without an end", text.replace("<!-- END GENERATED two -->", ""), "has no partner"),
+            ("an end without a begin", text.replace("<!-- BEGIN GENERATED one -->", "<!-- BEGIN GENERATED  one -->"), "has no partner"),
+        ]
+        for label, broken, expected in cases:
+            with self.subTest(label):
+                result, problems = toolchain_catalog.splice(broken, generated)
+                self.assertEqual(broken, result, "nothing is replaced when a block cannot be")
+                self.assertTrue(any(expected in problem for problem in problems), problems)
+
+    def learn_pages(self):
+        pages = list(self.catalog["directory"]["pages"]) + list(self.catalog["skills"]["pages"])
+        for server in self.catalog["servers"]:
+            pages += server["pages"]
+        return [page for page in pages if page["url"].startswith("https://learn.microsoft.com/")]
+
+    def test_every_page_of_learn_that_the_catalog_cites_is_watched_by_the_fact_list_for_its_date(self):
+        claims = json.loads((HERE / "facts.json").read_text(encoding="utf-8"))["facts"]
+        for page in self.learn_pages():
+            own = [c for c in claims if c["kind"] == "page" and InstructionLayerTests.doc_key(c["url"]) == InstructionLayerTests.doc_key(page["url"])
+                   and any(p.startswith('name="updated_at" content="' + page["updated"]) for p in c.get("all", []))]
+            with self.subTest(page=page["url"][38:]):
+                self.assertTrue(own, "no claim of the fact list watches the update date %s of this page (a later date is a reason to read it again)" % page["updated"])
+                self.assertTrue(all(c.get("raw") and c.get("stable") is False for c in own), "the date is in the markup of the page, and a later date is a drift and no failure")
+
+    def test_the_fact_list_names_every_tool_of_the_servers_that_a_learn_page_lists_and_every_flagged_or_knowledge_tool_of_the_others(self):
+        claims = json.loads((HERE / "facts.json").read_text(encoding="utf-8"))["facts"]
+        elsewhere = {"fabric-sql": {"execute_query"}}  # on the marketplace file of the skills repository, which a claim of its own holds
+        watched = 0
+        for claim in claims:
+            if claim["id"].startswith("page-catalog-tools-"):
+                server = self.server(self.catalog, claim["id"][len("page-catalog-tools-"):])
+                names = {n for _s, _k, group in toolchain_catalog.server_tools(server, self.lock) for n in group} - elsewhere.get(server["id"], set())
+                have = {re.sub(r"\\b|\\", "", p) for p in claim["all"]}
+                with self.subTest(server=server["id"]):
+                    self.assertEqual(sorted(n for n in names if n not in have), [], "a tool of the catalog that no pattern of the claim names")
+                    self.assertTrue(any(InstructionLayerTests.doc_key(claim["url"]) == InstructionLayerTests.doc_key(p["url"]) for p in server["pages"]), "the claim reads a page that the catalog cites")
+                watched += 1
+        self.assertGreaterEqual(watched, 9)
+        texts = [" ".join(c.get("all", []) + [c.get("regex", "")]) for c in claims]
+        for server in self.catalog["servers"]:
+            if server["tools"]["from"] != "page":
+                continue
+            for entry in server["flagged"] + server["knowledge"]:
+                for name in entry["tools"]:
+                    with self.subTest(server=server["id"], tool=name):
+                        self.assertTrue(any(name in text for text in texts), "no claim of the fact list names the tool")
+        texts = [" ".join(c.get("all", []) + [c.get("regex", "")]) for c in claims]
+        for server in self.catalog["servers"]:
+            if server["tools"]["from"] != "page":
+                continue
+            for entry in server["flagged"] + server["knowledge"]:
+                for name in entry["tools"]:
+                    with self.subTest(server=server["id"], tool=name):
+                        self.assertTrue(any(name in text for text in texts) or name in elsewhere.get(server["id"], ()), "no claim of the fact list names the tool")
+        self.assertTrue(any("fabric-sqlendpoint" in t and "execute_query" in t for t in texts), "the marketplace file of the skills repository names the tool of the Data Warehouse server")
 
 
 class ReviewedTextTests(unittest.TestCase):

@@ -12,6 +12,7 @@ toolchain/toolchain.lock.json (the lock that `lock` writes), and offers:
     fetch     vendor the locked skills into the local pack
     install   copy skills and MCP configuration into a host (a plan unless --apply)
     doctor    what is missing on this machine
+    instructions  check, or with --write regenerate, what the catalog of MCP servers generates (blocks of AGENTS.md and the router's server reference)
 
 Standard library only. Everything that touches the outside world (runner, resolvers, probes, environment, home folder)
 goes through a Deps object, so the tests run without a network, a subprocess or the real home folder.
@@ -38,6 +39,7 @@ import urllib.parse
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+import toolchain_catalog  # noqa: E402
 import toolchain_io  # noqa: E402
 import toolchain_mcp  # noqa: E402
 import toolchain_sources  # noqa: E402
@@ -69,6 +71,7 @@ INSTALL_HINT = "run: python scripts/toolchain.py install --apply"
 CLAUDE_HINT = INSTALL_HINT + " --host claude-code"  # render --write-project never writes the .mcp.json of Claude Code
 DEFAULT_HOSTS = ("copilot-cli", "vscode")  # what install and verify --live work on without --host: Claude Code only when it is asked for
 LOCK_HINT = "run `python scripts/toolchain.py lock`"
+INSTRUCTIONS_HINT = "run `python scripts/toolchain.py instructions --write`"
 NO_LOCK_SKILLS = "it selects skills, but there is no lock to resolve them from"
 
 ID_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
@@ -2735,6 +2738,8 @@ def run_verify(project, deps, profile_names=None, mode=None, live=False, hosts=N
     if profiles:
         _check_repo_skills(project, deps, profiles, names, f)
     project.manifest, project.profiles, project.lock = manifest, profiles, lock
+    if manifest and profiles and lock and (project.dir / "catalog.json").is_file():
+        _check_instructions(project, f)
     if live and manifest and profiles and lock:
         _check_live(project, deps, manifest, profiles, lock, f, hosts, [n for n in (profile_names or [manifest["default_profile"]]) if n in names], store)
     if contracts and manifest and profiles and lock:
@@ -3623,6 +3628,82 @@ def cmd_doctor(args, deps, root):
     return 1 if fails else 0
 
 
+# ---------------------------------------------------------------- instructions (generated from the catalog)
+
+def instruction_outputs(project):
+    """(catalog, {path: text}, problems): what the catalog generates, and every reason it cannot be generated.
+
+    The project must be loaded. The texts are those that AGENTS.md (its generated blocks replaced) and the router's server reference would hold."""
+    label = "toolchain/catalog.json"
+    try:
+        catalog = toolchain_catalog.load(read_text_lf(project.dir / "catalog.json", label), label)
+    except (toolchain_catalog.CatalogError, ToolchainError) as exc:
+        return None, {}, exc.problems
+    problems = toolchain_catalog.check_against(catalog, project.manifest, project.lock)
+    if problems:
+        return catalog, {}, problems
+    try:
+        own = sorted(repo_skill_folders(project.dir))
+        agents_path = project.root / "AGENTS.md"
+        generated = toolchain_catalog.regions(catalog, project.manifest, project.lock, own)
+        agents, problems = toolchain_catalog.splice(read_text_lf(agents_path, "AGENTS.md"), generated)
+    except ToolchainError as exc:
+        return catalog, {}, exc.problems
+    if problems:
+        return catalog, {}, ["AGENTS.md: " + p for p in problems]
+    reference = project.dir.joinpath(*toolchain_catalog.REFERENCE_PATH)
+    return catalog, {agents_path: agents, reference: toolchain_catalog.render_reference(catalog, project.manifest, project.lock)}, []
+
+
+def stale_instructions(outputs):
+    """The generated files that differ from what is generated, or do not exist."""
+    out = []
+    for path, text in outputs.items():
+        try:
+            current = read_text_lf(path)
+        except ToolchainError:
+            current = None
+        if current != text:
+            out.append(path)
+    return out
+
+
+def _check_instructions(project, f):
+    catalog, outputs, problems = instruction_outputs(project)
+    for problem in problems:
+        f.add("FAIL", "V14", "the catalog of servers: " + problem)
+    if problems:
+        return
+    stale = stale_instructions(outputs)
+    for path in stale:
+        f.add("FAIL", "V14", "%s is not what the catalog generates: %s" % (display_path(path, project.root, project.root), INSTRUCTIONS_HINT))
+    if not stale:
+        f.add("PASS", "V14", "the catalog of servers is valid (%d servers), and AGENTS.md and the server reference of the router are what it generates" % len(catalog["servers"]))
+
+
+def cmd_instructions(args, deps, root):
+    project = Project(root).load()
+    catalog, outputs, problems = instruction_outputs(project)
+    if problems:
+        for problem in problems:
+            print("[FAIL] %s" % problem)
+        print("Result: the catalog of servers cannot be generated from (%d problem(s))" % len(problems))
+        return 1
+    stale = stale_instructions(outputs)
+    shown = [project.shown(path, deps) for path in stale]
+    if args.write:
+        for path in stale:
+            write_atomic(path, outputs[path])
+        for name in shown:
+            print("wrote %s" % name)
+        print("Result: %d file(s) written, %d already current" % (len(stale), len(outputs) - len(stale)))
+        return 0
+    for name in shown:
+        print("[FAIL] %s is not what the catalog generates: %s" % (name, INSTRUCTIONS_HINT))
+    print("Result: %d of %d generated file(s) out of date (%d servers in the catalog)" % (len(stale), len(outputs), len(catalog["servers"])))
+    return 1 if stale else 0
+
+
 # ---------------------------------------------------------------- command line
 
 def build_parser():
@@ -3697,11 +3778,15 @@ def build_parser():
     p.add_argument("--host", nargs="+", action="extend", choices=HOSTS)
     p.add_argument("--offline", action="store_true", help="do not probe hosted servers and do not ask gh or az whether you are signed in")
     p.add_argument("--json", action="store_true")
+
+    p = command("instructions", "check, or with --write regenerate, what the catalog of MCP servers generates: the blocks of AGENTS.md and the server reference of the router")
+    p.add_argument("--check", action="store_true", help="the default: fail when a generated file is not what the catalog generates")
+    p.add_argument("--write", action="store_true", help="rewrite the generated blocks of AGENTS.md and the server reference")
     return parser
 
 
 COMMANDS = {"list": cmd_list, "verify": cmd_verify, "render": cmd_render, "lock": cmd_lock, "update": cmd_update,
-            "fetch": cmd_fetch, "install": cmd_install, "doctor": cmd_doctor}
+            "fetch": cmd_fetch, "install": cmd_install, "doctor": cmd_doctor, "instructions": cmd_instructions}
 
 
 def main(argv=None, deps=None):

@@ -39,6 +39,7 @@ The skills name MCP servers as their plugins register them. The kit registers it
 | Azure resources, Bicep, deployment | `azure-prepare` (azd projects), `azure-validate`, `azure-deploy` and the other `azure-*` skills | MCP tools of the Azure and Bicep servers, and the azd, `az` and Terraform CLIs | `azure-mcp` (`azure`) and `bicep-mcp` (`bicep`), the second only in `dev-azure` |
 | Azure costs | `cost-analysis`, `cost-estimation`, `cost-optimization`, `cost-governance` | MCP tools such as `query_costs`, with `az rest` and Azure CLI fallbacks inside the skill | `azure-arm-cost` (`azure-resource-manager-mcp`), dev mode only. Treat it as the whole Azure Resource Manager server, which can also deploy and change resources |
 | Architecture, reliability, security, cost, operations, performance, lifecycle or governance questions, and the review of a plan or a change | `factory-standards` | the checks of its pack, each with its source and date; then the newer page from the Learn server where it answers | `microsoft-learn`; `azure-mcp` for the Azure services around Fabric (its Well-Architected service guides cover 31 Azure services and not Fabric itself, checked on 2026-11-01) |
+| Which servers and tools exist, what a tool can change, which tool is never called or which change is never made, which tools give knowledge | none | read `references/mcp-servers.md`: every server of the kit and of the Fabric directory, with its tools by kind | none |
 
 The table names the usual owners, not every pinned skill: `python scripts/toolchain.py list --profile NAME` lists them all, and each skill's description says what it is for. If two skills could own the task, take the more specific one. If none owns it, say so and use current official documentation, not memory.
 
@@ -54,16 +55,17 @@ The table names the usual owners, not every pinned skill: `python scripts/toolch
 A server that does not answer is reported and not worked around.
 
 1. Say which server, what you called and what came back.
-2. Carry on with what needs no sign-in: the `docs` variant of `fabric-local`, `microsoft-learn`, `bicep-mcp`, the `offline-readonly` variant of the authoring server, the pinned skills, the files of the repository and the standards. The documentation and Well-Architected tools of `azure-mcp` read public pages and may answer without a sign-in; try one call.
+2. Carry on with what needs no sign-in: the `docs` variant of `fabric-local`, `microsoft-learn`, `bicep-mcp`, the `offline-readonly` variant of the authoring server, the pinned skills, the files of the repository and the standards. The best-practice and Well-Architected tools of `azure-mcp` may answer without a sign-in: try one call.
 3. Stop only the step that needed the missing server: a live read of the tenant, a change, a query. Do not do it through another route. Rule 2 of the preamble ("How to work") says when a skill's own CLI or REST step is allowed. In a job, the step ends blocked, with the reason.
 4. Say in your report which parts of the answer rest on the repository and the standards alone, and which on live state.
 
 ## 5. Things that go wrong
 
 1. The local and the hosted Power BI authoring servers are twins. Use the one in your profile, never both.
-2. The local authoring server (the npm package) is blocked until its license agreement is accepted. Never accept it for someone. The operator does that, once, on purpose.
-3. A tool that is missing, renamed or changed against the lock is a contract drift. Stop and report it. The lock holds the tool lists of the stdio servers only, so a hosted server has no recorded list to drift from: compare its tools with what the skill expects, and tell the person about a difference.
+2. The local authoring server (the npm package) is blocked until its license agreement is accepted. Never accept it for someone: its `accept_eula` tool is not called. The operator does that, once, on purpose.
+3. A tool that is missing, renamed or changed against the lock is a contract drift. Stop and report it. The lock holds the tool lists of the stdio servers only, so another server has no measured list to drift from: where its entry in `references/mcp-servers.md` lists tools (a person's reading of its pages), report a difference between those names and what the server lists before you go on, and where it lists none, tell the person what the server listed. The same goes for what the skill expects.
 4. The ontology skill `fabriciq-ontology-cli` is quarantined and never loaded.
 5. Hosted Fabric servers act as the signed-in person. Do not use them in a job.
+6. A tool that `references/mcp-servers.md` lists under "Never called" is not called, and a change that it lists under "Never made" is not made through any tool, whatever a skill step says. They change security, permissions, a connection, a schedule, a label or a setting, accept a license, or hand out a credential: say which one the request needs, and leave it to a person. A tool of the kind write, destructive or mixed that changes anything needs the approval of rule 6 of `AGENTS.md`, or of rule 2 of the preamble ("How to work").
 
 More: `toolchain/README.md`, and the rules in `toolchain/instructions/factory-preamble.md`.
