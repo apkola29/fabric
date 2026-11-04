@@ -8665,6 +8665,10 @@ class CatalogTests(unittest.TestCase):
             ("a note that is not one line", lambda c: self.server(c, "eventhouse-remote")["tools"].update(note="a\nb"), "one line"),
             ("a flagged area that does not exist", lambda c: self.server(c, "fabric-core")["flagged"][0].update(area="mood"), "area: one of"),
             ("a flagged entry that says nothing", lambda c: self.server(c, "fabric-core")["flagged"][0].update(tools=[]), "names a tool that is never called, or a change that is never made"),
+            ("a change that is not one line", lambda c: self.server(c, "fabric-sql")["flagged"][0].update(changes=["a\nb"]), "one line"),
+            ("changes that are an empty list", lambda c: self.server(c, "fabric-sql")["flagged"][0].update(changes=[]), "changes: must be a non-empty list"),
+            ("an area that was renamed", lambda c: self.server(c, "fabric-core")["flagged"][2].update(area="workspace settings"), "area: one of"),
+            ("a directory page that is not a page of Learn", lambda c: c["directory"]["pages"].__setitem__(0, {"url": "https://github.com/o/r"}), "the directory is read from pages of Learn"),
             ("an area flagged twice", lambda c: self.server(c, "fabric-core")["flagged"].append(dict(self.server(c, "fabric-core")["flagged"][0])), "an area is listed twice"),
             ("a listed server that the directory does not list", lambda c: self.server(c, "activator-remote").pop("directory"), "one of the directory"),
             ("a related server that claims to be in the directory", lambda c: self.server(c, "graphql-sample").update(directory=True), "is pinned or listed"),
@@ -8723,7 +8727,7 @@ class CatalogTests(unittest.TestCase):
         tools = self.lock["contracts"]["fabric-local/full"]["tools"]
         for name, kind in kinds.items():
             with self.subTest(tool=name):
-                self.assertEqual("read" if tools[name]["read_only"] else ("destructive" if tools[name]["destructive"] else "write"), kind)
+                self.assertEqual("destructive" if tools[name]["destructive"] else ("read" if tools[name]["read_only"] else "write"), kind)
         azure = toolchain_catalog.server_tools(self.server(self.catalog, "azure-mcp"), self.lock)
         self.assertEqual([(None, None)], [(s, k) for s, k, _n in azure], "a server whose kinds follow its variant lists its tools once, with no kind")
         self.assertIsNone(toolchain_catalog.contract_tools({"contracts": {"x/y": {"status": "needs-sign-in"}}}, "x/y"))
@@ -8785,37 +8789,148 @@ class CatalogTests(unittest.TestCase):
                 self.assertTrue(own, "no claim of the fact list watches the update date %s of this page (a later date is a reason to read it again)" % page["updated"])
                 self.assertTrue(all(c.get("raw") and c.get("stable") is False for c in own), "the date is in the markup of the page, and a later date is a drift and no failure")
 
-    def test_the_fact_list_names_every_tool_of_the_servers_that_a_learn_page_lists_and_every_flagged_or_knowledge_tool_of_the_others(self):
+    CLAIM_PREFIXES = ("page-catalog-tools-", "gh-catalog-tools-")
+
+    @staticmethod
+    def claim_names(claim):
+        """The names that a claim of the fact list looks for: the patterns of a page, or the look-aheads of a file of GitHub."""
+        names = {re.sub(r"\\b|\\", "", pattern) for pattern in claim.get("all", [])}
+        return names | set(re.findall(r"\(\?=\.\*\\b(.+?)\\b\)", claim.get("regex", "")))
+
+    @staticmethod
+    def claim_pages(claim):
+        """The keys (as doc_key writes them) of the pages that a claim reads: its page of Learn, or the README or the file of GitHub that it names."""
+        if claim["kind"] == "page":
+            return {InstructionLayerTests.doc_key(claim["url"])}
+        repo, ref, path = claim["repo"], claim["ref"], claim["path"]
+        keys = {InstructionLayerTests.doc_key("https://github.com/%s/blob/%s/%s" % (repo, ref, path))}
+        if path == "README.md":
+            keys.add(InstructionLayerTests.doc_key("https://github.com/%s" % repo))
+        if path.endswith("/README.md"):
+            keys.add(InstructionLayerTests.doc_key("https://github.com/%s/tree/%s/%s" % (repo, ref, path[:-len("/README.md")])))
+        return keys
+
+    def test_the_fact_list_names_every_tool_of_the_servers_whose_tools_a_person_listed_from_a_page(self):
         claims = json.loads((HERE / "facts.json").read_text(encoding="utf-8"))["facts"]
-        elsewhere = {"fabric-sql": {"execute_query"}}  # on the marketplace file of the skills repository, which a claim of its own holds
+        elsewhere = {"powerbi-authoring-local": {"accept_eula"},  # the text about the license, which a claim of its own holds
+                     "datafactory-local": {"create_connection_ui"}}  # the guide to connection management, which a claim of its own holds
         watched = 0
-        for claim in claims:
-            if claim["id"].startswith("page-catalog-tools-"):
-                server = self.server(self.catalog, claim["id"][len("page-catalog-tools-"):])
-                names = {n for _s, _k, group in toolchain_catalog.server_tools(server, self.lock) for n in group} - elsewhere.get(server["id"], set())
-                have = {re.sub(r"\\b|\\", "", p) for p in claim["all"]}
-                with self.subTest(server=server["id"]):
-                    self.assertEqual(sorted(n for n in names if n not in have), [], "a tool of the catalog that no pattern of the claim names")
-                    self.assertTrue(any(InstructionLayerTests.doc_key(claim["url"]) == InstructionLayerTests.doc_key(p["url"]) for p in server["pages"]), "the claim reads a page that the catalog cites")
-                watched += 1
-        self.assertGreaterEqual(watched, 9)
-        texts = [" ".join(c.get("all", []) + [c.get("regex", "")]) for c in claims]
         for server in self.catalog["servers"]:
             if server["tools"]["from"] != "page":
                 continue
-            for entry in server["flagged"] + server["knowledge"]:
-                for name in entry["tools"]:
-                    with self.subTest(server=server["id"], tool=name):
-                        self.assertTrue(any(name in text for text in texts), "no claim of the fact list names the tool")
+            own = [c for c in claims if any(c["id"].startswith(prefix + server["id"]) for prefix in self.CLAIM_PREFIXES)]
+            names = {n for _s, _k, group in toolchain_catalog.server_tools(server, self.lock) for n in group} - elsewhere.get(server["id"], set())
+            have = set().union(*[self.claim_names(c) for c in own]) if own else set()
+            cited = {InstructionLayerTests.doc_key(p["url"]) for p in server["pages"]}
+            with self.subTest(server=server["id"]):
+                self.assertTrue(own, "a server whose tools a person listed from a page has a claim of the fact list that watches that list: page-catalog-tools-ID, or gh-catalog-tools-ID for a README")
+                self.assertEqual(sorted(n for n in names if n not in have), [], "a tool of the catalog that no claim of the server names")
+                for claim in own:
+                    self.assertTrue(self.claim_pages(claim) & cited, "%s reads a page that the catalog cites for the server" % claim["id"])
+                    self.assertFalse(claim.get("stable", True), "a page that changed is a drift to read again, not a failure")
+            watched += len(own)
+        self.assertGreaterEqual(watched, 16)
         texts = [" ".join(c.get("all", []) + [c.get("regex", "")]) for c in claims]
-        for server in self.catalog["servers"]:
-            if server["tools"]["from"] != "page":
-                continue
-            for entry in server["flagged"] + server["knowledge"]:
-                for name in entry["tools"]:
-                    with self.subTest(server=server["id"], tool=name):
-                        self.assertTrue(any(name in text for text in texts) or name in elsewhere.get(server["id"], ()), "no claim of the fact list names the tool")
+        for sid, tools in elsewhere.items():
+            for name in tools:
+                with self.subTest(server=sid, tool=name):
+                    self.assertTrue(any(name in text for text in texts), "no claim of the fact list names the tool")
         self.assertTrue(any("fabric-sqlendpoint" in t and "execute_query" in t for t in texts), "the marketplace file of the skills repository names the tool of the Data Warehouse server")
+
+    def test_a_claim_of_the_fact_list_is_read_for_names_from_its_patterns_and_from_its_look_aheads(self):
+        self.assertEqual({"alpha", "beta gamma"}, self.claim_names({"all": ["\\balpha\\b", "beta\\ gamma"]}))
+        self.assertEqual({"delta_one", "e-two"}, self.claim_names({"regex": "(?s)(?=.*\\bdelta_one\\b)(?=.*\\be-two\\b)"}))
+        self.assertEqual(set(), self.claim_names({}))
+        repository = {"kind": "github-file", "repo": "o/R", "ref": "main", "path": "README.md"}
+        self.assertEqual({"github.com/o/r/blob/main/readme.md", "github.com/o/r"}, self.claim_pages(repository))
+        self.assertIn("github.com/o/r/tree/main/servers/s", self.claim_pages(dict(repository, path="servers/s/README.md")))
+        self.assertEqual({"fabric/x"}, self.claim_pages({"kind": "page", "url": "https://learn.microsoft.com/en-us/fabric/x"}))
+
+    PROTECTED = {"role", "roles", "permission", "permissions", "grant", "revoke", "share", "invite", "assign", "connection", "connections", "gateway", "schedule", "schedules",
+                 "label", "labels", "license", "eula", "policy", "keyvault", "security", "capacity", "modify", "authenticate", "sign", "token", "secret", "secrets", "password",
+                 "credential", "credentials", "sas"}
+    SECRETS = {"token", "secret", "secrets", "password", "credential", "credentials", "sas", "keyvault"}
+
+    @classmethod
+    def unflagged(cls, catalog, lock):
+        """[(server, tool)] whose name says that it touches a protected area (or, for any kind, that it returns a secret), and that is neither flagged by name nor named by a statement of its server."""
+        out = []
+        for server in catalog["servers"]:
+            flagged = {t for e in server["flagged"] for t in e["tools"]}
+            statements = " ".join(c for e in server["flagged"] for c in e.get("changes", []))
+            for _set, kind, names in toolchain_catalog.server_tools(server, lock) or []:
+                for name in names:
+                    words = set(re.findall(r"[a-z]+", re.sub(r"([a-z0-9])([A-Z])", r"\1 \2", name).lower()))
+                    risky = bool(words & cls.SECRETS) or (kind != "read" and bool(words & cls.PROTECTED))
+                    if risky and name not in flagged and "`%s`" % name not in statements:
+                        out.append((server["id"], name))
+        return out
+
+    def test_a_tool_whose_name_says_that_it_touches_a_protected_area_is_flagged_by_name_or_named_by_a_statement_of_its_server(self):
+        self.assertEqual([], self.unflagged(self.catalog, self.lock), "a tool that this list shows is to be flagged under its area, or named in a statement of `changes`, or reviewed and added to this test with the reason")
+
+    def test_the_check_of_protected_names_reports_a_flag_that_is_missing_and_accepts_a_statement_that_names_the_tool(self):
+        def without(sid, area, tool):
+            def change(catalog):
+                for entry in self.server(catalog, sid)["flagged"]:
+                    if entry["area"] == area:
+                        entry["tools"].remove(tool)
+            return change
+
+        self.assertIn(("fabric-core", "add_workspace_role"), self.unflagged(self.mutated(without("fabric-core", "permissions", "add_workspace_role")), self.lock))
+        self.assertIn(("datafactory-local", "get_access_token"), self.unflagged(self.mutated(without("datafactory-local", "credentials", "get_access_token")), self.lock),
+                      "a tool that returns a token is flagged whatever its kind")
+        self.assertIn(("azure-mcp", "keyvault"), self.unflagged(self.mutated(lambda c: self.server(c, "azure-mcp")["flagged"].clear()), self.lock),
+                      "a namespace tool without kinds counts as one that can write")
+        self.assertEqual([], [t for t in self.unflagged(self.catalog, self.lock) if t[0] == "azure-mcp"], "its three namespaces are named by the statements of the catalog")
+        self.assertNotIn(("fabric-core", "get_workspace_role"), self.unflagged(self.mutated(lambda c: None), self.lock), "a read of a role is no change of it")
+
+    def test_a_locked_tool_that_says_it_is_read_only_and_destructive_counts_as_destructive_and_fails_the_check(self):
+        lock = copy.deepcopy(self.lock)
+        name, tool = next(iter(lock["contracts"]["fabric-local/full"]["tools"].items()))
+        tool.update(read_only=True, destructive=True)
+        self.assertEqual("destructive", toolchain_catalog.contract_tools(lock, "fabric-local/full")[name])
+        problems = toolchain_catalog.check_against(self.catalog, self.manifest, lock)
+        self.assertTrue(any("the lock records the tool %s as read-only and as destructive" % name in p for p in problems), problems)
+        self.assertEqual([], toolchain_catalog.check_against(self.catalog, self.manifest, self.lock))
+
+    def test_the_read_only_sentence_of_a_namespace_server_is_there_only_when_its_variant_starts_with_the_read_only_switch(self):
+        said = "The kit starts this variant with the server's read-only switch, so none of its commands writes"
+        self.assertIn(said, toolchain_catalog.render_reference(self.catalog, self.manifest, self.lock))
+        manifest = copy.deepcopy(self.manifest)
+        spec = next(s for s in manifest["mcp_servers"] if s["id"] == "azure-mcp")["variants"]["read"]
+        spec["args"] = [a for a in spec["args"] if a != "--read-only"]
+        reference = toolchain_catalog.render_reference(self.catalog, manifest, self.lock)
+        self.assertNotIn("so none of its commands writes", reference)
+        self.assertIn("The kit does not start this variant with the server's read-only switch, so a command of it can write", reference)
+
+    def test_the_table_of_what_is_never_called_has_a_row_for_each_area_with_the_tools_and_the_changes_in_two_columns(self):
+        lines = toolchain_catalog.flagged_region(self.catalog).splitlines()
+        self.assertEqual("| Area | Never called: the tools, by server | Never made, through any tool: the change, by server |", lines[0])
+        rows = [[cell.strip() for cell in line.strip("|").split(" | ")] for line in lines[2:]]
+        used = [a for a in toolchain_catalog.AREAS if any(e["area"] == a for s in self.catalog["servers"] for e in s["flagged"])]
+        self.assertEqual([toolchain_catalog.AREA_LABELS[a] for a in used], [row[0] for row in rows], "a row for each area that a server flags, in the order of the areas")
+        for area, row in zip(used, rows):
+            with self.subTest(area=area):
+                self.assertEqual(3, len(row))
+                for server in self.catalog["servers"]:
+                    for entry in (e for e in server["flagged"] if e["area"] == area):
+                        for tool in entry["tools"]:
+                            self.assertIn("`%s`: " % server["id"], row[1])
+                            self.assertIn("`%s`" % tool, row[1])
+                            self.assertNotIn("`%s`" % tool, row[2].replace("`%s`: " % server["id"], ""), "a tool is in the column of the tools")
+                        for change in entry.get("changes", []):
+                            self.assertIn("`%s`: %s" % (server["id"], change), row[2])
+        self.assertEqual("none", rows[[r[0] for r in rows].index(toolchain_catalog.AREA_LABELS["sensitivity labels"])][1], "an area with no tool that is never called says none")
+
+    def test_the_tables_of_the_other_servers_name_a_page_of_learn_by_its_path_and_any_other_page_by_its_host_and_path(self):
+        region = toolchain_catalog.others_region(self.catalog)
+        self.assertIn("| Listed by Fabric, not pinned | What it does | Documentation (a path on learn.microsoft.com/en-us/, or a host and path) |", region)
+        self.assertIn("| DataFactory, local |", region)
+        self.assertRegex(region, r"\| DataFactory, local \|[^\n]*`github\.com/microsoft/DataFactory\.MCP` \|")
+        self.assertRegex(region, r"\| Eventhouse, remote \|[^\n]*`fabric/real-time-intelligence/mcp-remote-eventhouse` \|")
+        directory = self.catalog["directory"]["pages"][0]
+        self.assertIn("%s, updated %s" % (directory["url"], directory["updated"]), region)
 
 
 class ReviewedTextTests(unittest.TestCase):
