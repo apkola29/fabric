@@ -8342,6 +8342,14 @@ class InstructionLayerTests(unittest.TestCase):
             with self.subTest(rule=rule):
                 self.assertIn(rule, text)
 
+    def test_the_approval_that_the_rules_ask_for_covers_the_live_state_of_azure_as_well_as_of_a_tenant_in_every_layer_that_says_it(self):
+        said = "Before anything that changes the live state of a tenant or of Azure"
+        for name, text in (("AGENTS.md", self.text(self.AGENTS)), ("the preamble", self.text(self.PREAMBLE)), ("the router", self.text(self.ROUTER)),
+                           ("the README of the toolchain", (REAL / "README.md").read_text(encoding="utf-8").replace("\r\n", "\n"))):
+            with self.subTest(file=name):
+                self.assertIn(said, text)
+                self.assertNotIn("Before anything that changes a tenant", text, "a change of Azure is also a change that needs the approval")
+
     def test_the_tools_that_are_never_called_are_one_rule_in_every_layer_and_the_rules_name_only_tools_that_the_catalog_flags(self):
         agents, preamble, router = self.text(self.AGENTS), self.text(self.PREAMBLE), self.text(self.ROUTER)
         headings = re.findall(r"^## (.+)$", agents, re.MULTILINE)
@@ -8977,7 +8985,26 @@ class CatalogTests(unittest.TestCase):
                 self.assertTrue(any("%s %s" % (reviewed[1], gone) in p for p in problems), problems)
         with mock.patch.dict(toolchain_catalog.PROTECTED_REVIEWED, {("fabric-core", "add_workspace_role"): "a reason"}):
             problems = toolchain_catalog.check_against(self.catalog, self.manifest, self.lock)
-            self.assertTrue(any("add_workspace_role is reviewed and left out of the check of protected names, and the catalog flags it: drop the exception" in p for p in problems), problems)
+            self.assertTrue(any("add_workspace_role is reviewed and left out of the check of protected names, and it needs no exception" in p for p in problems), problems)
+        with mock.patch.dict(toolchain_catalog.PROTECTED_REVIEWED, {("fabric-core", "list_workspaces"): "a reason"}):
+            problems = toolchain_catalog.check_against(self.catalog, self.manifest, self.lock)
+            self.assertTrue(any("list_workspaces is reviewed and left out of the check of protected names, and it needs no exception" in p for p in problems), problems)
+        def only_under_license(catalog):
+            for entry in self.server(catalog, "fabric-core")["flagged"]:
+                if entry["area"] == "permissions":
+                    entry["tools"].remove("add_workspace_role")
+            self.server(catalog, "fabric-core")["flagged"].append({"area": "license", "tools": ["add_workspace_role"]})
+
+        def nowhere(catalog):
+            for entry in self.server(catalog, "fabric-core")["flagged"]:
+                if entry["area"] == "permissions":
+                    entry["tools"].remove("add_workspace_role")
+
+        with mock.patch.dict(toolchain_catalog.PROTECTED_REVIEWED, {("fabric-core", "add_workspace_role"): "a reason"}):
+            for label, change in (("a tool that is flagged under an area that does not fit it", only_under_license), ("a tool that nothing flags", nowhere)):
+                with self.subTest(label):
+                    problems = toolchain_catalog.check_against(self.mutated(change), self.manifest, self.lock)
+                    self.assertFalse(any("needs no exception" in p for p in problems), "an exception is for a tool that nothing fitting covers: %s" % problems)
         for sid, name in toolchain_catalog.PROTECTED_REVIEWED:
             with self.subTest(reviewed=name):
                 self.assertIn(name, toolchain_catalog.tool_names(self.server(self.catalog, sid), self.lock), "a reviewed name is a tool of its server")
@@ -8999,8 +9026,47 @@ class CatalogTests(unittest.TestCase):
         self.assertEqual(["get_token"], toolchain_catalog.unflagged_tools(server(["get_token"], [{"area": "schedules", "tools": ["get_token"]}]), self.lock),
                          "a token tool that is flagged under the area of schedules is not flagged under the area of credentials")
         self.assertEqual([], toolchain_catalog.unflagged_tools(server(["modify_thing"], [{"area": "license", "tools": ["modify_thing"]}]), self.lock), "a word that no area owns is satisfied by any area")
+        self.assertEqual(["modify_tier"], toolchain_catalog.unflagged_tools(server(["modify_tier"], [{"area": "license", "tools": ["modify_tier"]}]), self.lock),
+                         "a generic word does not widen the areas of a specific word: the tier belongs to the settings, and a flag under the license does not cover it")
+        self.assertEqual([], toolchain_catalog.unflagged_tools(server(["modify_tier"], [{"area": "capacity, tenant or workspace settings", "tools": ["modify_tier"]}]), self.lock))
+        read = {"id": "x", "tools": {"from": "page", "groups": [{"kind": "read", "names": ["get_connection_token"]}]}, "flagged": [{"area": "connections", "tools": ["get_connection_token"]}], "knowledge": []}
+        self.assertEqual(["get_connection_token"], toolchain_catalog.unflagged_tools(read, self.lock), "a read of a secret needs the area of credentials, and the word connection does not ask for it")
+        read["flagged"] = [{"area": "credentials", "tools": ["get_connection_token"]}]
+        self.assertEqual([], toolchain_catalog.unflagged_tools(read, self.lock))
+        self.assertIn("capacity, tenant or workspace settings", toolchain_catalog.WORD_AREAS["policies"])
+        self.assertIn("security settings", toolchain_catalog.WORD_AREAS["policies"])
         self.assertEqual([], toolchain_catalog.unflagged_tools(server(["assign_capacity"], [{"area": "capacity, tenant or workspace settings", "tools": ["assign_capacity"]}]), self.lock),
-                         "a name with the words of two areas is satisfied by one of them")
+                         "a generic word asks for no area of its own: the capacity of the name decides")
+        self.assertEqual(["assign_capacity"], toolchain_catalog.unflagged_tools(server(["assign_capacity"], [{"area": "permissions", "tools": ["assign_capacity"]}]), self.lock),
+                         "the word assign is generic: a flag under the permissions does not cover a capacity")
+        self.assertNotIn("assign", toolchain_catalog.WORD_AREAS)
+        self.assertIn("assign", toolchain_catalog.PROTECTED_WORDS)
+        self.assertEqual(["modify_thing", "assign_thing"], toolchain_catalog.unflagged_tools(server(["modify_thing", "assign_thing"], []), self.lock),
+                         "a name of generic words only still needs a flag, under any area")
+        self.assertEqual([], toolchain_catalog.unflagged_tools(server(["assign_thing"], [{"area": "schedules", "tools": ["assign_thing"]}]), self.lock), "any area will do for a generic word")
+        both = [{"area": "row-level or object-level security", "tools": ["security_role_operations"]}]
+        self.assertEqual([], toolchain_catalog.unflagged_tools(server(["security_role_operations"], both), self.lock), "the area of both words")
+        self.assertEqual(["security_role_operations"], toolchain_catalog.unflagged_tools(server(["security_role_operations"], [{"area": "security settings", "tools": ["security_role_operations"]}]), self.lock),
+                         "a name with the words role and security is not covered by an area that only the second word belongs to")
+        self.assertEqual(["security_role_operations"], toolchain_catalog.unflagged_tools(server(["security_role_operations"], [{"area": "permissions", "tools": ["security_role_operations"]}]), self.lock),
+                         "a name with the words role and security is not covered by an area that only the first word belongs to")
+        pair = [{"area": "connections", "tools": ["create_connection_token"]}]
+        self.assertEqual(["create_connection_token"], toolchain_catalog.unflagged_tools(server(["create_connection_token"], pair), self.lock), "a write tool with the words of two areas needs both")
+        pair.append({"area": "credentials", "tools": ["create_connection_token"]})
+        self.assertEqual([], toolchain_catalog.unflagged_tools(server(["create_connection_token"], pair), self.lock))
+
+    def test_the_extractor_of_the_tool_names_of_a_table_reads_a_digit_a_hyphen_a_dot_and_a_code_span_in_the_first_cell_of_a_row_and_nothing_else(self):
+        path = HERE.parent / "verification" / "tools" / "catalog_quotes.py"
+        if not path.is_file():
+            self.skipTest("the verification tools are not in this folder")
+        sys.path.insert(0, str(path.parent))
+        try:
+            import catalog_quotes
+        finally:
+            sys.path.remove(str(path.parent))
+        table = ("| Tool | What it does |\n|---|---|\n| **connection_operations** | a |\n| **model_operations_v2** | b |\n| **get-model-v2** | c |\n"
+                 "| **`code_operations`** | d |\n| **dotted.name** | e |\n| plain text | f |\nA **bold_word** in a sentence, and | **not_first** | in a cell\n")
+        self.assertEqual(["connection_operations", "model_operations_v2", "get-model-v2", "code_operations", "dotted.name"], catalog_quotes.names_on(table, "operations"))
 
     def test_a_tool_that_two_knowledge_entries_list_is_refused(self):
         def twice(catalog):
@@ -9083,18 +9149,25 @@ class ReviewedTextTests(unittest.TestCase):
 
     ROOT = HERE.parent
     REVIEWED = {
-        "AGENTS.md": "sha256:c7e26667bd6337e8ee9dbfc27aee091d5865526d35b07a77d37f4e82c4c59566",
-        "toolchain/instructions/factory-preamble.md": "sha256:ade346ad421a1abdf9372b65b072f46bb4f4c52ee304c350e58cc16514e345fc",
-        "toolchain/skills/factory-router/SKILL.md": "sha256:79f2ed8a718bb0ecede659461b7eabea77c565a85952185071f046bfcdf80ac1",
-        "toolchain/skills/factory-standards/SKILL.md": "sha256:342085849a9af5d43418de7482d6dc83e44f81bda8ef1b3c483ffeef031bb9ad",
-        "toolchain/skills/factory-standards/references/architecture-patterns.md": "sha256:b445384ac6969d62ce2bca30b0c9553cec315de8f1dbcb778bea504e24ee1b35",
+        "AGENTS.md": "sha256:ec190a9602d2661abec9980eb6764e457f866c19de636c01a6a27fd633a88995",
+        "toolchain/catalog.json": "sha256:5445091da3da4d544599070e4089be197d946e3f824ad4717157beb06b1d9c92",
+        "toolchain/instructions/factory-preamble.md": "sha256:24e4c1eab679e71e6b68bb73bda8e54453dd6f884f837f09d3647fa171514808",
+        "toolchain/skills/factory-router/SKILL.md": "sha256:311875e4cf3ee8fd67cf1197183c4b01390f9af9e72f5210323aee4b8e193ee2",
+        "toolchain/skills/factory-router/references/mcp-servers.md": "sha256:cc8aacb758d6c226504184d810e0b665cbcdd46ce95ac8367932b8077d0aba2f",
+        "toolchain/skills/factory-standards/SKILL.md": "sha256:959d33bb4028f48d05bd00c6996bb31b087cd81b0adadaec1e2bc3bc09a4a3ff",
+        "toolchain/skills/factory-standards/references/architecture-patterns.md": "sha256:8b597c0feaa70c9ab2ee3500be91b267f8955518aa313b559d671d09bc664896",
+        "toolchain/skills/factory-standards/references/capacity-and-cost.md": "sha256:9143a5a00f3d437f27a1f107426d79b202e4b9a28ac74f69e79d68cfda9a68a1",
+        "toolchain/skills/factory-standards/references/data-agents.md": "sha256:181a3b57bd3b7451744e15bd186e5f4bb8e85fd5d387f9ca331f31befa6a279c",
+        "toolchain/skills/factory-standards/references/data-engineering.md": "sha256:e62b10c111abe38d6da4a9d66361d3930cf721be2676d6159b40c5d0e0b2d4f8",
         "toolchain/skills/factory-standards/references/delivery-and-lifecycle.md": "sha256:5ca998fa4477a35f35814540ebed4a61b3fa63a4c9a8a5317a7eb33f4e35d89f",
+        "toolchain/skills/factory-standards/references/onelake-security.md": "sha256:81d34c22e559c8bedb74f39f8dbd94d123543f67a4af553cac4cc4d2fa73ad7c",
         "toolchain/skills/factory-standards/references/security-and-governance.md": "sha256:13b63a00566aa592857c0fd00bffc154fecf5e2455790428c56a0a312fc5a026",
+        "toolchain/skills/factory-standards/references/semantic-models.md": "sha256:b1805aefba99f53d9c2c01c0aa72239c9dc4c87aa5c4ef5d9e1ac2987af423a1",
         "toolchain/skills/factory-standards/references/well-architected.md": "sha256:bcade7631c8f9e09ad2e42d0d31f39faa1bc284d7564bea474b716d753cfadff",
     }
 
     SECTIONS = {  # a part of a file that is held by a digest: the heading that starts it (the part runs to the next heading of the same level) and the digest
-        "toolchain/README.md": ("## Instructions for agents", "sha256:b06840b0710fd4a6002e8642908f67d0117351f87c7c61d7274c6caca90bae12"),
+        "toolchain/README.md": ("## Instructions for agents", "sha256:ac9ce5cff102895377183f70d9a7600841c6a1ba9d27cdaf7f74361c6c8dcf3e"),
     }
 
     @staticmethod
@@ -9127,7 +9200,8 @@ class ReviewedTextTests(unittest.TestCase):
         pack = self.ROOT / "toolchain" / "skills" / "factory-standards" / "references"
         if not pack.is_dir():
             self.skipTest("the reference pack is not in this folder")
-        expected = {"AGENTS.md", "toolchain/instructions/factory-preamble.md", "toolchain/skills/factory-router/SKILL.md", "toolchain/skills/factory-standards/SKILL.md"}
+        expected = {"AGENTS.md", "toolchain/catalog.json", "toolchain/instructions/factory-preamble.md", "toolchain/skills/factory-router/SKILL.md",
+                    "toolchain/skills/factory-router/references/mcp-servers.md", "toolchain/skills/factory-standards/SKILL.md"}
         expected |= {path.relative_to(self.ROOT).as_posix() for path in pack.glob("*.md")}
         self.assertEqual(sorted(expected), sorted(self.REVIEWED), "a file of the layer without a digest can change unseen, and a digest of a file that is gone holds nothing")
 

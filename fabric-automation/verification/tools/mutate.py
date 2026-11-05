@@ -34,7 +34,7 @@ def main(argv):
     try:
         work = os.path.join(scratch, "project")
         os.makedirs(work)
-        for folder in ("scripts", "toolchain", ".github", ".vscode"):
+        for folder in ("scripts", "toolchain", ".github", ".vscode", "verification"):
             src = os.path.join(spec["project"], folder)
             if os.path.isdir(src):
                 shutil.copytree(src, os.path.join(work, folder), ignore=shutil.ignore_patterns("__pycache__"))

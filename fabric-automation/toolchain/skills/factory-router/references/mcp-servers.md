@@ -160,8 +160,8 @@ How to use it:
   - Registering the local and the hosted server together gives the agent two overlapping tool sets: pick one.
 - Read from: `power-bi/developer/mcp/power-bi-authoring-mcp` (updated 2026-09-29); `power-bi/developer/mcp/mcp-servers-overview` (updated 2026-09-29); `rest/api/fabric/articles/mcp-servers/fabric-mcp-servers-list` (updated 2026-10-21).
 - Tools: The page lists no tools: it says that the server exposes tools grouped by object type, such as tables, columns, measures and relationships, and that the agent can be asked what is available.
-- Never made, through any tool, row-level or object-level security (tier T3): a change of a security role, which the page lists among the objects that the server changes and for which it names no tool.
-- Never made, through any tool, connections (tier T3): a change of the data source or of a connection of a model: no tool for it is named, and the list of objects that the page says the server changes ends with 'and more'.
+- Never made, through any tool, row-level or object-level security (tier T3): a change of a security role or of a security rule, which the page lists among the changes that the server makes and for which it names no tool.
+- Never made, through any tool, connections (tier T3): a change of the data source or of a connection of a model, kept as a precaution: no page names a tool for it, and the list of objects that the page says the server changes ends with 'and more'.
 
 ## `fabric-rti-local`: Real-Time Intelligence MCP server (local)
 
@@ -181,6 +181,8 @@ How to use it:
 - Never made, through any tool, security settings (tier T3): a management command of `kusto_command` that changes another security policy of a database or a table.
 - Never made, through any tool, capacity, tenant or workspace settings (tier T3): a management command of `kusto_command` that changes a policy of a cluster, for example its capacity.
 - Never made, through any tool, connections (tier T3): a management command of `kusto_command` that creates or changes a connection to another source, for example an external table.
+- Never made, through any tool, connections (tier T3): a connection, or the binding of one, in an eventstream that `eventstream_create`, `eventstream_update` or `eventstream_create_from_definition` writes (a precaution: the README says that `eventstream_update` modifies settings and destinations, that `eventstream_create` creates an eventstream with a custom configuration, and lists `eventstream_create_from_definition`, and it names no argument for a connection).
+- Never made, through any tool, connections (tier T3): a connection, or the binding of one, in a map that `map_create` or `map_update_definition` writes (a precaution: the README says that `map_create` creates a map from a provided configuration and that `map_update_definition` replaces the full definition of a map, and it names no argument for a connection).
 - Never made, through any tool, credentials (rule 2): a management command of `kusto_command` that carries a secret, a key or a connection string with a secret.
 
 ## `azure-mcp`: Azure MCP Server
@@ -203,7 +205,7 @@ How to use it:
 - Never made, through any tool, credentials (rule 2): a call of any namespace that returns or takes the value of a secret, a key, a password, a connection string or a certificate, for example a `keyvault` secret or the application settings of an App Service web app (`appservice`): the read-only switch does not stop a read.
 - Never made, through any tool, permissions (tier T3): a change of a role assignment (`role`), or of who may access a resource, through any namespace.
 - Never made, through any tool, security settings (tier T3): a change of an Azure Policy assignment, definition or initiative (`policy`), of a firewall rule, of the approval of a private endpoint connection or of a security setting of a backup, through any namespace.
-- Never made, through any tool, capacity, tenant or workspace settings (tier T3): a change of a quota or a limit (`quota`), of the size, the SKU or the capacity of a resource, for example a Fabric capacity, or of a setting of a tenant, a management group or a subscription, through any namespace.
+- Never made, through any tool, capacity, tenant or workspace settings (tier T3): a change of a quota or a limit (`quota`), or of the size, the SKU, the tier or the capacity of a resource, for example the capacity of a virtual machine scale set or the performance tier of an Azure SQL database, through any namespace.
 - Never made, through any tool, connections (tier T3): a change of a connection of a resource, for example the database connection of an App Service web app (`appservice`) or a connector of an SRE agent (`sreagent`).
 - Never made, through any tool, schedules (tier T3): a change of a schedule, for example the schedule of a backup policy (`azurebackup`) or a scheduled task of an SRE agent (`sreagent`).
 
@@ -310,11 +312,14 @@ How to use it:
   - Some of its tools sign in or out, or return an access token; the kit leaves sign-in to the person or the runner (rule 2), so no agent calls them.
   - The pipeline tools are a preview feature, and they appear only with the --pipeline flag.
   - The guide to connection management also names a tool, create_connection_ui, that opens a form for a new connection and is not in the list of the README.
+  - The pipelines page says that pipeline deletion and schedule modification are not available through the MCP server, and the same page documents creating a schedule (mcp_datafactorymc_create_pipeline_schedule); the README also lists set_pipeline_schedule_enabled: the pages disagree about modifying a schedule.
+  - Its execute_query tool runs M queries, and the knowledge files that the README lists cover Action.Sequence for writes, so the tool is listed as mixed.
 - Read from: `github.com/microsoft/DataFactory.MCP`; `github.com/microsoft/DataFactory.MCP/blob/main/docs/connection-management.md`; `fabric/data-factory/pipelines-manage-vs-code` (updated 2026-06-11); `rest/api/fabric/articles/mcp-servers/fabric-mcp-servers-list` (updated 2026-10-21).
 - Tools (52, from the pages):
-  - read (26): `get_authentication_status`, `get_access_token`, `list_gateways`, `get_gateway`, `list_supported_connection_types`, `list_connections`, `get_connection`, `list_workspaces`, `list_dataflows`, `get_dataflow_definition`, `refresh_dataflow_status`, `execute_query`, `list_capacities`, `list_pipelines`, `get_pipeline`, `get_pipeline_definition`, `get_pipeline_run_status`, `list_pipeline_schedules`, `list_copy_jobs`, `get_copy_job`, `get_copy_job_definition`, `get_copy_job_run_status`, `list_copy_job_schedules`, `list_airflow_jobs`, `get_airflow_job`, `get_airflow_job_definition`
+  - read (25): `get_authentication_status`, `get_access_token`, `list_gateways`, `get_gateway`, `list_supported_connection_types`, `list_connections`, `get_connection`, `list_workspaces`, `list_dataflows`, `get_dataflow_definition`, `refresh_dataflow_status`, `list_capacities`, `list_pipelines`, `get_pipeline`, `get_pipeline_definition`, `get_pipeline_run_status`, `list_pipeline_schedules`, `list_copy_jobs`, `get_copy_job`, `get_copy_job_definition`, `get_copy_job_run_status`, `list_copy_job_schedules`, `list_airflow_jobs`, `get_airflow_job`, `get_airflow_job_definition`
   - write (25): `authenticate_interactive`, `authenticate_service_principal`, `sign_out`, `create_virtualnetwork_gateway`, `create_connection`, `create_connection_ui`, `create_dataflow`, `add_connection_to_dataflow`, `add_or_update_query_in_dataflow`, `save_dataflow_definition`, `refresh_dataflow_background`, `create_pipeline`, `update_pipeline`, `update_pipeline_definition`, `run_pipeline`, `create_pipeline_schedule`, `set_pipeline_schedule_enabled`, `create_copy_job`, `update_copy_job`, `update_copy_job_definition`, `run_copy_job`, `create_copy_job_schedule`, `create_airflow_job`, `update_airflow_job`, `update_airflow_job_definition`
   - destructive (1): `delete_airflow_job`
+  - mixed (1): `execute_query`
 - Never called, credentials (rule 2): `get_access_token`, `authenticate_interactive`, `authenticate_service_principal`, `sign_out`.
 - Never called, connections (tier T3): `create_connection`, `create_connection_ui`, `create_virtualnetwork_gateway`, `add_connection_to_dataflow`.
 - Never made, through any tool, connections (tier T3): a connection, or the binding of one, in a definition that `update_pipeline_definition`, `update_copy_job_definition` or `save_dataflow_definition` writes.

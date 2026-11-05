@@ -213,12 +213,13 @@ LISTS = [
     ("powerbi-consumption-remote", None, LEARN + "power-bi/developer/mcp/remote-mcp-server-get-started", "## Available Power BI MCP server tools", None, "tool headings"),
     ("microsoft-learn", None, "https://github.com/MicrosoftDocs/mcp", "| Tool", "\n\n", "table"),
     ("activator-remote", None, LEARN + "fabric/real-time-intelligence/mcp-remote-activator", "## Rule management", "\n## ", "table"),
-    ("operations-agent-remote", None, LEARN + "fabric/real-time-intelligence/mcp-remote-operations-agent", "Configure server", "\n## ", "table"),
+    ("operations-agent-remote", "configure URL", LEARN + "fabric/real-time-intelligence/mcp-remote-operations-agent", "### Configure server", "### Query server", "table"),
+    ("operations-agent-remote", "query URL", LEARN + "fabric/real-time-intelligence/mcp-remote-operations-agent", "### Query server", "\n## ", "table"),
     ("onelake-hosted", None, LEARN + "fabric/onelake/onelake-hosted-mcp", "## Browse and read data", "## Read tool results", "table"),
     ("sql-mcp-server", None, LEARN + "azure/data-api-builder/mcp/data-manipulation-language-tools", "## What are DML tools?", "## The tools", "table"),
     ("azure-arm-cost", None, "https://github.com/Azure/Azure-Resource-Manager-MCP", "| Tool", "\n\n", "table"),
     ("azure-arm-cost", "optional Cost Management toolset", "https://github.com/Azure/Azure-Resource-Manager-MCP/blob/main/docs/CostManagementAndPricingTools.md", "## Cost Management tools", "## Example", "table"),
-    ("powerbi-authoring-local", None, "https://github.com/microsoft/powerbi-modeling-mcp", None, None, "operations"),
+    ("powerbi-authoring-local", None, "https://github.com/microsoft/powerbi-modeling-mcp", "Available tools", "\n## ", "operations"),
     ("datafactory-local", None, "https://github.com/microsoft/DataFactory.MCP", "## Available Tools", "## Available Resources", "inline"),
     ("graph-enterprise", None, LEARN + "graph/mcp-server/overview", "## Tools", "\n## ", "bullets"),
     ("graphql-sample", None, LEARN + "fabric/data-engineering/api-graphql-local-model-context-protocol", "### Available MCP tools", "\n## ", "headings"),
@@ -233,7 +234,7 @@ def names_on(text, how):
     if how == "table":
         return re.findall(r"^\|\s*`([A-Za-z0-9_\-]+)`", text, re.MULTILINE)
     if how == "operations":
-        return re.findall(r"^\|\s*\*\*([a-z_]+_operations)\*\*", text, re.MULTILINE)
+        return re.findall(r"^\|\s*\*\*`?([A-Za-z][A-Za-z0-9_.-]*)`?\*\*", text, re.MULTILINE)  # every bold first cell of the tools section (a code span, a digit, a hyphen or a dot may be in the name): the tools, and a tool that is added without the suffix of the others
     if how == "bullets":
         return re.findall(r"^- ([a-z_]+):", text, re.MULTILINE)
     if how == "headings":
@@ -266,22 +267,33 @@ def lists(project, sources):
     for (sid, tool_set), found in union.items():
         groups = by_id[sid]["tools"].get("groups", [])
         mine = [n for g in groups if g.get("set") == tool_set for n in g["names"]]
-        if tool_set is None and not mine:
-            mine = [n for g in groups for n in g["names"]]  # a server whose groups are all in named sets (the two URLs of an operations agent)
         if tool_set == "optional Cost Management toolset":
             found = [n for n in found if n not in union[(sid, None)]]
-        absent = sorted(n for n in NOT_ON_THE_PAGE.get(sid, set()) if n in found or n not in mine)  # a tool that this table sets aside has to be in the catalog and not in the list of the page
         mine = [n for n in mine if n not in NOT_ON_THE_PAGE.get(sid, set())]
         missing, extra = sorted(set(found) - set(mine)), sorted(set(mine) - set(found))
         duplicated = sorted({n for n in found if found.count(n) > 1})
-        state = "DIFF" if missing or extra or duplicated or absent else "OK"
+        state = "DIFF" if missing or extra or duplicated else "OK"
         status |= state == "DIFF"
-        print("%-26s %-34s %-4s page %d, catalog %d; on the page only: %s; in the catalog only: %s; twice on the page: %s%s"
-              % (sid, tool_set or "", state, len(set(found)), len(set(mine)), missing, extra, duplicated, "; set aside and not as expected: %s" % absent if absent else ""))
-    unread = sorted(s["id"] for s in catalog["servers"] if s["tools"]["from"] == "page" and s["id"] not in {sid for sid, _set in union})
+        print("%-26s %-34s %-4s page %d, catalog %d; on the page only: %s; in the catalog only: %s; twice on the page: %s"
+              % (sid, tool_set or "", state, len(set(found)), len(set(mine)), missing, extra, duplicated))
+    for sid, aside in NOT_ON_THE_PAGE.items():
+        # a tool that is set aside has to be a tool of the catalog (in any of its sets) and in no list of the page
+        every = [n for g in by_id[sid]["tools"].get("groups", []) for n in g["names"]]
+        listed = {n for (i, _set), found in union.items() if i == sid for n in found}
+        wrong = sorted(n for n in aside if n in listed or n not in every)
+        status |= bool(wrong)
+        print("%-26s %-34s %-4s tools set aside as not in the list of the page: %s; on the page or not in the catalog: %s" % (sid, "set aside", "DIFF" if wrong else "OK", sorted(aside), wrong))
+    unread = []
+    for server in catalog["servers"]:
+        if server["tools"]["from"] != "page":
+            continue
+        sets = {g.get("set") for g in server["tools"]["groups"]}
+        covered = {tool_set for sid, tool_set in union if sid == server["id"]}
+        left = sets - covered
+        unread += ["%s%s" % (server["id"], " (%s)" % tool_set if tool_set else "") for tool_set in sorted(left, key=str)]
     if unread:
         status = 1
-        print("DIFF the catalog lists the tools of these servers from a page, and LISTS has no entry that reads it: %s" % ", ".join(unread))
+        print("DIFF the catalog lists these servers or sets of tools from a page, and LISTS has no entry that reads them: %s" % ", ".join(unread))
     for sid, url in ACCESS.items():
         different, count = access_differences(sid, url, by_id[sid], sources)
         status |= bool(different) or count == 0
