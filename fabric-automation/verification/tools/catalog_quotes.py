@@ -47,10 +47,18 @@ def load(project):
     return tc, tc.load((root / "catalog.json").read_text(encoding="utf-8")), read("toolchain.json"), read("toolchain.lock.json")
 
 
+def learn_slug(url):
+    """The file name that learn_extract.py gives a page of Learn (the same rule, so that this file also runs where learn_extract.py is not beside it)."""
+    return re.sub(r"[^A-Za-z0-9]+", "-", url.split("learn.microsoft.com/", 1)[1]).strip("-")
+
+
 def local_name(url):
     if url.startswith("https://learn.microsoft.com/"):
-        import learn_extract
-        return learn_extract.slug(url) + ".md"
+        try:
+            import learn_extract
+            return learn_extract.slug(url) + ".md"
+        except ImportError:
+            return learn_slug(url) + ".md"
     return "gh-" + re.sub(r"[^A-Za-z0-9]+", "-", url.split("github.com/", 1)[1]).strip("-") + ".md"
 
 
@@ -189,23 +197,24 @@ def check(project, sources, reports):
 
 
 LEARN = "https://learn.microsoft.com/en-us/"
-# server, set of its tools (None: the unnamed set), page, the text where its list starts and the text where it ends (None: the whole page), how to read the names, and how many to keep
+# server, set of its tools (None: the unnamed set), page, the text where its list starts and the text where it ends (None: the whole page, or to the end of the section), how to read the names
 LISTS = [
-    ("fabric-core", None, LEARN + "rest/api/fabric/articles/mcp-servers/core-remote/tools-core-mcp-server", None, None, "table", None),
-    ("fabric-iq", None, LEARN + "fabric/iq/connectors/fabric-iq-mcp", "## Available tools", "\n## ", "table", 6),
-    ("fabric-sql", None, LEARN + "fabric/data-warehouse/data-warehouse-mcp-server", "## Available tools", "\n## ", "table", None),
-    ("microsoft-learn", None, "https://github.com/MicrosoftDocs/mcp", "| Tool", "\n\n", "table", None),
-    ("activator-remote", None, LEARN + "fabric/real-time-intelligence/mcp-remote-activator", "## Rule management", "\n## ", "table", None),
-    ("operations-agent-remote", None, LEARN + "fabric/real-time-intelligence/mcp-remote-operations-agent", "Configure server", "\n## ", "table", None),
-    ("onelake-hosted", None, LEARN + "fabric/onelake/onelake-hosted-mcp", "## Browse and read data", "## Read tool results", "table", None),
-    ("sql-mcp-server", None, LEARN + "azure/data-api-builder/mcp/data-manipulation-language-tools", "## What are DML tools?", "\n## ", "table", 7),
-    ("azure-arm-cost", None, "https://github.com/Azure/Azure-Resource-Manager-MCP", "| Tool", "\n\n", "table", None),
-    ("azure-arm-cost", "optional Cost Management toolset", "https://github.com/Azure/Azure-Resource-Manager-MCP/blob/main/docs/CostManagementAndPricingTools.md", "## Cost Management tools", "## Example", "table", None),
-    ("powerbi-authoring-local", None, "https://github.com/microsoft/powerbi-modeling-mcp", None, None, "operations", None),
-    ("datafactory-local", None, "https://github.com/microsoft/DataFactory.MCP", "## Available Tools", "## Available Resources", "inline", None),
-    ("graph-enterprise", None, LEARN + "graph/mcp-server/overview", "## Tools", "\n## ", "bullets", None),
-    ("graphql-sample", None, LEARN + "fabric/data-engineering/api-graphql-local-model-context-protocol", "### Available MCP tools", "\n## ", "headings", None),
-    ("foundry-mcp", None, LEARN + "azure/ai-foundry/mcp/available-tools", None, None, "table", None),
+    ("fabric-core", None, LEARN + "rest/api/fabric/articles/mcp-servers/core-remote/tools-core-mcp-server", None, None, "table"),
+    ("fabric-iq", None, LEARN + "fabric/iq/connectors/fabric-iq-mcp", "## Available tools", "## Tool contract", "table"),
+    ("fabric-sql", None, LEARN + "fabric/data-warehouse/data-warehouse-mcp-server", "## Available tools", "\n## ", "table"),
+    ("powerbi-consumption-remote", None, LEARN + "power-bi/developer/mcp/remote-mcp-server-get-started", "## Available Power BI MCP server tools", None, "tool headings"),
+    ("microsoft-learn", None, "https://github.com/MicrosoftDocs/mcp", "| Tool", "\n\n", "table"),
+    ("activator-remote", None, LEARN + "fabric/real-time-intelligence/mcp-remote-activator", "## Rule management", "\n## ", "table"),
+    ("operations-agent-remote", None, LEARN + "fabric/real-time-intelligence/mcp-remote-operations-agent", "Configure server", "\n## ", "table"),
+    ("onelake-hosted", None, LEARN + "fabric/onelake/onelake-hosted-mcp", "## Browse and read data", "## Read tool results", "table"),
+    ("sql-mcp-server", None, LEARN + "azure/data-api-builder/mcp/data-manipulation-language-tools", "## What are DML tools?", "## The tools", "table"),
+    ("azure-arm-cost", None, "https://github.com/Azure/Azure-Resource-Manager-MCP", "| Tool", "\n\n", "table"),
+    ("azure-arm-cost", "optional Cost Management toolset", "https://github.com/Azure/Azure-Resource-Manager-MCP/blob/main/docs/CostManagementAndPricingTools.md", "## Cost Management tools", "## Example", "table"),
+    ("powerbi-authoring-local", None, "https://github.com/microsoft/powerbi-modeling-mcp", None, None, "operations"),
+    ("datafactory-local", None, "https://github.com/microsoft/DataFactory.MCP", "## Available Tools", "## Available Resources", "inline"),
+    ("graph-enterprise", None, LEARN + "graph/mcp-server/overview", "## Tools", "\n## ", "bullets"),
+    ("graphql-sample", None, LEARN + "fabric/data-engineering/api-graphql-local-model-context-protocol", "### Available MCP tools", "\n## ", "headings"),
+    ("foundry-mcp", None, LEARN + "azure/ai-foundry/mcp/available-tools", None, None, "table"),
 ]
 NOT_ON_THE_PAGE = {"powerbi-authoring-local": {"accept_eula"},  # named in the text about the license
                    "datafactory-local": {"create_connection_ui"}}  # named in the guide to connection management, not in the list of the README
@@ -221,6 +230,8 @@ def names_on(text, how):
         return re.findall(r"^- ([a-z_]+):", text, re.MULTILINE)
     if how == "headings":
         return re.findall(r"^#{3,5} `([A-Za-z0-9_\-]+)`", text, re.MULTILINE)
+    if how == "tool headings":
+        return re.findall(r"^## ([A-Z][A-Za-z ]+?) tool$", text, re.MULTILINE)
     return re.findall(r"`([a-z_]+)`", text)
 
 
@@ -237,12 +248,12 @@ def lists(project, sources):
     by_id = {s["id"]: s for s in catalog["servers"]}
     status = 0
     union = {}
-    for sid, tool_set, url, start, end, how, keep in LISTS:
+    for sid, tool_set, url, start, end, how in LISTS:
         text = (Path(sources) / local_name(url)).read_text(encoding="utf-8")
         if start:
             first = text.index(start)
             text = text[first:text.index(end, first + 1)] if end else text[first:]
-        found = names_on(text, how)[:keep]
+        found = names_on(text, how)
         union.setdefault((sid, tool_set), []).extend(found)
     for (sid, tool_set), found in union.items():
         groups = by_id[sid]["tools"].get("groups", [])

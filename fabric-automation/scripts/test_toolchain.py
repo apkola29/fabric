@@ -8355,8 +8355,13 @@ class InstructionLayerTests(unittest.TestCase):
         self.assertIn("6. A tool that `references/mcp-servers.md` lists under \"Never called\" is not called, and a change that it lists under \"Never made\" is not made through any tool, "
                       "whatever a skill step says.", router)
         self.assertIn("| Which servers and tools exist, what a tool can change, which tool is never called or which change is never made, which tools give knowledge | none | read `references/mcp-servers.md`", router)
-        self.assertIn("A server that the lock did not measure (a hosted one) has only the tool names that its entry in the server reference lists: report a difference between them and what the server lists before you go on.", agents)
-        self.assertIn("A hosted server has no measured contract: where its entry in the server reference of the router skill lists tools, report a difference between those names and what the server lists "
+        self.assertIn("A server that the lock did not measure (a hosted one, one that the kit does not pin, or one whose capture was skipped) has only the tool names that its entry in the server reference lists: "
+                      "report a difference between them and what the server lists before you go on, and where the entry lists none, say what the server listed.", agents)
+        self.assertIn("Use only the skills and servers it loaded, and, where the person asked for it, a server that they connected in their own settings (see \"Servers\").", agents)
+        self.assertIn("A tool in the second column, or a change in the third, touches security, permissions, a connection, a schedule, a label or a setting", agents)
+        self.assertIn("`get_bicep_best_practices` of the Bicep server", preamble, "the knowledge tools that the preamble names include the one of the Bicep server")
+        self.assertIn("A server that the lock did not measure (a hosted one, one that the kit does not pin, or one whose capture was skipped) has no measured contract: where its entry in the server reference of the router skill lists tools, "
+                      "report a difference between those names and what the server lists "
                       "before you go on (names only, not schemas), and where it lists none, say what the server listed.", preamble)
         catalog = json.loads((REAL / "catalog.json").read_text(encoding="utf-8"))
         flagged = {tool for server in catalog["servers"] for entry in server["flagged"] for tool in entry["tools"]}
@@ -8696,7 +8701,7 @@ class CatalogTests(unittest.TestCase):
             ("a directory that counts one server too many", lambda c: c["directory"].update(servers=15), "marked as listed by Fabric and the directory counts 15"),
             ("a directory whose remote count is wrong", lambda c: c["directory"].update(remote=8, local=6), "the number of remote servers is not 8"),
             ("the skills repository read at another tag", lambda c: self.server(c, "fabric-sql")["pages"][1].update(url="https://github.com/microsoft/skills-for-fabric/blob/v0.0.1/.github/plugin/marketplace.json"), "pins v0.3.20"),
-            ("a lock source on a server that is not pinned", lambda c: self.server(c, "activator-remote").update(tools={"from": "lock", "contract": "fabric-local/full"}), "only a pinned server has a contract"),
+            ("a lock source on a server that is not pinned", lambda c: self.server(c, "fabric-local").update(group="listed", short="Fabric MCP", status="public-preview"), "only a pinned server has a contract"),
         ]
         for label, change, expected in cases:
             with self.subTest(label):
@@ -8730,25 +8735,71 @@ class CatalogTests(unittest.TestCase):
                 self.assertEqual("destructive" if tools[name]["destructive"] else ("read" if tools[name]["read_only"] else "write"), kind)
         azure = toolchain_catalog.server_tools(self.server(self.catalog, "azure-mcp"), self.lock)
         self.assertEqual([(None, None)], [(s, k) for s, k, _n in azure], "a server whose kinds follow its variant lists its tools once, with no kind")
+        reference = toolchain_catalog.render_reference(self.catalog, self.manifest, self.lock)
+        for kind, word in (("read", "annotated read-only"), ("destructive", "annotated destructive"), ("write", "annotated neither read-only nor destructive")):
+            self.assertIn("  - %s (%d): `" % (word, sum(1 for k in kinds.values() if k == kind)), reference, "the Reference says that the kinds of a locked server are annotations")
         self.assertIsNone(toolchain_catalog.contract_tools({"contracts": {"x/y": {"status": "needs-sign-in"}}}, "x/y"))
         self.assertIsNone(toolchain_catalog.contract_tools({}, "x/y"))
 
+    # (server, tool): why a job may load a variant that has it. The README of the Power BI authoring server says what --readonly does and is silent on this tool, and the lock skipped the capture of every
+    # variant of that server (the license is not accepted), so that nothing here shows that the variant leaves it out. The rule holds anyway: no agent calls it, and the operator accepts the license once.
+    JOB_VARIANTS_THAT_MAY_LIST_A_FLAGGED_TOOL = {
+        ("powerbi-authoring-local", "accept_eula"): "UNVERIFIED: not captured in the lock; the README of the server does not say that --readonly removes it; rule 3 of AGENTS.md and rule 1 of the preamble forbid the call",
+    }
+
+    def job_variant_violations(self, catalog, lock):
+        """[(profile, variant, tool)]: a tool that the catalog flags by name and that a variant which a job loads lists, by its captured contract or, where the lock holds none, by the tool list of the catalog."""
+        profiles = self.read("profiles.json")["profiles"]
+        flagged = {(s["id"], t) for s in catalog["servers"] for e in s["flagged"] for t in e["tools"]}
+        out = []
+        for name, profile in profiles.items():
+            if profile["mode"] == "dev":
+                continue
+            for entry in profile["mcp"]:
+                key = "%s/%s" % (entry["server"], entry["variant"])
+                found = toolchain_catalog.contract_tools(lock, key)
+                if found is None:
+                    found = toolchain_catalog.tool_names(self.server(catalog, entry["server"]), lock) or []
+                out += [(name, key, t) for s, t in sorted(flagged) if s == entry["server"] and t in found and (s, t) not in self.JOB_VARIANTS_THAT_MAY_LIST_A_FLAGGED_TOOL]
+        return out
+
     def test_a_read_only_variant_that_a_job_loads_has_none_of_the_tools_that_the_catalog_flags(self):
         profiles = self.read("profiles.json")["profiles"]
-        flagged = {(s["id"], t) for s in self.catalog["servers"] for e in s["flagged"] for t in e["tools"]}
-        seen = 0
+        seen = captured = from_pages = 0
         for name, profile in profiles.items():
             if profile["mode"] == "dev":
                 continue
             for entry in profile["mcp"]:
                 key = "%s/%s" % (entry["server"], entry["variant"])
                 spec = next(s for s in self.manifest["mcp_servers"] if s["id"] == entry["server"])["variants"][entry["variant"]]
-                contract = self.lock["contracts"].get(key, {}).get("tools", {})
                 with self.subTest(profile=name, variant=key):
                     self.assertEqual("read", spec["access"], "a job loads servers that only read")
-                    self.assertEqual([], sorted(t for s, t in flagged if s == entry["server"] and t in contract), "a tool that can change something is in a variant that a job loads")
+                if toolchain_catalog.contract_tools(self.lock, key) is None:
+                    from_pages += 1
+                else:
+                    captured += 1
                 seen += 1
         self.assertGreater(seen, 5)
+        self.assertGreater(captured, 0, "a variant whose contract the lock captured is checked against it")
+        self.assertGreater(from_pages, 0, "a variant whose contract the lock does not hold is checked against the tool list of the catalog, so that the check is not empty")
+        self.assertEqual([], self.job_variant_violations(self.catalog, self.lock), "a tool that can change something is in a variant that a job loads")
+
+    def test_the_check_of_the_variants_that_a_job_loads_sees_a_flagged_tool_in_a_variant_that_the_lock_does_not_hold_and_lists_one_reviewed_exception(self):
+        for (sid, tool), reason in self.JOB_VARIANTS_THAT_MAY_LIST_A_FLAGGED_TOOL.items():
+            with self.subTest(server=sid, tool=tool):
+                self.assertTrue(reason.startswith("UNVERIFIED:"), "an exception says that nothing verifies it")
+                self.assertIn(tool, toolchain_catalog.tool_names(self.server(self.catalog, sid), self.lock), "an exception is a tool of its server")
+                self.assertIn(tool, [t for e in self.server(self.catalog, sid)["flagged"] for t in e["tools"]], "an exception is a flagged tool")
+        self.assertIsNone(toolchain_catalog.contract_tools(self.lock, "powerbi-authoring-local/offline-readonly"), "the lock holds no contract of that variant")
+        listed = toolchain_catalog.tool_names(self.server(self.catalog, "powerbi-authoring-local"), self.lock)
+        other = next(n for n in listed if ("powerbi-authoring-local", n) not in self.JOB_VARIANTS_THAT_MAY_LIST_A_FLAGGED_TOOL)
+        broken = self.mutated(lambda c: self.server(c, "powerbi-authoring-local")["flagged"][0]["tools"].append(other))
+        found = self.job_variant_violations(broken, self.lock)
+        self.assertIn(("agent-implementer", "powerbi-authoring-local/offline-readonly", other), found, "a flagged tool of a variant without a contract is found from the tool list of the catalog")
+        self.assertIn(("executor-sandbox-read", "powerbi-authoring-local/service-readonly", other), found)
+        captured = next(iter(toolchain_catalog.contract_tools(self.lock, "fabric-local/read")))
+        flagged_here = self.mutated(lambda c: self.server(c, "fabric-local")["flagged"][0]["tools"].append(captured))
+        self.assertIn(("executor-sandbox-read", "fabric-local/read", captured), self.job_variant_violations(flagged_here, self.lock), "a flagged tool of a captured contract is found from the lock")
 
     def test_the_blocks_are_the_ones_that_agents_md_has_and_each_of_them_is_there_once(self):
         text = self.AGENTS.read_text(encoding="utf-8").replace("\r\n", "\n")
@@ -8846,28 +8897,14 @@ class CatalogTests(unittest.TestCase):
         self.assertIn("github.com/o/r/tree/main/servers/s", self.claim_pages(dict(repository, path="servers/s/README.md")))
         self.assertEqual({"fabric/x"}, self.claim_pages({"kind": "page", "url": "https://learn.microsoft.com/en-us/fabric/x"}))
 
-    PROTECTED = {"role", "roles", "permission", "permissions", "grant", "revoke", "share", "invite", "assign", "connection", "connections", "gateway", "schedule", "schedules",
-                 "label", "labels", "license", "eula", "policy", "keyvault", "security", "capacity", "modify", "authenticate", "sign", "token", "secret", "secrets", "password",
-                 "credential", "credentials", "sas"}
-    SECRETS = {"token", "secret", "secrets", "password", "credential", "credentials", "sas", "keyvault"}
-
     @classmethod
     def unflagged(cls, catalog, lock):
         """[(server, tool)] whose name says that it touches a protected area (or, for any kind, that it returns a secret), and that is neither flagged by name nor named by a statement of its server."""
-        out = []
-        for server in catalog["servers"]:
-            flagged = {t for e in server["flagged"] for t in e["tools"]}
-            statements = " ".join(c for e in server["flagged"] for c in e.get("changes", []))
-            for _set, kind, names in toolchain_catalog.server_tools(server, lock) or []:
-                for name in names:
-                    words = set(re.findall(r"[a-z]+", re.sub(r"([a-z0-9])([A-Z])", r"\1 \2", name).lower()))
-                    risky = bool(words & cls.SECRETS) or (kind != "read" and bool(words & cls.PROTECTED))
-                    if risky and name not in flagged and "`%s`" % name not in statements:
-                        out.append((server["id"], name))
-        return out
+        return [(server["id"], name) for server in catalog["servers"] for name in toolchain_catalog.unflagged_tools(server, lock)]
 
     def test_a_tool_whose_name_says_that_it_touches_a_protected_area_is_flagged_by_name_or_named_by_a_statement_of_its_server(self):
-        self.assertEqual([], self.unflagged(self.catalog, self.lock), "a tool that this list shows is to be flagged under its area, or named in a statement of `changes`, or reviewed and added to this test with the reason")
+        self.assertEqual([], self.unflagged(self.catalog, self.lock), "a tool that this list shows is to be flagged under its area, or named in a statement of `changes`, or reviewed in PROTECTED_REVIEWED with the reason")
+        self.assertEqual([], toolchain_catalog.check_against(self.catalog, self.manifest, self.lock), "the check of the catalog against the lock holds the same rule")
 
     def test_the_check_of_protected_names_reports_a_flag_that_is_missing_and_accepts_a_statement_that_names_the_tool(self):
         def without(sid, area, tool):
@@ -8884,6 +8921,63 @@ class CatalogTests(unittest.TestCase):
                       "a namespace tool without kinds counts as one that can write")
         self.assertEqual([], [t for t in self.unflagged(self.catalog, self.lock) if t[0] == "azure-mcp"], "its three namespaces are named by the statements of the catalog")
         self.assertNotIn(("fabric-core", "get_workspace_role"), self.unflagged(self.mutated(lambda c: None), self.lock), "a read of a role is no change of it")
+
+    def test_the_words_of_a_tool_name_are_split_at_camel_case_acronyms_and_the_protected_words_cover_the_areas_of_the_catalog(self):
+        self.assertEqual({"create", "rls", "role"}, toolchain_catalog.name_words("createRLSRole"))
+        self.assertEqual({"get", "http", "token", "xml"}, toolchain_catalog.name_words("GetXMLHttpToken"))
+        self.assertEqual({"core", "create", "item"}, toolchain_catalog.name_words("core_create-item"))
+        for word in ("key", "certificates", "domain", "tenant", "settings", "tier", "immutability", "retention", "diagnostics", "rls", "ols", "acl", "trigger", "triggers", "continuous"):
+            with self.subTest(word=word):
+                self.assertIn(word, toolchain_catalog.PROTECTED_WORDS)
+        for word in ("key", "keys", "certificate", "certificates"):
+            with self.subTest(secret=word):
+                self.assertIn(word, toolchain_catalog.SECRET_WORDS)
+
+    def test_the_check_of_protected_names_reads_acronyms_secrets_and_kinds_as_the_rules_say(self):
+        def server(names, kind):
+            return {"id": "x", "tools": {"from": "page", "groups": [{"kind": kind, "names": names}]}, "flagged": [], "knowledge": []}
+
+        self.assertEqual(["setRLSRole"], toolchain_catalog.unflagged_tools(server(["setRLSRole", "listItems"], "write"), self.lock))
+        self.assertEqual(["get_certificate"], toolchain_catalog.unflagged_tools(server(["get_certificate", "list_items"], "read"), self.lock), "a read of a secret is flagged whatever its kind")
+        self.assertEqual([], toolchain_catalog.unflagged_tools(server(["get_tenant_settings"], "read"), self.lock), "a read of a setting changes nothing")
+        self.assertEqual(["modify_tier", "put_retention"], toolchain_catalog.unflagged_tools(server(["modify_tier", "put_retention"], "destructive"), self.lock))
+        self.assertEqual(["x_acl"], toolchain_catalog.unflagged_tools(server(["x_acl"], "mixed"), self.lock), "a tool that reads and also writes can change an access list")
+        named = server(["setRLSRole"], "write")
+        named["flagged"] = [{"area": "row-level or object-level security", "tools": [], "changes": ["a call of `setRLSRole` that changes a role"]}]
+        self.assertEqual([], toolchain_catalog.unflagged_tools(named, self.lock), "a statement of changes that names the tool in back ticks is enough")
+
+    def test_the_check_of_the_catalog_refuses_a_name_that_is_no_tool_a_tool_that_is_knowledge_and_flagged_and_a_reviewed_name_that_is_gone(self):
+        def append_change(sid, text):
+            return lambda c: self.server(c, sid)["flagged"][0]["changes"].append(text)
+
+        cases = [
+            ("a statement that names a tool that the server does not have", append_change("fabric-rti-local", "a call of `no_such_tool` that changes a policy"), "names `no_such_tool`"),
+            ("a tool that is knowledge and flagged", lambda c: self.server(c, "fabric-core")["flagged"][0]["tools"].append("get_knowledge"), "the tool get_knowledge is a knowledge tool and is flagged"),
+            ("tools whose names say that they touch a protected area or return a secret", lambda c: self.server(c, "datafactory-local")["flagged"].clear(), "says that it touches a protected area or returns a secret"),
+        ]
+        for label, change, expected in cases:
+            with self.subTest(label):
+                catalog = self.mutated(change)
+                self.assertEqual([], toolchain_catalog.check_structure(catalog))
+                problems = toolchain_catalog.check_against(catalog, self.manifest, self.lock)
+                self.assertTrue(any(expected in problem for problem in problems), "%s: %s" % (expected, problems))
+        with mock.patch.dict(toolchain_catalog.PROTECTED_REVIEWED, {("fabric-core", "no_such_tool"): "a reason"}):
+            problems = toolchain_catalog.check_against(self.catalog, self.manifest, self.lock)
+            self.assertTrue(any("no_such_tool is reviewed and left out of the check of protected names, and the server no longer has it" in p for p in problems), problems)
+        for sid, name in toolchain_catalog.PROTECTED_REVIEWED:
+            with self.subTest(reviewed=name):
+                self.assertIn(name, toolchain_catalog.tool_names(self.server(self.catalog, sid), self.lock), "a reviewed name is a tool of its server")
+                self.assertTrue(toolchain_catalog.PROTECTED_REVIEWED[(sid, name)].strip(), "a reviewed name has its reason")
+
+    def test_a_flagged_entry_with_a_note_and_no_tool_and_a_contract_of_another_server_are_refused(self):
+        cases = [
+            ("a note on an entry that names no tool", lambda c: self.server(c, "fabric-sql")["flagged"][0].update(note="a note without a tool"), "a note goes with the tools of the entry"),
+            ("a contract of another server", lambda c: self.server(c, "fabric-local")["tools"].update(contract="azure-mcp/read"), "the contract of another server"),
+        ]
+        for label, change, expected in cases:
+            with self.subTest(label):
+                problems = toolchain_catalog.check_structure(self.mutated(change))
+                self.assertTrue(any(expected in problem for problem in problems), "%s: %s" % (expected, problems))
 
     def test_a_locked_tool_that_says_it_is_read_only_and_destructive_counts_as_destructive_and_fails_the_check(self):
         lock = copy.deepcopy(self.lock)
@@ -9027,7 +9121,7 @@ class StandardsPackTests(unittest.TestCase):
     FOLDER = REAL / "skills" / "factory-standards"
     SKILL = FOLDER / "SKILL.md"
     REFERENCES = FOLDER / "references"
-    AREAS = ("rel", "sec", "cost", "ops", "perf", "gov", "del", "arc")
+    AREAS = ("rel", "sec", "cost", "ops", "perf", "gov", "del", "arc", "eng", "sem", "agt", "cap", "olk")
     TAGS = ("[gate]", "[review]", "[flag]")
     ID = re.compile(r"std-(?:%s)-\d\d" % "|".join(AREAS))
     LINE = re.compile(r"^- `(std-[a-z]+-\d+)` (.+)$")

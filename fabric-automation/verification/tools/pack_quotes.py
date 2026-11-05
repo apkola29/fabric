@@ -3,7 +3,7 @@
 usage: python pack_quotes.py PACKDIR SOURCEDIR REPORT [REPORT ...]
 
 A report has one row per check or note: `id | verdict | quote | reason`, where the quote (at most 12 words, fragments joined by ...) was copied from the cited
-section of the cited page. The notes are called note-wa-1 and so on (wa, sec, del and arc for the four files, numbered in file order). For each row the quote has
+section of the cited page. The notes are called note-wa-1 and so on (wa, sec, del and arc for the four files, numbered in file order; eng, sem, agt, cap and olk for the five workload files). For each row the quote has
 to be found, after normalization, in the cited section of the cited page. The program prints the rows whose quote is not found there (found on the cited page but
 in another section, found on another page, or not found at all), the verdict counts, and the ids that the report did not cover. A row whose quote is not on the
 page shows that the line was not read against the page. It does not say whether the verdict is right.
@@ -18,8 +18,9 @@ CITE = re.compile(r'(?:^|; )([^,";]+), "([^"]+)"')
 LINE = re.compile(r"^- `(std-[a-z]+-\d+)` (.+)$")
 NOTE = re.compile(r"^Note: (.+?) Source: (.+)\.$")
 BODY = re.compile(r"(?P<check>.+?) Applies to: (?P<applies>.+?)\. Source: (?P<cites>.+)\.")
-ROW = re.compile(r"^\s*\|?\s*`?(std-[a-z]+-\d+|note-[a-z]+-\d)`?\s*\|\s*([SPUMTCX])\b[^|]*\|\s*(.*)$")
-NOTE_FILES = {"wa": "well-architected.md", "sec": "security-and-governance.md", "del": "delivery-and-lifecycle.md", "arc": "architecture-patterns.md"}
+ROW = re.compile(r"^\s*\|?\s*`?(std-[a-z]+-\d+|note-[a-z]+-\d+)`?\s*\|\s*([SPUMTCX])\b[^|]*\|\s*(.*)$")
+NOTE_FILES = {"wa": "well-architected.md", "sec": "security-and-governance.md", "del": "delivery-and-lifecycle.md", "arc": "architecture-patterns.md",
+              "eng": "data-engineering.md", "sem": "semantic-models.md", "agt": "data-agents.md", "cap": "capacity-and-cost.md", "olk": "onelake-security.md"}
 
 
 def norm(text):

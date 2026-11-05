@@ -39,6 +39,17 @@ WHERE = {"command": "local, started by a command", "extension": "local, inside a
          "customer": "hosted by the customer"}
 LOCK_KIND_WORDS = {"read": "annotated read-only", "write": "annotated neither read-only nor destructive", "destructive": "annotated destructive"}
 READ_ONLY_SWITCHES = ("--read-only", "--readonly")
+# A name that says it touches one of these (for a tool that is not read-only), or that it returns a secret (for every kind), has to be flagged by name or named by a statement of `changes`.
+PROTECTED_WORDS = frozenset(
+    "role roles permission permissions grant revoke share invite assign connection connections gateway schedule schedules label labels license eula policy policies keyvault security "
+    "capacity modify authenticate sign token secret secrets password credential credentials sas key keys certificate certificates domain domains tenant settings setting tier "
+    "immutability retention diagnostics rls ols acl trigger triggers continuous".split())
+SECRET_WORDS = frozenset("token secret secrets password credential credentials sas keyvault key keys certificate certificates".split())
+# (server, tool) pairs that are reviewed and left out of that check, each with the reason: a name that says more than the tool does.
+PROTECTED_REVIEWED = {
+    ("fabric-rti-local", "activator_create_trigger"):
+        "it creates an Activator trigger with an e-mail or Teams alert, which is no schedule, permission, connection or setting; the server annotates it as destructive, so rule 6 asks for approval, and no job loads the server",
+}
 
 ID_RE = re.compile(r"[a-z][a-z0-9-]*")
 DATE_RE = re.compile(r"\d{4}-\d{2}-\d{2}")
@@ -313,6 +324,8 @@ def check_structure(catalog):
         tools = server.get("tools") if isinstance(server.get("tools"), dict) else {}
         if group in ("related",) and tools.get("from") == "lock":
             problems.append("%s: a related server is not in the lock" % where)
+        if tools.get("from") == "lock" and isinstance(tools.get("contract"), str) and tools["contract"].split("/")[0] != sid:
+            problems.append("%s.tools.contract: the contract of another server (a lock key starts with the id of the server)" % where)
         knowledge = server.get("knowledge")
         if not isinstance(knowledge, list):
             problems.append("%s.knowledge: must be a list" % where)
@@ -336,6 +349,8 @@ def check_structure(catalog):
                     names = _strings(entry.get("tools"), here + ".tools", problems, TOOL_RE, allow_empty=True)
                     if "note" in entry:
                         _text(entry["note"], here + ".note", problems)
+                        if not names:
+                            problems.append("%s.note: a note goes with the tools of the entry, and this entry names none" % here)
                     changes = []
                     if "changes" in entry:
                         changes = _strings_of_text(entry["changes"], here + ".changes", problems)
@@ -387,6 +402,27 @@ def tool_names(server, lock):
     return None if groups is None else [n for _set, _kind, names in groups for n in names]
 
 
+def name_words(name):
+    """The lower-case words of a tool name, split at hyphens, underscores, dots, spaces and camel case (RLSRole is rls and role)."""
+    spaced = re.sub(r"([a-z0-9])([A-Z])", r"\1 \2", name)
+    spaced = re.sub(r"([A-Z]+)([A-Z][a-z])", r"\1 \2", spaced)
+    return set(re.findall(r"[a-z]+", spaced.lower()))
+
+
+def unflagged_tools(server, lock):
+    """[name] of the tools of a server whose name says that it touches a protected area (when the tool is not read-only) or returns a secret (whatever its kind), and that is neither flagged by name nor named by a statement of `changes`."""
+    flagged = {t for e in server["flagged"] for t in e["tools"]}
+    named = {n for e in server["flagged"] for c in e.get("changes", []) for n in re.findall(r"`([^`]+)`", c)}
+    out = []
+    for _set, kind, names in server_tools(server, lock) or []:
+        for name in names:
+            words = name_words(name)
+            risky = bool(words & SECRET_WORDS) or (kind != "read" and bool(words & PROTECTED_WORDS))
+            if risky and name not in flagged and name not in named and (server["id"], name) not in PROTECTED_REVIEWED:
+                out.append(name)
+    return out
+
+
 def check_against(catalog, manifest, lock):
     """The problems of a well-formed catalog against the manifest and the lock; none when they agree."""
     problems = []
@@ -429,6 +465,14 @@ def check_against(catalog, manifest, lock):
             for name in entry["tools"]:
                 if name not in listed:
                     problems.append("%s: the flagged tool %s is not one of its tools" % (where, name))
+                if any(name in k["tools"] for k in server["knowledge"]):
+                    problems.append("%s: the tool %s is a knowledge tool and is flagged as never called" % (where, name))
+            for change in entry.get("changes", []):
+                for name in re.findall(r"`([^`]+)`", change):
+                    if name not in listed:
+                        problems.append("%s: a statement of changes names `%s`, which is not one of its tools (a word in back ticks there is a tool of the server)" % (where, name))
+        for name in unflagged_tools(server, lock):
+            problems.append("%s: the name of the tool %s says that it touches a protected area or returns a secret, and the catalog neither flags it nor names it in a statement of changes" % (where, name))
         for page in server["pages"]:
             match = SKILLS_TAG_RE.match(page["url"])
             if match:
@@ -447,6 +491,10 @@ def check_against(catalog, manifest, lock):
     for sid in sorted(set(manifest_ids) & {"fabric-core", "fabric-iq", "fabric-sql", "fabric-local"}):
         if not next(s for s in servers if s["id"] == sid).get("directory"):
             problems.append("server %s: the directory lists it" % sid)
+    for sid, name in sorted(PROTECTED_REVIEWED):
+        server = next((s for s in servers if s["id"] == sid), None)
+        if server is not None and name not in (tool_names(server, lock) or [name]):
+            problems.append("server %s: the tool %s is reviewed and left out of the check of protected names, and the server no longer has it" % (sid, name))
     return problems
 
 
@@ -646,8 +694,9 @@ def render_reference(catalog, manifest, lock):
            "Where the entry lists no tools, tell the person what the server listed before you call one.",
            "- The kinds. Where a person listed the tools from the pages: `read` only reads, `write` creates or changes, `destructive` deletes, removes or replaces, and `mixed` is one tool that reads and also writes or deletes, "
            "where the operation or the statement that a call names decides which. Where the lock measured the tools: the annotations that the server reported (read-only; destructive, the protocol's hint that a tool may perform "
-           "destructive updates; or neither). They are the server's own words and no review of what each tool does. A call that changes anything is a change of a tenant: a session asks the person's approval first "
-           "(rule 6 of AGENTS.md; rule 2 of \"How to work\" in the preamble), and a job makes none.",
+           "destructive updates; or neither). They are the server's own words and no review of what each tool does.",
+           "- A call that changes the live state of a tenant or of Azure needs the approval that the rules ask for in a session (rule 6 of AGENTS.md; rule 2 of \"How to work\" in the preamble), and a job makes no change through an MCP tool. "
+           "A tool that changes only a file on the machine works within the access of its profile.",
            "- \"Never called\" lists the tools that no agent calls. \"Never made\" lists the changes that no agent makes through any tool that can run them (a statement, a call with a protected argument), in a session or in a job.", "",
            "| Server | Group | Runs | Stage |", "|---|---|---|---|"]
     for server in catalog["servers"]:

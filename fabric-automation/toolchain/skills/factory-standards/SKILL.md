@@ -1,6 +1,6 @@
 ---
 name: factory-standards
-description: Use when planning, implementing, verifying or reviewing any change to Fabric, Power BI or related Azure resources, and for questions about architecture, reliability, security, cost, operations, performance, lifecycle (Git, deployment pipelines) or governance. Gives the Well-Architected, security and governance, lifecycle and architecture-pattern guidance for Fabric as short checks, each with a stable id, its source page and the date of that page, so that it works with no network. Use it before a plan is written and again when a change is checked. It guides and never authorizes a change.
+description: Use when planning, implementing, verifying or reviewing any change to Fabric, Power BI or related Azure resources, and for questions about architecture, reliability, security, cost, operations, performance, lifecycle (Git, deployment pipelines), governance, data engineering (Spark, Delta tables, dataflows), semantic models, capacity, OneLake security or data agents. Gives the Well-Architected, security and governance, lifecycle, architecture-pattern and workload guidance for Fabric as short checks, each with a stable id, its source page and the date of that page, so that it works with no network. Use it before a plan is written and again when a change is checked. It guides and never authorizes a change.
 license: MIT
 metadata:
   author: fabric-automation
@@ -35,6 +35,11 @@ A check is one line: an id, the check, what it applies to, and its source. A tag
 | `references/security-and-governance.md` | identity, boundaries, network, data protection, auditing and governance | the Fabric security pages, the Fabric security baseline, the Cloud Adoption Framework and the adoption roadmap |
 | `references/delivery-and-lifecycle.md` | Git, environments, deployment pipelines, what to parameterize | the Fabric CI/CD pages |
 | `references/architecture-patterns.md` | layering, where an item belongs, choosing between item types and layouts | the Architecture Center and the medallion page |
+| `references/data-engineering.md` | Spark runtime and sessions, the native execution engine, Delta table layout and maintenance, the SQL analytics endpoint, Dataflow Gen2 performance | the Fabric Data Engineering, Data Factory and fundamentals pages on those subjects |
+| `references/semantic-models.md` | Direct Lake and Import models, star schema, model size and refresh, dimensional modeling for a warehouse | the Direct Lake pages, the Power BI guidance pages and the Fabric Data Warehouse modeling page |
+| `references/capacity-and-cost.md` | sizing, throttling and smoothing, the load that a change adds to a capacity | the Fabric capacity pages |
+| `references/onelake-security.md` | OneLake security roles, table, column and row-level security, shortcuts and permissions around data in OneLake | the OneLake security pages |
+| `references/data-agents.md` | Fabric data agents: schema selection, instructions and descriptions, example queries, semantic models as a source, Git, promotion and publishing | the Fabric data agent pages and the semantic model page that they link |
 
 Each file starts with a table of its source pages, the update date from each page's metadata (`updated_at`, which can differ from the "last updated" date at the foot of the page) and the day it was read. That is the age of the pack.
 

@@ -83,7 +83,7 @@
         "It runs on the development machine; the install methods are a VS Code extension, npm with npx, or a build from source.",
         "Live operations sign in with the Azure CLI (az login) for a user, or with service-principal variables for a process; the page sends Data Factory authentication to the Data Factory tools reference.",
         "Its Learn tool reference lists only some of the tools and says that names and availability vary by installed version and server configuration, so the list of this kit is the one measured in the lock.",
-        "The README on the main branch also documents a jobs namespace (jobs_run-on-demand-item-job and four more tools) that the locked version does not expose.",
+        "The README on the main branch also documents core_get-item-definition, core_update-item-definition and a jobs namespace (jobs_run-on-demand-item-job and four more tools) that the locked version does not expose.",
         "The README of the microsoft/mcp repository lists it as Microsoft Fabric (Public Preview); the Learn pages and its own README state no stage."
       ],
       "pages": [
@@ -309,7 +309,7 @@
         "It is generally available; the hosted twin is in preview.",
         "It needs Write permission on the semantic model to change it: with only Build permission it can only run DAX queries.",
         "For a model in a Fabric workspace, the XMLA endpoint must be set to Read Write on the capacity.",
-        "The --readonly switch prevents any write operation to the semantic model; it does not cover local files or configuration. Without it, the server asks for a confirmation before an edit, once per database.",
+        "The --readonly switch prevents any write operations to the semantic model (the README's words), and the README does not say whether it covers anything else: the license acceptance is saved in a local configuration. Without it, the server asks for a confirmation before an edit, once per database.",
         "It blocks every other tool call until its license (EULA) is accepted: the operator accepts it once, on purpose, and the server saves the acceptance in a local configuration.",
         "The README says that database_operations can import and export TMDL folders and deploy to Fabric, and its examples change the data source of a model through Power Query parameters.",
         "The variable PBI_MODELING_MCP_ALLOWED_CONNECTION_HOSTS adds hosts that the server connects to and sends access tokens to; the kit does not set it.",
@@ -346,7 +346,11 @@
       "knowledge": [],
       "flagged": [
         {"area": "license", "tools": ["accept_eula"], "note": "the operator accepts the license, never the agent"},
-        {"area": "row-level or object-level security", "tools": ["security_role_operations"]},
+        {
+          "area": "row-level or object-level security",
+          "tools": [],
+          "changes": ["a change of a security role or of a row-level security permission through `security_role_operations`"]
+        },
         {
           "area": "connections",
           "tools": [],
@@ -396,6 +400,13 @@
           "changes": [
             "a change of a security role, which the page lists among the objects that the server changes and for which it names no tool"
           ]
+        },
+        {
+          "area": "connections",
+          "tools": [],
+          "changes": [
+            "a change of the data source of a model, for example of a partition, which the page lists among the objects that the server changes"
+          ]
         }
       ]
     },
@@ -409,7 +420,7 @@
       "endpoint": "command",
       "needs": [
         "It is in public preview, and its README says that the implementation may change significantly before general availability.",
-        "Started by a command (stdio mode, as the kit does), it signs in with the default Azure credential chain; in HTTP mode a request needs a bearer token and the credentials of the local process are not used.",
+        "Started by a command (stdio mode, as the kit does), it signs in with the default Azure credential chain; by default in HTTP mode a request needs a bearer token and no credentials of the local process are used, unless FABRIC_RTI_HTTP_ALLOW_MI (a managed identity) or FABRIC_RTI_HTTP_DEBUG_MODE (local process credentials) is enabled.",
         "Its README counts 13 tools for Eventhouse and one more that is optional (kusto_get_shots, when KUSTO_SHOTS_TABLE is configured), 17 for Eventstreams, 2 for Activator and 7 for Map; the lock lists 39."
       ],
       "pages": [
@@ -429,12 +440,38 @@
         {
           "area": "permissions",
           "tools": [],
-          "changes": ["a management command of `kusto_command` that changes who may access a database or a table"]
+          "changes": [
+            "a management command of `kusto_command` that changes who may access a cluster, a database, a table or a function"
+          ]
         },
         {
           "area": "row-level or object-level security",
           "tools": [],
           "changes": ["a management command of `kusto_command` that changes a row-level security policy"]
+        },
+        {
+          "area": "security settings",
+          "tools": [],
+          "changes": ["a management command of `kusto_command` that changes another security policy of a database or a table"]
+        },
+        {
+          "area": "capacity, tenant or workspace settings",
+          "tools": [],
+          "changes": ["a management command of `kusto_command` that changes a policy of a cluster, for example its capacity"]
+        },
+        {
+          "area": "connections",
+          "tools": [],
+          "changes": [
+            "a management command of `kusto_command` that creates or changes a connection to another source, for example an external table"
+          ]
+        },
+        {
+          "area": "credentials",
+          "tools": [],
+          "changes": [
+            "a management command of `kusto_command` that carries a secret, a key or a connection string with a secret"
+          ]
         }
       ]
     },
@@ -451,7 +488,8 @@
         "The kit starts the read variant with the server's read-only switch, which allows no write operation; the lock lists the namespace tools of that variant.",
         "The server asks for confirmation before a high-risk command, such as returning a Key Vault secret; the option that turns that off is not recommended, and the kit does not set it.",
         "The stage here is that of the pinned build, a pre-release: the README on the main branch announces version 2.0 as generally available, and the Learn pages state no stage.",
-        "Its Learn tools page lists namespaces that the locked build does not have (azuremigrate, communication, and resilience, which the lock spells resiliency), and the lock has namespaces that the page does not list (arm, azd, containerapps, deviceprovisioning, documentation, foundryextensions, functions, iotoperations, netappfiles): the list of this kit is the lock's."
+        "Its Learn tools page lists namespaces that the locked build does not have (azuremigrate, communication and resilience), and the lock has namespaces that the page does not list (arm, azd, containerapps, deviceprovisioning, documentation, foundryextensions, functions, iotoperations, netappfiles and resiliency).",
+        "The page names some tools by a namespace where the lock has tools with a suffix (extension, group and subscription against extension_cli_generate, extension_cli_install, group_list, group_resource_list and subscription_list), and writes get_azure_bestpractices as get azure bestpractices get: the list of this kit is the lock's."
       ],
       "pages": [
         {
@@ -473,18 +511,34 @@
           "area": "credentials",
           "tools": [],
           "changes": [
-            "a `keyvault` call that returns the value of a secret, a key or a certificate: the read-only switch does not stop a read"
+            "a call of any namespace that returns or takes the value of a secret, a key, a password, a connection string or a certificate, for example a `keyvault` secret or the application settings of an App Service web app (`appservice`): the read-only switch does not stop a read"
           ]
         },
         {
           "area": "permissions",
           "tools": [],
-          "changes": ["a change of a role assignment, which the `role` namespace can make"]
+          "changes": ["a change of a role assignment (`role`), or of who may access a resource, through any namespace"]
         },
         {
           "area": "security settings",
           "tools": [],
-          "changes": ["a change of an Azure Policy assignment, definition or initiative, which the `policy` namespace can make"]
+          "changes": [
+            "a change of an Azure Policy assignment, definition or initiative (`policy`), of a firewall rule, of the approval of a private endpoint connection or of a security setting of a backup, through any namespace"
+          ]
+        },
+        {
+          "area": "connections",
+          "tools": [],
+          "changes": [
+            "a change of a connection of a resource, for example the database connection of an App Service web app (`appservice`) or a connector of an SRE agent (`sreagent`)"
+          ]
+        },
+        {
+          "area": "schedules",
+          "tools": [],
+          "changes": [
+            "a change of a schedule, for example the schedule of a backup policy (`azurebackup`) or a scheduled task of an SRE agent (`sreagent`)"
+          ]
         }
       ]
     },
@@ -565,7 +619,10 @@
         {
           "area": "credentials",
           "tools": ["get_pricesheet_status"],
-          "note": "it returns a time-limited SAS download URL"
+          "note": "it returns a time-limited SAS download URL",
+          "changes": [
+            "a payload of `create_deployment` or `create_or_update_resource` that carries a secret, a key or a password"
+          ]
         },
         {
           "area": "permissions",
@@ -576,7 +633,28 @@
           "area": "security settings",
           "tools": [],
           "changes": [
-            "a change of a policy assignment or a network security rule through `create_deployment` or `create_or_update_resource`"
+            "a change of a policy assignment, a network security rule or another security resource through `create_deployment` or `create_or_update_resource`"
+          ]
+        },
+        {
+          "area": "connections",
+          "tools": [],
+          "changes": [
+            "a change of a connection of a resource to another through `create_deployment` or `create_or_update_resource`"
+          ]
+        },
+        {
+          "area": "schedules",
+          "tools": [],
+          "changes": [
+            "a change of a schedule or a trigger of a resource through `create_deployment` or `create_or_update_resource`"
+          ]
+        },
+        {
+          "area": "capacity, tenant or workspace settings",
+          "tools": [],
+          "changes": [
+            "a change of a capacity, or of a setting of a tenant, a management group or a subscription, through `create_deployment` or `create_or_update_resource`"
           ]
         }
       ]
@@ -768,8 +846,8 @@
       "use": "connections, dataflows, pipelines, copy jobs, Airflow jobs",
       "endpoint": "command",
       "needs": [
-        "It is a .NET 10 tool that starts with dnx, and the README marks some tools as preview; it states no release stage for the server.",
-        "Some of its tools sign in or out, or return an access token: the sign-in belongs to the person or the runner (rule 2).",
+        "It is a .NET 10 tool that starts with dnx; the README marks some tools as preview and the pipelines page calls pipeline management a preview feature, and no page states a release stage for the server as a whole.",
+        "Some of its tools sign in or out, or return an access token; the kit leaves sign-in to the person or the runner (rule 2), so no agent calls them.",
         "The pipeline tools are a preview feature, and they appear only with the --pipeline flag.",
         "The guide to connection management also names a tool, create_connection_ui, that opens a form for a new connection and is not in the list of the README."
       ],
@@ -907,11 +985,11 @@
       "short": "Power BI Consumption MCP server",
       "hosting": "remote",
       "status": "preview",
-      "use": "DAX queries and metadata of semantic models and reports; its page says to prefer `fabric-iq`",
+      "use": "DAX queries and metadata of semantic models and reports; its page says to prefer the Fabric IQ MCP server (`fabric-iq`)",
       "endpoint": "one URL",
       "needs": [
-        "It is in preview, and a Power BI administrator must enable the tenant setting Users can use the Power BI Model Context Protocol server endpoint.",
-        "Row-level security applies to a user, and a service principal does not support it."
+        "It is in preview, and a Power BI administrator must enable the tenant setting Users can use the Power BI Model Context Protocol server endpoint (preview).",
+        "Row-level security applies to user authentication; Power BI does not enforce it for a service principal, which can then access all the data that it is authorized to access."
       ],
       "pages": [
         {
@@ -941,11 +1019,11 @@
       "name": "Microsoft MCP Server for Enterprise",
       "short": "Microsoft MCP Server for Enterprise (Graph)",
       "hosting": "remote",
-      "status": "preview",
-      "use": "Microsoft Graph queries over a tenant; a tenant administrator provisions it, and the Fabric Core page suggests it for e-mail lookups in role changes, which the factory flags and does not make",
+      "status": "public-preview",
+      "use": "Microsoft Graph queries over a tenant (read-only Microsoft Entra scenarios, as its overview says); an Application Administrator or a Cloud Application Administrator provisions it, and the Fabric Core page suggests it for e-mail lookups in role changes, which the factory flags and does not make",
       "endpoint": "one URL",
       "needs": [
-        "It is in preview and must be enabled in the tenant: an Application Administrator or a Cloud Application Administrator consents to the permissions."
+        "It is in public preview and must be enabled in the tenant: an Application Administrator or a Cloud Application Administrator consents to the permissions."
       ],
       "pages": [
         {"url": "https://learn.microsoft.com/en-us/graph/mcp-server/get-started", "updated": "2026-07-04"},
@@ -983,11 +1061,16 @@
       "needs": [
         "It is in public preview, without a service-level agreement.",
         "Every operation runs with the signed-in user's permissions through the Microsoft Entra On-Behalf-Of flow.",
-        "Its page lists 79 tools in 17 categories and marks 35 as read and 44 as write; 12 of the 44 delete something and are listed here as destructive."
+        "Its page lists 79 tools in 17 categories and marks 35 as read and 44 as write; 13 of the 44 delete or replace something and are listed here as destructive.",
+        "Its model deployment tools allocate billable capacity (capacity units, or dedicated GPU instances for Managed Compute), and each is a write that needs approval."
       ],
       "pages": [
         {"url": "https://learn.microsoft.com/en-us/azure/ai-foundry/mcp/get-started", "updated": "2026-09-10"},
-        {"url": "https://learn.microsoft.com/en-us/azure/ai-foundry/mcp/available-tools", "updated": "2026-08-19"}
+        {"url": "https://learn.microsoft.com/en-us/azure/ai-foundry/mcp/available-tools", "updated": "2026-08-19"},
+        {
+          "url": "https://learn.microsoft.com/en-us/rest/api/fabric/articles/mcp-servers/fabric-mcp-servers-list",
+          "updated": "2026-10-21"
+        }
       ],
       "tools": {
         "from": "page",
@@ -1019,8 +1102,8 @@
               "evaluation_suite_generation_job_create", "evaluation_suite_generation_job_cancel",
               "evaluator_catalog_create", "evaluator_catalog_update", "evaluator_generation_job_create",
               "evaluator_generation_job_cancel", "model_deploy_azure_direct_model", "model_deploy",
-              "model_deploy_managed_compute", "project_connection_create", "project_connection_update",
-              "prompt_optimize", "continuous_eval_create"
+              "model_deploy_managed_compute", "project_connection_update", "prompt_optimize",
+              "continuous_eval_create"
             ]
           },
           {
@@ -1028,8 +1111,8 @@
             "names": [
               "agent_delete", "session_delete", "session_file_delete", "toolbox_delete", "toolbox_version_delete",
               "data_generation_job_delete", "evaluation_suite_delete", "evaluation_suite_generation_job_delete",
-              "evaluator_catalog_delete", "model_deployment_delete", "project_connection_delete",
-              "continuous_eval_delete"
+              "evaluator_catalog_delete", "model_deployment_delete", "project_connection_create",
+              "project_connection_delete", "continuous_eval_delete"
             ]
           }
         ]
@@ -1041,7 +1124,8 @@
           "tools": ["project_connection_create", "project_connection_update", "project_connection_delete"]
         },
         {"area": "schedules", "tools": ["continuous_eval_create", "continuous_eval_delete"]},
-        {"area": "credentials", "tools": ["evaluation_dataset_sas_url_get"]}
+        {"area": "credentials", "tools": ["evaluation_dataset_sas_url_get"]},
+        {"area": "permissions", "tools": [], "changes": ["a `session_file_mkdir` call that sets a permission mode"]}
       ]
     },
     {
@@ -1084,7 +1168,9 @@
       "use": "database entities for agents through Data API builder, which the customer hosts",
       "endpoint": "customer",
       "needs": [
-        "It is part of Data API builder from version 1.7 and is hosted by the customer, over streamable HTTP or stdio."
+        "It is part of Data API builder from version 1.7 and is hosted by the customer, over streamable HTTP or stdio.",
+        "The page lists aggregate_records for version 2.0 and later and not for 1.7.x, and says that in 2.0 a stored procedure can be registered as a named tool (custom-tool), which this list does not hold.",
+        "It is designed for data and not for schema; execute_entity runs a stored procedure, and the pages do not limit what the procedure does."
       ],
       "pages": [
         {"url": "https://learn.microsoft.com/en-us/azure/data-api-builder/mcp/overview", "updated": "2026-05-15"},
@@ -1101,12 +1187,28 @@
         "from": "page",
         "groups": [
           {"kind": "read", "names": ["describe_entities", "read_records", "aggregate_records"]},
-          {"kind": "write", "names": ["create_record", "update_record", "execute_entity"]},
-          {"kind": "destructive", "names": ["delete_record"]}
+          {"kind": "write", "names": ["create_record", "update_record"]},
+          {"kind": "destructive", "names": ["delete_record"]},
+          {"kind": "mixed", "names": ["execute_entity"]}
         ]
       },
       "knowledge": [],
-      "flagged": []
+      "flagged": [
+        {
+          "area": "permissions",
+          "tools": [],
+          "changes": [
+            "a call of `execute_entity`, or of a custom tool, that runs a stored procedure which changes permissions or row-level security"
+          ]
+        },
+        {
+          "area": "credentials",
+          "tools": [],
+          "changes": [
+            "a call of `execute_entity`, or of a custom tool, that runs a stored procedure which returns a secret, a key or a password"
+          ]
+        }
+      ]
     }
   ]
 }
