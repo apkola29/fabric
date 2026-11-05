@@ -39,11 +39,25 @@ WHERE = {"command": "local, started by a command", "extension": "local, inside a
          "customer": "hosted by the customer"}
 LOCK_KIND_WORDS = {"read": "annotated read-only", "write": "annotated neither read-only nor destructive", "destructive": "annotated destructive"}
 READ_ONLY_SWITCHES = ("--read-only", "--readonly")
-# A name that says it touches one of these (for a tool that is not read-only), or that it returns a secret (for every kind), has to be flagged by name or named by a statement of `changes`.
-PROTECTED_WORDS = frozenset(
-    "role roles permission permissions grant revoke share invite assign connection connections gateway schedule schedules label labels license eula policy policies keyvault security "
-    "capacity modify authenticate sign token secret secrets password credential credentials sas key keys certificate certificates domain domains tenant settings setting tier "
-    "immutability retention diagnostics rls ols acl trigger triggers continuous".split())
+# A name that says it touches one of these (for a tool that is not read-only), or that it returns a secret (for every kind), has to be flagged by name, or named by a statement of `changes`, under an area
+# that its words belong to. A word that no area owns (`modify`) says only that the tool changes something, and any area will do.
+AREA_WORDS = {
+    "permissions": "role roles permission permissions grant revoke share invite assign acl",
+    "row-level or object-level security": "role roles rls ols acl security",
+    "security settings": "security policy policies immutability retention firewall nsg",
+    "capacity, tenant or workspace settings": "capacity tenant settings setting tier domain domains diagnostics immutability retention policy quota quotas",
+    "connections": "connection connections gateway",
+    "schedules": "schedule schedules trigger triggers continuous",
+    "sensitivity labels": "label labels",
+    "credentials": "token secret secrets password credential credentials sas key keys certificate certificates keyvault authenticate sign",
+    "license": "license eula",
+}
+GENERIC_WORDS = frozenset(["modify"])
+WORD_AREAS = {}
+for _area, _words in AREA_WORDS.items():
+    for _word in _words.split():
+        WORD_AREAS.setdefault(_word, set()).add(_area)
+PROTECTED_WORDS = frozenset(WORD_AREAS) | GENERIC_WORDS
 SECRET_WORDS = frozenset("token secret secrets password credential credentials sas keyvault key keys certificate certificates".split())
 # (server, tool) pairs that are reviewed and left out of that check, each with the reason: a name that says more than the tool does.
 PROTECTED_REVIEWED = {
@@ -330,11 +344,14 @@ def check_structure(catalog):
         if not isinstance(knowledge, list):
             problems.append("%s.knowledge: must be a list" % where)
         else:
+            named = []
             for n, entry in enumerate(knowledge):
                 here = "%s.knowledge[%d]" % (where, n)
                 if _keys(entry, here, problems, ("tools", "what")):
-                    _strings(entry.get("tools"), here + ".tools", problems, TOOL_RE)
+                    named += _strings(entry.get("tools"), here + ".tools", problems, TOOL_RE)
                     _text(entry.get("what"), here + ".what", problems)
+            if len(set(named)) != len(named):
+                problems.append("%s.knowledge: a tool is listed in two entries" % where)
         flagged = server.get("flagged")
         if not isinstance(flagged, list):
             problems.append("%s.flagged: must be a list" % where)
@@ -410,15 +427,21 @@ def name_words(name):
 
 
 def unflagged_tools(server, lock):
-    """[name] of the tools of a server whose name says that it touches a protected area (when the tool is not read-only) or returns a secret (whatever its kind), and that is neither flagged by name nor named by a statement of `changes`."""
-    flagged = {t for e in server["flagged"] for t in e["tools"]}
-    named = {n for e in server["flagged"] for c in e.get("changes", []) for n in re.findall(r"`([^`]+)`", c)}
+    """[name] of the tools of a server whose name says that it touches a protected area (when the tool is not read-only) or returns a secret (whatever its kind), and that is neither flagged by name nor named
+    by a statement of `changes` under an area that the words of its name belong to (AREA_WORDS)."""
+    covered = {}
+    for entry in server["flagged"]:
+        for name in entry["tools"] + [n for c in entry.get("changes", []) for n in re.findall(r"`([^`]+)`", c)]:
+            covered.setdefault(name, set()).add(entry["area"])
     out = []
     for _set, kind, names in server_tools(server, lock) or []:
         for name in names:
             words = name_words(name)
             risky = bool(words & SECRET_WORDS) or (kind != "read" and bool(words & PROTECTED_WORDS))
-            if risky and name not in flagged and name not in named and (server["id"], name) not in PROTECTED_REVIEWED:
+            needed = set()
+            for word in words & PROTECTED_WORDS:
+                needed |= WORD_AREAS.get(word, set(AREAS))
+            if risky and not (covered.get(name, set()) & needed) and (server["id"], name) not in PROTECTED_REVIEWED:
                 out.append(name)
     return out
 
@@ -493,8 +516,13 @@ def check_against(catalog, manifest, lock):
             problems.append("server %s: the directory lists it" % sid)
     for sid, name in sorted(PROTECTED_REVIEWED):
         server = next((s for s in servers if s["id"] == sid), None)
-        if server is not None and name not in (tool_names(server, lock) or [name]):
+        names = tool_names(server, lock) if server is not None else []
+        if names is None:
+            continue  # the contract is not captured: reported above
+        if name not in names:
             problems.append("server %s: the tool %s is reviewed and left out of the check of protected names, and the server no longer has it" % (sid, name))
+        elif any(name in e["tools"] or any(name in re.findall(r"`([^`]+)`", c) for c in e.get("changes", [])) for e in server["flagged"]):
+            problems.append("server %s: the tool %s is reviewed and left out of the check of protected names, and the catalog flags it: drop the exception" % (sid, name))
     return problems
 
 
@@ -654,7 +682,7 @@ def _server_section(server, manifest_server, lock):
             args = (((manifest_server or {}).get("variants") or {}).get(tools["contract"].split("/")[1]) or {}).get("args") or []
             switch = ("The kit starts this variant with the server's read-only switch, so none of its commands writes" if any(a in READ_ONLY_SWITCHES for a in args)
                       else "The kit does not start this variant with the server's read-only switch, so a command of it can write")
-            lines.append("  - %d tools, each one a namespace of commands. %s; the server's own annotations of a namespace tool do not say which of its commands write, "
+            lines.append("  - %d tools, each one a namespace of commands or a single command. %s; the server's own annotations of a namespace tool do not say which of its commands write, "
                          "so no kinds are listed." % (len(groups[0][2]), switch))
             lines.append("  - " + _code(groups[0][2]))
         else:

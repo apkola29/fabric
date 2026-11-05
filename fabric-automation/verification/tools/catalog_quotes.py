@@ -171,7 +171,7 @@ def check(project, sources, reports):
         print("verdicts:", ", ".join("%s=%d" % item for item in sorted(counts.items())))
         print("not covered:", ", ".join(sorted(set(expected) - set(found))) or "none")
         print("not in the catalog:", ", ".join(sorted(set(found) - set(expected))) or "none")
-        bad = 0
+        bad = long = split = 0
         for ident in sorted(found):
             if ident not in expected:
                 continue
@@ -182,18 +182,26 @@ def check(project, sources, reports):
                 print("  %s %s: no quote" % (ident, verdict))
                 bad += 1
                 continue
+            words = sum(len(f.split()) for f in fragments)
+            if words > 12:
+                long += 1
+                print("  %s %s: the quote has %d words, the limit is 12 -- %r" % (ident, verdict, words, quote[:60]))
             own = [pages[u] for u in expected[ident] if pages.get(u)]
-            where = "cited page"
-            for fragment in fragments:
-                needle = norm(fragment)
-                if any(needle in text for text in own):
-                    continue
-                where = "another page" if any(needle in text for text in everything) else "not found"
-                break
-            if where != "cited page":
-                bad += 1
-                print("  %s %s: quote on %s -- %r" % (ident, verdict, where, quote[:90]))
-        print("rows whose quote is not on a page that the row's server cites: %d" % bad)
+            needles = [norm(fragment) for fragment in fragments]
+            if any(all(needle in text for needle in needles) for text in own):
+                continue
+            if all(any(needle in text for text in own) for needle in needles):
+                split += 1
+                print("  %s %s: the fragments of the quote are on different cited pages -- %r" % (ident, verdict, quote[:90]))
+                continue
+            where = "not found"
+            for needle in needles:
+                if not any(needle in text for text in own):
+                    where = "another page" if any(needle in text for text in everything) else "not found"
+                    break
+            bad += 1
+            print("  %s %s: quote on %s -- %r" % (ident, verdict, where, quote[:90]))
+        print("rows whose quote is not on a page that the row's server cites: %d; quotes of more than 12 words: %d; quotes whose fragments are on different pages: %d" % (bad, long, split))
 
 
 LEARN = "https://learn.microsoft.com/en-us/"
@@ -262,13 +270,18 @@ def lists(project, sources):
             mine = [n for g in groups for n in g["names"]]  # a server whose groups are all in named sets (the two URLs of an operations agent)
         if tool_set == "optional Cost Management toolset":
             found = [n for n in found if n not in union[(sid, None)]]
+        absent = sorted(n for n in NOT_ON_THE_PAGE.get(sid, set()) if n in found or n not in mine)  # a tool that this table sets aside has to be in the catalog and not in the list of the page
         mine = [n for n in mine if n not in NOT_ON_THE_PAGE.get(sid, set())]
         missing, extra = sorted(set(found) - set(mine)), sorted(set(mine) - set(found))
         duplicated = sorted({n for n in found if found.count(n) > 1})
-        state = "DIFF" if missing or extra or duplicated else "OK"
+        state = "DIFF" if missing or extra or duplicated or absent else "OK"
         status |= state == "DIFF"
-        print("%-26s %-34s %-4s page %d, catalog %d; on the page only: %s; in the catalog only: %s; twice on the page: %s"
-              % (sid, tool_set or "", state, len(set(found)), len(set(mine)), missing, extra, duplicated))
+        print("%-26s %-34s %-4s page %d, catalog %d; on the page only: %s; in the catalog only: %s; twice on the page: %s%s"
+              % (sid, tool_set or "", state, len(set(found)), len(set(mine)), missing, extra, duplicated, "; set aside and not as expected: %s" % absent if absent else ""))
+    unread = sorted(s["id"] for s in catalog["servers"] if s["tools"]["from"] == "page" and s["id"] not in {sid for sid, _set in union})
+    if unread:
+        status = 1
+        print("DIFF the catalog lists the tools of these servers from a page, and LISTS has no entry that reads it: %s" % ", ".join(unread))
     for sid, url in ACCESS.items():
         different, count = access_differences(sid, url, by_id[sid], sources)
         status |= bool(different) or count == 0

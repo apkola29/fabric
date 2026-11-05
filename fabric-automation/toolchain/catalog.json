@@ -77,7 +77,7 @@
       "name": "Fabric MCP Server (local)",
       "hosting": "local",
       "directory": true,
-      "use": "Fabric MCP Server (local). `docs`: Fabric API specs, item definitions and best practices, offline. `read`: OneLake, core and Data Factory reads. `full`: changes, dev only",
+      "use": "Fabric MCP Server (local). `docs`: Fabric API specs, item definitions and best practices, offline. `read`: OneLake, core and Data Factory reads. `full`: every tool, including the ones that create, update or delete (a dev profile only)",
       "endpoint": "command",
       "needs": [
         "It runs on the development machine; the install methods are a VS Code extension, npm with npx, or a build from source.",
@@ -268,7 +268,7 @@
       "endpoint": "one URL, or one URL per item",
       "needs": [
         "A person signs in with Microsoft credentials, and the statements run with that person's Fabric and SQL permissions.",
-        "Its one tool can run DDL and DML, so a call that changes data or schema is a change of a tenant and needs the approval that the rules ask for.",
+        "Its one tool can run DDL and DML, so a call that changes data or schema changes live state and needs the approval that the rules ask for.",
         "The Learn page names the tool executeSQL and the marketplace file of the skills repository names it execute_query: call the name that the server lists.",
         "There is a global endpoint and an item-scoped endpoint that names a workspace and an item."
       ],
@@ -311,7 +311,7 @@
         "For a model in a Fabric workspace, the XMLA endpoint must be set to Read Write on the capacity.",
         "The --readonly switch prevents any write operations to the semantic model (the README's words), and the README does not say whether it covers anything else: the license acceptance is saved in a local configuration. Without it, the server asks for a confirmation before an edit, once per database.",
         "It blocks every other tool call until its license (EULA) is accepted: the operator accepts it once, on purpose, and the server saves the acceptance in a local configuration.",
-        "The README says that database_operations can import and export TMDL folders and deploy to Fabric, and its examples change the data source of a model through Power Query parameters.",
+        "The README says that database_operations can import and export TMDL folders and deploy to Fabric, and one of its example prompts creates semantic model parameters to enable easy switching of the data source location.",
         "The variable PBI_MODELING_MCP_ALLOWED_CONNECTION_HOSTS adds hosts that the server connects to and sends access tokens to; the kit does not set it.",
         "No tenant setting blocks it: only disabling the XMLA endpoint does, and that blocks every tool that uses XMLA."
       ],
@@ -330,14 +330,14 @@
         "from": "page",
         "groups": [
           {"kind": "read", "names": ["connection_operations", "dax_query_operations", "trace_operations"]},
-          {"kind": "write", "names": ["accept_eula", "transaction_operations"]},
+          {"kind": "write", "names": ["accept_eula"]},
           {
             "kind": "mixed",
             "names": [
-              "database_operations", "model_operations", "table_operations", "column_operations",
-              "relationship_operations", "measure_operations", "partition_operations", "user_hierarchy_operations",
-              "calculation_group_operations", "security_role_operations", "perspective_operations",
-              "named_expression_operations", "function_operations", "culture_operations",
+              "database_operations", "transaction_operations", "model_operations", "table_operations",
+              "column_operations", "relationship_operations", "measure_operations", "partition_operations",
+              "user_hierarchy_operations", "calculation_group_operations", "security_role_operations",
+              "perspective_operations", "named_expression_operations", "function_operations", "culture_operations",
               "object_translation_operations", "calendar_operations", "query_group_operations"
             ]
           }
@@ -345,7 +345,11 @@
       },
       "knowledge": [],
       "flagged": [
-        {"area": "license", "tools": ["accept_eula"], "note": "the operator accepts the license, never the agent"},
+        {
+          "area": "license",
+          "tools": ["accept_eula"],
+          "note": "the README lets an agent call it after a person authorizes it; the kit leaves the acceptance to the operator, once, on purpose"
+        },
         {
           "area": "row-level or object-level security",
           "tools": [],
@@ -366,7 +370,7 @@
       "name": "Power BI Authoring MCP server (hosted)",
       "hosting": "remote",
       "directory": true,
-      "use": "the hosted twin of the local one: use one, never both",
+      "use": "the hosted twin of the local one: use one, and avoid registering both",
       "endpoint": "one URL",
       "needs": [
         "It is in preview, uses Streamable HTTP and signs in with Microsoft Entra as the signed-in user.",
@@ -405,7 +409,7 @@
           "area": "connections",
           "tools": [],
           "changes": [
-            "a change of the data source of a model, for example of a partition, which the page lists among the objects that the server changes"
+            "a change of the data source or of a connection of a model: no tool for it is named, and the list of objects that the page says the server changes ends with 'and more'"
           ]
         }
       ]
@@ -421,7 +425,7 @@
       "needs": [
         "It is in public preview, and its README says that the implementation may change significantly before general availability.",
         "Started by a command (stdio mode, as the kit does), it signs in with the default Azure credential chain; by default in HTTP mode a request needs a bearer token and no credentials of the local process are used, unless FABRIC_RTI_HTTP_ALLOW_MI (a managed identity) or FABRIC_RTI_HTTP_DEBUG_MODE (local process credentials) is enabled.",
-        "Its README counts 13 tools for Eventhouse and one more that is optional (kusto_get_shots, when KUSTO_SHOTS_TABLE is configured), 17 for Eventstreams, 2 for Activator and 7 for Map; the lock lists 39."
+        "Its README counts 13 tools for Eventhouse and one more that is optional (kusto_get_shots, when KUSTO_SHOTS_TABLE is configured), 17 for Eventstreams, 2 for Activator and 7 for Map; its bullet list for Eventhouse names 12 of the 13 and omits kusto_show_command, which the lock has, and the lock lists 39 tools."
       ],
       "pages": [
         {
@@ -527,6 +531,13 @@
           ]
         },
         {
+          "area": "capacity, tenant or workspace settings",
+          "tools": [],
+          "changes": [
+            "a change of a quota or a limit (`quota`), of the size, the SKU or the capacity of a resource, for example a Fabric capacity, or of a setting of a tenant, a management group or a subscription, through any namespace"
+          ]
+        },
+        {
           "area": "connections",
           "tools": [],
           "changes": [
@@ -572,7 +583,7 @@
       "group": "pinned",
       "name": "Azure Resource Manager MCP server",
       "hosting": "remote",
-      "use": "Azure cost and pricing queries. Treat it as the whole Azure Resource Manager server, which can also deploy templates and create or update resources, and whose cost toolset can create a budget: a change through it is a change of a tenant and needs the approval that the rules ask for",
+      "use": "Azure cost and pricing queries. Treat it as the whole Azure Resource Manager server, which can also deploy templates and create or update resources, and whose cost toolset can create a budget: a change through it changes live Azure or a tenant and needs the approval that the rules ask for",
       "endpoint": "one URL",
       "needs": [
         "Its README calls it a preview, and says that it can only be used with a set of MCP clients: GitHub Copilot Chat in VS Code and GitHub Copilot CLI.",
@@ -901,7 +912,10 @@
         },
         {
           "area": "connections",
-          "tools": ["create_connection", "create_connection_ui", "create_virtualnetwork_gateway", "add_connection_to_dataflow"]
+          "tools": ["create_connection", "create_connection_ui", "create_virtualnetwork_gateway", "add_connection_to_dataflow"],
+          "changes": [
+            "a connection, or the binding of one, in a definition that `update_pipeline_definition`, `update_copy_job_definition` or `save_dataflow_definition` writes"
+          ]
         },
         {
           "area": "schedules",
@@ -1061,8 +1075,8 @@
       "needs": [
         "It is in public preview, without a service-level agreement.",
         "Every operation runs with the signed-in user's permissions through the Microsoft Entra On-Behalf-Of flow.",
-        "Its page lists 79 tools in 17 categories and marks 35 as read and 44 as write; 13 of the 44 delete or replace something and are listed here as destructive.",
-        "Its model deployment tools allocate billable capacity (capacity units, or dedicated GPU instances for Managed Compute), and each is a write that needs approval."
+        "Its page lists 79 tools in 17 categories and marks 35 as read and 44 as write; 14 of the 44 delete, replace or regenerate something and are listed here as destructive.",
+        "Its model deployment tools take capacity units (model_deploy_azure_direct_model and its deprecated alias model_deploy) or an instance count (model_deploy_managed_compute), and an example prompt of the page says that Managed Compute allocates billable dedicated GPU capacity."
       ],
       "pages": [
         {"url": "https://learn.microsoft.com/en-us/azure/ai-foundry/mcp/get-started", "updated": "2026-09-10"},
@@ -1100,10 +1114,9 @@
               "evaluation_agent_traces_batch_eval_create", "evaluation_traces_batch_eval_create",
               "evaluation_suite_create", "evaluation_suite_update", "evaluation_suite_run",
               "evaluation_suite_generation_job_create", "evaluation_suite_generation_job_cancel",
-              "evaluator_catalog_create", "evaluator_catalog_update", "evaluator_generation_job_create",
-              "evaluator_generation_job_cancel", "model_deploy_azure_direct_model", "model_deploy",
-              "model_deploy_managed_compute", "project_connection_update", "prompt_optimize",
-              "continuous_eval_create"
+              "evaluator_catalog_create", "evaluator_catalog_update", "evaluator_generation_job_cancel",
+              "model_deploy_azure_direct_model", "model_deploy", "model_deploy_managed_compute",
+              "project_connection_update", "prompt_optimize", "continuous_eval_create"
             ]
           },
           {
@@ -1111,8 +1124,8 @@
             "names": [
               "agent_delete", "session_delete", "session_file_delete", "toolbox_delete", "toolbox_version_delete",
               "data_generation_job_delete", "evaluation_suite_delete", "evaluation_suite_generation_job_delete",
-              "evaluator_catalog_delete", "model_deployment_delete", "project_connection_create",
-              "project_connection_delete", "continuous_eval_delete"
+              "evaluator_catalog_delete", "evaluator_generation_job_create", "model_deployment_delete",
+              "project_connection_create", "project_connection_delete", "continuous_eval_delete"
             ]
           }
         ]
@@ -1125,7 +1138,14 @@
         },
         {"area": "schedules", "tools": ["continuous_eval_create", "continuous_eval_delete"]},
         {"area": "credentials", "tools": ["evaluation_dataset_sas_url_get"]},
-        {"area": "permissions", "tools": [], "changes": ["a `session_file_mkdir` call that sets a permission mode"]}
+        {"area": "permissions", "tools": [], "changes": ["a `session_file_mkdir` call that sets a permission mode"]},
+        {
+          "area": "capacity, tenant or workspace settings",
+          "tools": [],
+          "changes": [
+            "a call of `model_deploy_azure_direct_model`, `model_deploy` or `model_deploy_managed_compute` that sets capacity units or an instance count"
+          ]
+        }
       ]
     },
     {
@@ -1198,7 +1218,14 @@
           "area": "permissions",
           "tools": [],
           "changes": [
-            "a call of `execute_entity`, or of a custom tool, that runs a stored procedure which changes permissions or row-level security"
+            "a call of `execute_entity`, or of a custom tool, that runs a stored procedure which changes who may access something"
+          ]
+        },
+        {
+          "area": "row-level or object-level security",
+          "tools": [],
+          "changes": [
+            "a call of `execute_entity`, or of a custom tool, that runs a stored procedure which changes a row-level security policy"
           ]
         },
         {

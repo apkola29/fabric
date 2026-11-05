@@ -118,7 +118,7 @@ How to use it:
 - Sign-in: Entra.
 - Needs and limits:
   - A person signs in with Microsoft credentials, and the statements run with that person's Fabric and SQL permissions.
-  - Its one tool can run DDL and DML, so a call that changes data or schema is a change of a tenant and needs the approval that the rules ask for.
+  - Its one tool can run DDL and DML, so a call that changes data or schema changes live state and needs the approval that the rules ask for.
   - The Learn page names the tool executeSQL and the marketplace file of the skills repository names it execute_query: call the name that the server lists.
   - There is a global endpoint and an item-scoped endpoint that names a workspace and an item.
 - Read from: `fabric/data-warehouse/data-warehouse-mcp-server` (updated 2026-06-23); `github.com/microsoft/skills-for-fabric/blob/v0.3.20/.github/plugin/marketplace.json`; `rest/api/fabric/articles/mcp-servers/fabric-mcp-servers-list` (updated 2026-10-21).
@@ -137,15 +137,15 @@ How to use it:
   - For a model in a Fabric workspace, the XMLA endpoint must be set to Read Write on the capacity.
   - The --readonly switch prevents any write operations to the semantic model (the README's words), and the README does not say whether it covers anything else: the license acceptance is saved in a local configuration. Without it, the server asks for a confirmation before an edit, once per database.
   - It blocks every other tool call until its license (EULA) is accepted: the operator accepts it once, on purpose, and the server saves the acceptance in a local configuration.
-  - The README says that database_operations can import and export TMDL folders and deploy to Fabric, and its examples change the data source of a model through Power Query parameters.
+  - The README says that database_operations can import and export TMDL folders and deploy to Fabric, and one of its example prompts creates semantic model parameters to enable easy switching of the data source location.
   - The variable PBI_MODELING_MCP_ALLOWED_CONNECTION_HOSTS adds hosts that the server connects to and sends access tokens to; the kit does not set it.
   - No tenant setting blocks it: only disabling the XMLA endpoint does, and that blocks every tool that uses XMLA.
 - Read from: `power-bi/developer/mcp/power-bi-authoring-mcp` (updated 2026-09-29); `github.com/microsoft/powerbi-modeling-mcp`; `rest/api/fabric/articles/mcp-servers/fabric-mcp-servers-list` (updated 2026-10-21).
 - Tools (22, from the pages):
   - read (3): `connection_operations`, `dax_query_operations`, `trace_operations`
-  - write (2): `accept_eula`, `transaction_operations`
-  - mixed (17): `database_operations`, `model_operations`, `table_operations`, `column_operations`, `relationship_operations`, `measure_operations`, `partition_operations`, `user_hierarchy_operations`, `calculation_group_operations`, `security_role_operations`, `perspective_operations`, `named_expression_operations`, `function_operations`, `culture_operations`, `object_translation_operations`, `calendar_operations`, `query_group_operations`
-- Never called, license (never accepted for anyone): `accept_eula` (the operator accepts the license, never the agent).
+  - write (1): `accept_eula`
+  - mixed (18): `database_operations`, `transaction_operations`, `model_operations`, `table_operations`, `column_operations`, `relationship_operations`, `measure_operations`, `partition_operations`, `user_hierarchy_operations`, `calculation_group_operations`, `security_role_operations`, `perspective_operations`, `named_expression_operations`, `function_operations`, `culture_operations`, `object_translation_operations`, `calendar_operations`, `query_group_operations`
+- Never called, license (never accepted for anyone): `accept_eula` (the README lets an agent call it after a person authorizes it; the kit leaves the acceptance to the operator, once, on purpose).
 - Never made, through any tool, row-level or object-level security (tier T3): a change of a security role or of a row-level security permission through `security_role_operations`.
 - Never made, through any tool, connections (tier T3): a change of the data source of a model, for example a Power Query parameter that `named_expression_operations` updates.
 
@@ -161,7 +161,7 @@ How to use it:
 - Read from: `power-bi/developer/mcp/power-bi-authoring-mcp` (updated 2026-09-29); `power-bi/developer/mcp/mcp-servers-overview` (updated 2026-09-29); `rest/api/fabric/articles/mcp-servers/fabric-mcp-servers-list` (updated 2026-10-21).
 - Tools: The page lists no tools: it says that the server exposes tools grouped by object type, such as tables, columns, measures and relationships, and that the agent can be asked what is available.
 - Never made, through any tool, row-level or object-level security (tier T3): a change of a security role, which the page lists among the objects that the server changes and for which it names no tool.
-- Never made, through any tool, connections (tier T3): a change of the data source of a model, for example of a partition, which the page lists among the objects that the server changes.
+- Never made, through any tool, connections (tier T3): a change of the data source or of a connection of a model: no tool for it is named, and the list of objects that the page says the server changes ends with 'and more'.
 
 ## `fabric-rti-local`: Real-Time Intelligence MCP server (local)
 
@@ -170,7 +170,7 @@ How to use it:
 - Needs and limits:
   - It is in public preview, and its README says that the implementation may change significantly before general availability.
   - Started by a command (stdio mode, as the kit does), it signs in with the default Azure credential chain; by default in HTTP mode a request needs a bearer token and no credentials of the local process are used, unless FABRIC_RTI_HTTP_ALLOW_MI (a managed identity) or FABRIC_RTI_HTTP_DEBUG_MODE (local process credentials) is enabled.
-  - Its README counts 13 tools for Eventhouse and one more that is optional (kusto_get_shots, when KUSTO_SHOTS_TABLE is configured), 17 for Eventstreams, 2 for Activator and 7 for Map; the lock lists 39.
+  - Its README counts 13 tools for Eventhouse and one more that is optional (kusto_get_shots, when KUSTO_SHOTS_TABLE is configured), 17 for Eventstreams, 2 for Activator and 7 for Map; its bullet list for Eventhouse names 12 of the 13 and omits kusto_show_command, which the lock has, and the lock lists 39 tools.
 - Read from: `fabric/real-time-intelligence/mcp-local-server` (updated 2026-06-22); `github.com/microsoft/fabric-rti-mcp`; `rest/api/fabric/articles/mcp-servers/fabric-mcp-servers-list` (updated 2026-10-21).
 - Tools: the lock's contract `fabric-rti-local/default`, measured at 0.6.2 on 2026-10-31 (variants: `default` 39).
   - annotated read-only (21): `activator_list_artifacts`, `eventstream_get`, `eventstream_get_current_definition`, `eventstream_get_definition`, `eventstream_list`, `eventstream_list_available_components`, `eventstream_validate_definition`, `kusto_deeplink_from_query`, `kusto_describe_database`, `kusto_describe_database_entity`, `kusto_diagnostics`, `kusto_graph_query`, `kusto_known_services`, `kusto_list_entities`, `kusto_query`, `kusto_sample_entity`, `kusto_show_command`, `kusto_show_queryplan`, `map_get`, `map_get_definition`, `map_list`
@@ -197,12 +197,13 @@ How to use it:
   - The page names some tools by a namespace where the lock has tools with a suffix (extension, group and subscription against extension_cli_generate, extension_cli_install, group_list, group_resource_list and subscription_list), and writes get_azure_bestpractices as get azure bestpractices get: the list of this kit is the lock's.
 - Read from: `azure/developer/azure-mcp-server/overview` (updated 2026-10-16); `azure/developer/azure-mcp-server/tools/` (updated 2026-10-16); `github.com/microsoft/mcp/tree/main/servers/Azure.Mcp.Server`.
 - Tools: the lock's contract `azure-mcp/read`, measured at 4.0.0-beta.4 on 2026-10-31 (variants: `read` 70).
-  - 70 tools, each one a namespace of commands. The kit starts this variant with the server's read-only switch, so none of its commands writes; the server's own annotations of a namespace tool do not say which of its commands write, so no kinds are listed.
+  - 70 tools, each one a namespace of commands or a single command. The kit starts this variant with the server's read-only switch, so none of its commands writes; the server's own annotations of a namespace tool do not say which of its commands write, so no kinds are listed.
   - `acr`, `adme`, `advisor`, `aks`, `appconfig`, `applens`, `applicationinsights`, `appservice`, `arm`, `azd`, `azurebackup`, `azureterraform`, `azureterraformbestpractices`, `bicepschema`, `cloudarchitect`, `compute`, `confidentialledger`, `containerapps`, `cosmos`, `datadog`, `deploy`, `deviceprovisioning`, `deviceregistry`, `documentation`, `eventgrid`, `eventhubs`, `extension_cli_generate`, `extension_cli_install`, `fileshares`, `foundry`, `foundryextensions`, `functionapp`, `functions`, `get_azure_bestpractices`, `grafana`, `group_list`, `group_resource_list`, `insights`, `iothub`, `iotoperations`, `keyvault`, `kusto`, `loadtesting`, `managedlustre`, `marketplace`, `monitor`, `mysql`, `netappfiles`, `optimization`, `policy`, `postgres`, `pricing`, `quota`, `redis`, `resiliency`, `resourcehealth`, `role`, `search`, `servicebus`, `servicefabric`, `signalr`, `speech`, `sql`, `sreagent`, `storage`, `storagesync`, `subscription_list`, `virtualdesktop`, `wellarchitectedframework`, `workbooks`
 - Knowledge: `get_azure_bestpractices`, `azureterraformbestpractices`, `cloudarchitect`, `wellarchitectedframework`: Azure best practices, Terraform best practices, guided cloud architecture design, and architecture guidance by Well-Architected pillar.
 - Never made, through any tool, credentials (rule 2): a call of any namespace that returns or takes the value of a secret, a key, a password, a connection string or a certificate, for example a `keyvault` secret or the application settings of an App Service web app (`appservice`): the read-only switch does not stop a read.
 - Never made, through any tool, permissions (tier T3): a change of a role assignment (`role`), or of who may access a resource, through any namespace.
 - Never made, through any tool, security settings (tier T3): a change of an Azure Policy assignment, definition or initiative (`policy`), of a firewall rule, of the approval of a private endpoint connection or of a security setting of a backup, through any namespace.
+- Never made, through any tool, capacity, tenant or workspace settings (tier T3): a change of a quota or a limit (`quota`), of the size, the SKU or the capacity of a resource, for example a Fabric capacity, or of a setting of a tenant, a management group or a subscription, through any namespace.
 - Never made, through any tool, connections (tier T3): a change of a connection of a resource, for example the database connection of an App Service web app (`appservice`) or a connector of an SRE agent (`sreagent`).
 - Never made, through any tool, schedules (tier T3): a change of a schedule, for example the schedule of a backup policy (`azurebackup`) or a scheduled task of an SRE agent (`sreagent`).
 
@@ -316,6 +317,7 @@ How to use it:
   - destructive (1): `delete_airflow_job`
 - Never called, credentials (rule 2): `get_access_token`, `authenticate_interactive`, `authenticate_service_principal`, `sign_out`.
 - Never called, connections (tier T3): `create_connection`, `create_connection_ui`, `create_virtualnetwork_gateway`, `add_connection_to_dataflow`.
+- Never made, through any tool, connections (tier T3): a connection, or the binding of one, in a definition that `update_pipeline_definition`, `update_copy_job_definition` or `save_dataflow_definition` writes.
 - Never called, schedules (tier T3): `create_pipeline_schedule`, `set_pipeline_schedule_enabled`, `create_copy_job_schedule`.
 
 ## `notebook-integration-local`: Fabric Data Engineering notebook integration
@@ -363,17 +365,18 @@ How to use it:
 - Needs and limits:
   - It is in public preview, without a service-level agreement.
   - Every operation runs with the signed-in user's permissions through the Microsoft Entra On-Behalf-Of flow.
-  - Its page lists 79 tools in 17 categories and marks 35 as read and 44 as write; 13 of the 44 delete or replace something and are listed here as destructive.
-  - Its model deployment tools allocate billable capacity (capacity units, or dedicated GPU instances for Managed Compute), and each is a write that needs approval.
+  - Its page lists 79 tools in 17 categories and marks 35 as read and 44 as write; 14 of the 44 delete, replace or regenerate something and are listed here as destructive.
+  - Its model deployment tools take capacity units (model_deploy_azure_direct_model and its deprecated alias model_deploy) or an instance count (model_deploy_managed_compute), and an example prompt of the page says that Managed Compute allocates billable dedicated GPU capacity.
 - Read from: `azure/ai-foundry/mcp/get-started` (updated 2026-09-10); `azure/ai-foundry/mcp/available-tools` (updated 2026-08-19); `rest/api/fabric/articles/mcp-servers/fabric-mcp-servers-list` (updated 2026-10-21).
 - Tools (79, from the pages):
   - read (35): `agent_get`, `agent_container_status_get`, `agent_definition_schema_get`, `session_get`, `session_list`, `session_logstream`, `session_file_list`, `session_file_stat`, `session_file_download`, `toolbox_get`, `toolbox_version_get`, `evaluation_dataset_get`, `evaluation_dataset_versions_get`, `evaluation_dataset_sas_url_get`, `data_generation_job_get`, `evaluation_get`, `evaluation_comparison_get`, `evaluation_suite_get`, `evaluation_suite_generation_job_get`, `evaluator_catalog_get`, `evaluator_generation_job_get`, `model_catalog_list`, `model_details_get`, `model_deployment_get`, `model_benchmark_get`, `model_benchmark_subset_get`, `model_similar_models_get`, `model_switch_recommendations_get`, `model_monitoring_metrics_get`, `model_deprecation_info_get`, `model_quota_list`, `project_connection_list`, `project_connection_get`, `project_connection_list_metadata`, `continuous_eval_get`
-  - write (31): `agent_update`, `agent_invoke`, `agent_container_control`, `session_create`, `session_file_mkdir`, `session_file_upload`, `toolbox_version_create`, `toolbox_update`, `evaluation_dataset_create`, `data_generation_job_create`, `data_generation_job_cancel`, `evaluation_agent_batch_eval_create`, `evaluation_dataset_batch_eval_create`, `evaluation_comparison_create`, `evaluation_agent_traces_batch_eval_create`, `evaluation_traces_batch_eval_create`, `evaluation_suite_create`, `evaluation_suite_update`, `evaluation_suite_run`, `evaluation_suite_generation_job_create`, `evaluation_suite_generation_job_cancel`, `evaluator_catalog_create`, `evaluator_catalog_update`, `evaluator_generation_job_create`, `evaluator_generation_job_cancel`, `model_deploy_azure_direct_model`, `model_deploy`, `model_deploy_managed_compute`, `project_connection_update`, `prompt_optimize`, `continuous_eval_create`
-  - destructive (13): `agent_delete`, `session_delete`, `session_file_delete`, `toolbox_delete`, `toolbox_version_delete`, `data_generation_job_delete`, `evaluation_suite_delete`, `evaluation_suite_generation_job_delete`, `evaluator_catalog_delete`, `model_deployment_delete`, `project_connection_create`, `project_connection_delete`, `continuous_eval_delete`
+  - write (30): `agent_update`, `agent_invoke`, `agent_container_control`, `session_create`, `session_file_mkdir`, `session_file_upload`, `toolbox_version_create`, `toolbox_update`, `evaluation_dataset_create`, `data_generation_job_create`, `data_generation_job_cancel`, `evaluation_agent_batch_eval_create`, `evaluation_dataset_batch_eval_create`, `evaluation_comparison_create`, `evaluation_agent_traces_batch_eval_create`, `evaluation_traces_batch_eval_create`, `evaluation_suite_create`, `evaluation_suite_update`, `evaluation_suite_run`, `evaluation_suite_generation_job_create`, `evaluation_suite_generation_job_cancel`, `evaluator_catalog_create`, `evaluator_catalog_update`, `evaluator_generation_job_cancel`, `model_deploy_azure_direct_model`, `model_deploy`, `model_deploy_managed_compute`, `project_connection_update`, `prompt_optimize`, `continuous_eval_create`
+  - destructive (14): `agent_delete`, `session_delete`, `session_file_delete`, `toolbox_delete`, `toolbox_version_delete`, `data_generation_job_delete`, `evaluation_suite_delete`, `evaluation_suite_generation_job_delete`, `evaluator_catalog_delete`, `evaluator_generation_job_create`, `model_deployment_delete`, `project_connection_create`, `project_connection_delete`, `continuous_eval_delete`
 - Never called, connections (tier T3): `project_connection_create`, `project_connection_update`, `project_connection_delete`.
 - Never called, schedules (tier T3): `continuous_eval_create`, `continuous_eval_delete`.
 - Never called, credentials (rule 2): `evaluation_dataset_sas_url_get`.
 - Never made, through any tool, permissions (tier T3): a `session_file_mkdir` call that sets a permission mode.
+- Never made, through any tool, capacity, tenant or workspace settings (tier T3): a call of `model_deploy_azure_direct_model`, `model_deploy` or `model_deploy_managed_compute` that sets capacity units or an instance count.
 
 ## `graphql-sample`: Fabric API for GraphQL sample MCP server
 
@@ -399,5 +402,6 @@ How to use it:
   - write (2): `create_record`, `update_record`
   - destructive (1): `delete_record`
   - mixed (1): `execute_entity`
-- Never made, through any tool, permissions (tier T3): a call of `execute_entity`, or of a custom tool, that runs a stored procedure which changes permissions or row-level security.
+- Never made, through any tool, permissions (tier T3): a call of `execute_entity`, or of a custom tool, that runs a stored procedure which changes who may access something.
+- Never made, through any tool, row-level or object-level security (tier T3): a call of `execute_entity`, or of a custom tool, that runs a stored procedure which changes a row-level security policy.
 - Never made, through any tool, credentials (rule 2): a call of `execute_entity`, or of a custom tool, that runs a stored procedure which returns a secret, a key or a password.

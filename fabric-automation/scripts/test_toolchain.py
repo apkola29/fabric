@@ -8189,7 +8189,7 @@ class InstructionLayerTests(unittest.TestCase):
         for words in ("Treat it as the whole Azure Resource Manager server", "can also deploy templates and create or update resources", "can create a budget"):
             with self.subTest(cost_server=words):
                 self.assertIn(words, uses["azure-arm-cost"], "the cost server is the whole Azure Resource Manager server, and its row says what else it can do")
-        self.assertIn("`full`: changes, dev only", text)
+        self.assertIn("`full`: every tool, including the ones that create, update or delete (a dev profile only)", text)
         hosting = {"Eventhouse": "remote", "Activator": "remote", "Operations agent": "remote", "Data agent as an MCP server": "remote", "Ontology": "remote",
                    "DataFactory": "local", "Notebook integration": "local"}
         rows = dict(self.unpinned(text))
@@ -8950,10 +8950,18 @@ class CatalogTests(unittest.TestCase):
         def append_change(sid, text):
             return lambda c: self.server(c, sid)["flagged"][0]["changes"].append(text)
 
+        def named_under_another_area(catalog):
+            for entry in self.server(catalog, "datafactory-local")["flagged"]:
+                if entry["area"] == "credentials":
+                    entry["tools"].remove("get_access_token")
+                if entry["area"] == "schedules":
+                    entry["changes"] = ["a call of `get_access_token` that changes a schedule"]
+
         cases = [
             ("a statement that names a tool that the server does not have", append_change("fabric-rti-local", "a call of `no_such_tool` that changes a policy"), "names `no_such_tool`"),
             ("a tool that is knowledge and flagged", lambda c: self.server(c, "fabric-core")["flagged"][0]["tools"].append("get_knowledge"), "the tool get_knowledge is a knowledge tool and is flagged"),
             ("tools whose names say that they touch a protected area or return a secret", lambda c: self.server(c, "datafactory-local")["flagged"].clear(), "says that it touches a protected area or returns a secret"),
+            ("a token tool that a statement of another area names", named_under_another_area, "the name of the tool get_access_token says that it touches a protected area or returns a secret"),
         ]
         for label, change, expected in cases:
             with self.subTest(label):
@@ -8961,13 +8969,46 @@ class CatalogTests(unittest.TestCase):
                 self.assertEqual([], toolchain_catalog.check_structure(catalog))
                 problems = toolchain_catalog.check_against(catalog, self.manifest, self.lock)
                 self.assertTrue(any(expected in problem for problem in problems), "%s: %s" % (expected, problems))
-        with mock.patch.dict(toolchain_catalog.PROTECTED_REVIEWED, {("fabric-core", "no_such_tool"): "a reason"}):
+        gone = "is reviewed and left out of the check of protected names, and the server no longer has it"
+        for label, reviewed in (("a tool that the server does not have", ("fabric-core", "no_such_tool")), ("a server that the catalog does not have", ("no-such-server", "any_tool")),
+                                ("a server that lists no tools", ("eventhouse-remote", "any_tool"))):
+            with self.subTest(label), mock.patch.dict(toolchain_catalog.PROTECTED_REVIEWED, {reviewed: "a reason"}):
+                problems = toolchain_catalog.check_against(self.catalog, self.manifest, self.lock)
+                self.assertTrue(any("%s %s" % (reviewed[1], gone) in p for p in problems), problems)
+        with mock.patch.dict(toolchain_catalog.PROTECTED_REVIEWED, {("fabric-core", "add_workspace_role"): "a reason"}):
             problems = toolchain_catalog.check_against(self.catalog, self.manifest, self.lock)
-            self.assertTrue(any("no_such_tool is reviewed and left out of the check of protected names, and the server no longer has it" in p for p in problems), problems)
+            self.assertTrue(any("add_workspace_role is reviewed and left out of the check of protected names, and the catalog flags it: drop the exception" in p for p in problems), problems)
         for sid, name in toolchain_catalog.PROTECTED_REVIEWED:
             with self.subTest(reviewed=name):
                 self.assertIn(name, toolchain_catalog.tool_names(self.server(self.catalog, sid), self.lock), "a reviewed name is a tool of its server")
                 self.assertTrue(toolchain_catalog.PROTECTED_REVIEWED[(sid, name)].strip(), "a reviewed name has its reason")
+
+    def test_every_area_has_the_words_that_a_tool_name_is_read_for_and_a_word_belongs_to_the_areas_that_name_it(self):
+        self.assertEqual(set(toolchain_catalog.AREAS), set(toolchain_catalog.AREA_WORDS), "an area without words cannot be asked for by a name")
+        self.assertEqual({"credentials"}, toolchain_catalog.WORD_AREAS["token"])
+        self.assertEqual({"permissions", "row-level or object-level security"}, toolchain_catalog.WORD_AREAS["role"])
+        self.assertIn("capacity, tenant or workspace settings", toolchain_catalog.WORD_AREAS["quota"])
+        self.assertNotIn("modify", toolchain_catalog.WORD_AREAS)
+        self.assertIn("modify", toolchain_catalog.PROTECTED_WORDS, "a word that no area owns still says that the tool changes something")
+
+        def server(names, flagged):
+            return {"id": "x", "tools": {"from": "page", "groups": [{"kind": "write", "names": names}]}, "flagged": flagged, "knowledge": []}
+
+        schedule = {"area": "schedules", "tools": ["delete_schedule"]}
+        self.assertEqual([], toolchain_catalog.unflagged_tools(server(["delete_schedule"], [schedule]), self.lock))
+        self.assertEqual(["get_token"], toolchain_catalog.unflagged_tools(server(["get_token"], [{"area": "schedules", "tools": ["get_token"]}]), self.lock),
+                         "a token tool that is flagged under the area of schedules is not flagged under the area of credentials")
+        self.assertEqual([], toolchain_catalog.unflagged_tools(server(["modify_thing"], [{"area": "license", "tools": ["modify_thing"]}]), self.lock), "a word that no area owns is satisfied by any area")
+        self.assertEqual([], toolchain_catalog.unflagged_tools(server(["assign_capacity"], [{"area": "capacity, tenant or workspace settings", "tools": ["assign_capacity"]}]), self.lock),
+                         "a name with the words of two areas is satisfied by one of them")
+
+    def test_a_tool_that_two_knowledge_entries_list_is_refused(self):
+        def twice(catalog):
+            server = self.server(catalog, "azure-mcp")
+            server["knowledge"].append({"tools": [server["knowledge"][0]["tools"][0]], "what": "the same tool again"})
+
+        problems = toolchain_catalog.check_structure(self.mutated(twice))
+        self.assertTrue(any("knowledge: a tool is listed in two entries" in problem for problem in problems), problems)
 
     def test_a_flagged_entry_with_a_note_and_no_tool_and_a_contract_of_another_server_are_refused(self):
         cases = [
@@ -8997,6 +9038,13 @@ class CatalogTests(unittest.TestCase):
         reference = toolchain_catalog.render_reference(self.catalog, manifest, self.lock)
         self.assertNotIn("so none of its commands writes", reference)
         self.assertIn("The kit does not start this variant with the server's read-only switch, so a command of it can write", reference)
+
+    def test_the_reference_says_that_a_change_of_live_state_needs_approval_in_a_session_and_that_a_job_makes_none_through_a_tool(self):
+        reference = toolchain_catalog.render_reference(self.catalog, self.manifest, self.lock)
+        self.assertIn("A call that changes the live state of a tenant or of Azure needs the approval that the rules ask for in a session "
+                      "(rule 6 of AGENTS.md; rule 2 of \"How to work\" in the preamble), and a job makes no change through an MCP tool.", reference)
+        self.assertIn("A tool that changes only a file on the machine works within the access of its profile.", reference)
+        self.assertNotIn("A call that changes anything", reference, "a call that changes a local file is no change of a tenant")
 
     def test_the_table_of_what_is_never_called_has_a_row_for_each_area_with_the_tools_and_the_changes_in_two_columns(self):
         lines = toolchain_catalog.flagged_region(self.catalog).splitlines()

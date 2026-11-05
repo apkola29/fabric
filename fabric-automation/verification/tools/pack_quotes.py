@@ -35,9 +35,11 @@ def source_file(url):
 
 
 def section(text, heading):
-    out, level = [], None
+    out, level, fenced = [], None, False
     for line in text.splitlines():
-        m = re.match(r"^(#{1,6}) (.+)$", line)
+        if line.lstrip().startswith("```"):
+            fenced = not fenced
+        m = None if fenced else re.match(r"^(#{1,6}) (.+)$", line)
         if m:
             if level is not None and len(m.group(1)) <= level:
                 break
