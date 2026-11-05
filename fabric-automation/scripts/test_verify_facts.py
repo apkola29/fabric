@@ -904,6 +904,165 @@ class ClaimPrecisionTests(unittest.TestCase):
     def test_a_request_must_be_refused_when_the_cap_is_exceeded(self):
         self.assert_needs("awf-ai-credits-refusal", self.REFUSAL, "block && block.maxExceeded", "false")
 
+    FOUNDRY_ROWS = (
+        "project_connection_create write Create or replace a project connection Connection name, category, target Connection details. "
+        "session_file_mkdir write Create a directory in a hosted agent session. Agent name, session ID, path, create-parents flag (optional), permission mode (optional) Directory details. "
+        "session_file_upload write Upload base64-encoded content to a file in a hosted agent session. Agent name, session ID, destination file path, base64 content Operation result. "
+        "evaluator_generation_job_create write Start an adaptive evaluator generation job. Supplying an existing evaluator name regenerates it from updated source inputs. "
+        "Model deployment, evaluator name, prompt, agent, or dataset source inputs Generation job. "
+        "model_deploy_azure_direct_model write Create or update a deployment for a Foundry Model sold by Azure. Model name, deployment name, capacity units "
+        "Deployment details with endpoint and provisioned capacity. "
+        "model_deploy write Deprecated backward-compatible alias of model_deploy_azure_direct_model . It has identical inputs and behavior. Model name, deployment name, capacity units "
+        "Deployment details with endpoint and provisioned capacity. "
+        "model_deploy_managed_compute write Create a distinct Managed Compute deployment from a registry model asset and resolved deployment template. "
+        "Deployment name, modelAssetId , deploymentTemplate , acceleratorType (optional), instanceCount (optional), versionUpgradeOption (optional) Managed Compute deployment details. ")
+    FOUNDRY_EXAMPLES = ("Use model_deploy_azure_direct_model to deploy GPT-5-mini as production-chatbot with 20 capacity units. "
+                        "Create gpt-oss-managed-test with the registry modelAssetId, one resolved deploymentTemplate, and the approved instanceCount. "
+                        "Before any deployment, show me the selected accelerator and instance count for review because Managed Compute allocates billable dedicated GPU capacity. "
+                        "A note elsewhere repeats: Supplying an existing evaluator name regenerates it from updated source inputs. "
+                        "Another note repeats: Deprecated backward-compatible alias of model_deploy_azure_direct_model, and a list shows permission mode (optional). ")
+
+    def foundry_page(self):
+        names = [re.sub(r"\\b", "", p) for p in real_fact("page-catalog-tools-foundry-mcp")["all"] if re.fullmatch(r"\\b[a-z_]+\\b", p)]
+        self.assertGreaterEqual(len(names), 79)
+        return " ".join(names) + " 79 Foundry MCP Server tools across 17 categories. The server is currently in public preview. " + self.FOUNDRY_ROWS + self.FOUNDRY_EXAMPLES
+
+    def test_the_foundry_rows_must_keep_the_inputs_that_the_catalog_says_about_capacity_and_the_example_prompts_do_not_stand_in_for_them(self):
+        good = self.foundry_page()
+        for label, removed, replacement in (
+                ("the capacity units of the Azure deployment tool", "sold by Azure. Model name, deployment name, capacity units", "sold by Azure. Model name, deployment name"),
+                ("the capacity units of the alias", "identical inputs and behavior. Model name, deployment name, capacity units", "identical inputs and behavior. Model name, deployment name"),
+                ("the instance count of the Managed Compute tool", "instanceCount (optional), ", ""),
+                ("the alias wording in its own row", "write Deprecated backward-compatible alias of", "write Alias of"),
+                ("the regeneration sentence in its own row", "generation job. Supplying an existing evaluator name regenerates it from updated source inputs.", "generation job."),
+                ("the permission mode in its own row", "create-parents flag (optional), permission mode (optional)", "create-parents flag (optional)"),
+                ("the permission mode moved to the row that follows",
+                 "create-parents flag (optional), permission mode (optional) Directory details. session_file_upload write Upload base64-encoded",
+                 "create-parents flag (optional) Directory details. session_file_upload write permission mode (optional) Upload base64-encoded"),
+                ("Managed Compute no longer allocates billable capacity", "because Managed Compute allocates billable dedicated GPU capacity", "because Managed Compute does not allocate billable dedicated GPU capacity"),
+                ("the reason negated in front", "for review because Managed Compute allocates", "for review not because Managed Compute allocates"),
+                ("the review before any deployment dropped", "Before any deployment, show me the selected accelerator and instance count for review because", "Show me the selected accelerator and instance count because"),
+                ("the replace wording of the connection tool", "write Create or replace a project connection", "write Create a project connection")):
+            with self.subTest(label):
+                self.assert_needs("page-catalog-tools-foundry-mcp", good, removed, replacement)
+
+    DATAFACTORY_PAGE = ("Pipeline management is a preview feature that requires the --pipeline flag in your server configuration. Without the --pipeline flag, the pipeline management tools don't appear in Copilot's tool list. "
+                        "Update the definition of my 'Daily Sales Ingest' pipeline to include a Copy Activity that reads from an Azure Blob Storage source named 'SalesBlob' "
+                        "and writes to a Lakehouse destination named 'SalesLakehouse'. Copilot calls mcp_datafactorymc_update_pipeline_definition with a JSON definition for the activity. "
+                        "Schedule my 'Daily Sales Ingest' pipeline to run every day at 2:00 AM UTC. Copilot calls mcp_datafactorymc_create_pipeline_schedule with a recurrence definition. "
+                        "Pipeline deletion and schedule modification aren't available through the MCP server.")
+
+    def test_the_pipeline_page_must_say_that_copilot_calls_the_tool_in_the_examples_that_the_catalog_cites(self):
+        for label, removed, replacement in (
+                ("the definition tool is no longer called", "Copilot calls mcp_datafactorymc_update_pipeline_definition", "Copilot never calls mcp_datafactorymc_update_pipeline_definition"),
+                ("the example is no longer about a Blob Storage source", "reads from an Azure Blob Storage source", "reads from a local file"),
+                ("the schedule tool is no longer called", "Copilot calls mcp_datafactorymc_create_pipeline_schedule", "Copilot never calls mcp_datafactorymc_create_pipeline_schedule"),
+                ("schedule modification is available", "aren't available through the MCP server", "are available through the MCP server"),
+                ("the flag limited to one platform", "requires the --pipeline flag in your server configuration.", "requires the --pipeline flag only on Linux."),
+                ("the availability sentence limited", "don't appear in Copilot's tool list.", "don't appear in Copilot's tool list on Linux only."),
+                ("a lookup activity and not the copy activity", "to include a Copy Activity that reads from an Azure Blob Storage source",
+                 "to include a Lookup Activity, not a Copy Activity that reads from an Azure Blob Storage source")):
+            with self.subTest(label):
+                self.assert_needs("page-datafactory-pipeline-flag", self.DATAFACTORY_PAGE, removed, replacement)
+
+    DATAFACTORY_README = ("- **Pipeline Management**: `list_pipelines`, `create_pipeline` *(Preview)*\n- **Dataflow Query Execution**: `execute_query` *(Preview)*\n"
+                          '        "command": "dnx",\n- .NET 10.0 or later\n'
+                          "| **Advanced** | `Action.Sequence` for writes, Fast Copy, Modern Evaluator |\n")
+
+    def test_the_readme_of_the_datafactory_server_must_list_the_topic_in_its_row_and_not_say_that_it_is_not_covered(self):
+        self.assert_needs("gh-datafactory-mcp-readme-preview-and-dnx", self.DATAFACTORY_README, "| **Advanced** | `Action.Sequence` for writes", "| **Advanced** | Does not cover `Action.Sequence` for writes")
+        self.assert_needs("gh-datafactory-mcp-readme-preview-and-dnx", self.DATAFACTORY_README, "Pipeline Management**: `list_pipelines`, `create_pipeline` *(Preview)*", "Pipeline Management**: `list_pipelines`, `create_pipeline`")
+
+    def test_the_authoring_page_must_open_its_object_list_with_the_sentence_that_the_server_authors_models(self):
+        good = ("Author models in natural language. Create, update, and delete tables, columns, measures, relationships, hierarchies, calculation groups, perspectives, partitions, security roles, and more. "
+                "Analyze models. Change hundreds of objects at once. Bulk renames, bulk refactoring, model translations, and security rules that would otherwise take hours.")
+        self.assert_needs("page-pbi-authoring-remote-objects", good, "Author models in natural language.", "These operations are not supported.")
+        self.assert_needs("page-pbi-authoring-remote-objects", good, ", security roles, and more", ", and security roles")
+
+    def test_the_readme_of_the_authoring_server_must_say_that_an_agent_can_call_the_license_tool_after_authorization(self):
+        good = ("In an interactive session, your agent can call the `accept_eula` tool on your behalf after you explicitly authorize it. "
+                "The server saves the acceptance in a local configuration on your machine.")
+        self.assert_needs("gh-pbi-authoring-accept-eula-tool", good, "your agent can call", "your agent cannot call")
+        self.assert_needs("gh-pbi-authoring-accept-eula-tool", good, " after you explicitly authorize it", "")
+
+    def test_the_eventstream_tools_must_be_described_as_creating_and_modifying_an_eventstream(self):
+        good = ("- **`eventstream_create`** - Create new Eventstreams with custom configuration (auto-includes default stream)\n"
+                "- **`eventstream_update`** - Modify existing Eventstream settings and destinations\n"
+                "- **Validation**: `eventstream_validate_definition`, `eventstream_create_from_definition`, `eventstream_list_available_components`\n")
+        self.assert_needs("gh-rti-mcp-eventstream-definition-tools", good, "Modify existing Eventstream settings and destinations", "List existing Eventstream settings")
+        self.assert_needs("gh-rti-mcp-eventstream-definition-tools", good, "`eventstream_create_from_definition`, ", "")
+
+    def test_the_azure_server_must_give_the_two_capacity_examples_that_the_catalog_cites(self):
+        good = "* \"Update VMSS 'my-vmss' capacity to 5 instances\"\n* \"Update the performance tier of my Azure SQL database 'mydb'\"\n"
+        self.assert_needs("gh-azure-mcp-readme-capacity-examples", good, "Update VMSS 'my-vmss' capacity to 5 instances", "List VMSS 'my-vmss'")
+        self.assert_needs("gh-azure-mcp-readme-capacity-examples", good, "Update the performance tier of my Azure SQL database 'mydb'", "List my Azure SQL database 'mydb'")
+
+    SOFT_DELETE = ("OneLake soft delete protects your data by retaining deleted files before permanent removal. "
+                   "Soft delete is turned on for each workspace by default with a seven-day retention period. "
+                   "Workspace admins can configure file-level soft delete or turn it off. "
+                   "You can restore a soft-deleted file during the retention period that was active when the file was deleted. "
+                   "After that period ends, the file is permanently removed and can't be recovered. You pay for soft-deleted data at the same rate as active data. "
+                   "Restore soft-deleted files You can restore soft-deleted files by using Azure Storage Explorer.")
+
+    def test_the_soft_delete_page_must_keep_the_default_the_admin_the_deletion_time_period_and_the_billing(self):
+        for label, removed, replacement in (
+                ("the retention period of the day of deletion", "during the retention period that was active when the file was deleted", "during the retention period that is configured now"),
+                ("the restore sentence negated", "You can restore a soft-deleted file during", "You cannot restore a soft-deleted file during"),
+                ("the workspace admin", "Workspace admins can configure", "Any workspace member can configure"),
+                ("soft delete on by default", "Soft delete is turned on for each workspace by default with a seven-day retention period.",
+                 "Soft delete is turned off by default. You can turn it on with an optional seven-day retention period."),
+                ("the billing", "You pay for soft-deleted data at the same rate as active data.", "You pay nothing for soft-deleted data."),
+                ("a condition added to the billing sentence", "at the same rate as active data.", "at the same rate as active data only for the first day; after that, soft-deleted data is free."),
+                ("a condition added to the restore sentence", "when the file was deleted.", "when the file was deleted only if the workspace retention setting has not changed.")):
+            with self.subTest(label):
+                self.assert_needs("page-onelake-soft-delete-billing", self.SOFT_DELETE, removed, replacement)
+
+    def test_the_vscode_page_must_tell_the_reader_to_see_the_supported_formats(self):
+        good = ("Harness Project instructions file Copilot .github/copilot-instructions.md or AGENTS.md Anthropic Claude CLAUDE.md OpenAI Codex AGENTS.md "
+                "Add your rules, save the file, and verify it as described below. AGENTS.md is a cross-agent format, not a Codex-only file. "
+                "See supported formats before sharing one file across harnesses. Verify your instructions")
+        self.assert_needs("page-vscode-custom-instructions-agents-md", good, "See supported formats before sharing", "Ignore supported formats before sharing")
+        self.assert_needs("page-vscode-custom-instructions-agents-md", good, "Anthropic Claude CLAUDE.md", "Anthropic Claude AGENTS.md")
+        self.assert_needs("page-vscode-custom-instructions-agents-md", good, "Anthropic Claude CLAUDE.md OpenAI Codex AGENTS.md",
+                          "Anthropic Claude AGENTS.md OpenAI Codex AGENTS.md (the old file of Anthropic Claude CLAUDE.md is kept for existing projects)")
+
+    def test_the_blob_example_must_be_followed_by_its_own_call_and_not_by_the_call_of_another_example(self):
+        self.assert_needs("page-datafactory-pipeline-flag", self.DATAFACTORY_PAGE,
+                          "Copilot calls mcp_datafactorymc_update_pipeline_definition with a JSON definition for the activity.",
+                          "Copilot refuses to change the activity. Update my 'Daily Sales Ingest' pipeline to read from a local file. "
+                          "Copilot calls mcp_datafactorymc_update_pipeline_definition with a JSON definition for the activity.")
+
+    def test_the_advanced_topics_cell_must_list_all_three_topics_and_say_nothing_after_the_writes_topic(self):
+        self.assert_needs("gh-datafactory-mcp-readme-preview-and-dnx", self.DATAFACTORY_README,
+                          "| **Advanced** | `Action.Sequence` for writes, Fast Copy", "| **Advanced** | `Action.Sequence` for writes is not covered, Fast Copy")
+        self.assert_needs("gh-datafactory-mcp-readme-preview-and-dnx", self.DATAFACTORY_README, "Fast Copy, Modern Evaluator |", "Fast Copy |")
+
+    def test_the_eventstream_definition_tool_must_be_in_the_validation_bullet_and_not_only_mentioned_elsewhere(self):
+        good = ("- **`eventstream_create`** - Create new Eventstreams with custom configuration (auto-includes default stream)\n"
+                "- **`eventstream_update`** - Modify existing Eventstream settings and destinations\n"
+                "- **Validation**: `eventstream_validate_definition`, `eventstream_create_from_definition`, `eventstream_list_available_components`\n")
+        self.assert_needs("gh-rti-mcp-eventstream-definition-tools", good,
+                          "- **Validation**: `eventstream_validate_definition`, `eventstream_create_from_definition`, `eventstream_list_available_components`\n",
+                          "- **Validation**: `eventstream_validate_definition`, `eventstream_list_available_components`\n- Not supported: `eventstream_create_from_definition`\n")
+        self.assert_needs("gh-rti-mcp-eventstream-definition-tools", good, "`eventstream_validate_definition`, `eventstream_create_from_definition`",
+                          "`eventstream_validate_definition`, not `eventstream_create_from_definition`")
+        self.assert_needs("gh-rti-mcp-eventstream-definition-tools", good, "- **`eventstream_update`** - Modify existing", "- **No longer supported** - **`eventstream_update`** - Modify existing")
+        self.assert_needs("gh-rti-mcp-eventstream-definition-tools", good, "- **Validation**:", "- **No longer supported**: **Validation**:")
+
+    def test_the_map_tools_must_be_described_as_creating_a_map_from_a_configuration_and_replacing_its_whole_definition(self):
+        good = ("- **`map_create`** - Create a new Map item from a provided configuration\n"
+                "- **`map_update_definition`** - Replace the full JSON definition of an existing Map item\n"
+                "- **`map_update`** - Partially update properties of an existing Map item\n")
+        self.assert_needs("gh-rti-mcp-map-definition-tools", good, "Replace the full JSON definition of an existing Map item", "Partially update properties of an existing Map item")
+        self.assert_needs("gh-rti-mcp-map-definition-tools", good, "Create a new Map item from a provided configuration", "List the Map items")
+        self.assert_needs("gh-rti-mcp-map-definition-tools", good, "- **`map_update_definition`** - Replace", "- **No longer supported** - **`map_update_definition`** - Replace")
+
+    def test_the_hosted_authoring_page_must_name_security_rules_in_its_bulk_bullet(self):
+        good = ("Author models in natural language. Create, update, and delete tables, columns, measures, relationships, hierarchies, calculation groups, perspectives, "
+                "partitions, security roles, and more. Analyze models. "
+                "Change hundreds of objects at once. Bulk renames, bulk refactoring, model translations, and security rules that would otherwise take hours.")
+        self.assert_needs("page-pbi-authoring-remote-objects", good, "model translations, and security rules that would otherwise take hours.", "and model translations.")
+
 
 if __name__ == "__main__":
     unittest.main()

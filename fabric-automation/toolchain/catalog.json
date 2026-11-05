@@ -1,0 +1,1246 @@
+{
+  "schema": 1,
+  "read": "2026-11-04",
+  "directory": {
+    "pages": [
+      {
+        "url": "https://learn.microsoft.com/en-us/rest/api/fabric/articles/mcp-servers/fabric-mcp-servers-list",
+        "updated": "2026-10-21"
+      },
+      {
+        "url": "https://learn.microsoft.com/en-us/rest/api/fabric/articles/mcp-servers/what-is-fabric-mcp-server",
+        "updated": "2026-10-27"
+      }
+    ],
+    "servers": 14,
+    "remote": 9,
+    "local": 5
+  },
+  "skills": {
+    "pages": [
+      {
+        "url": "https://learn.microsoft.com/en-us/fabric/fundamentals/skills-for-fabric-overview",
+        "updated": "2026-09-29"
+      },
+      {
+        "url": "https://learn.microsoft.com/en-us/fabric/fundamentals/skills-for-fabric-install",
+        "updated": "2026-09-29"
+      },
+      {
+        "url": "https://learn.microsoft.com/en-us/fabric/fundamentals/skills-for-fabric-discover",
+        "updated": "2026-09-09"
+      },
+      {
+        "url": "https://learn.microsoft.com/en-us/power-bi/developer/agentic/power-bi-agentic-overview",
+        "updated": "2026-10-14"
+      }
+    ],
+    "facts": [
+      "Skills for Fabric are static knowledge: skills teach what to do, and MCP servers do it.",
+      "The skills cover data engineering, data warehouse, Real-Time Intelligence, Data Factory, Power BI, administration and governance, migration, and discovery.",
+      "A skill does not render a finished Power BI report: the report-authoring skills are in the separate powerbi-authoring plugin."
+    ]
+  },
+  "servers": [
+    {
+      "id": "microsoft-learn",
+      "group": "pinned",
+      "name": "Microsoft Learn MCP Server",
+      "hosting": "remote",
+      "use": "Microsoft documentation and code samples, any product",
+      "endpoint": "one URL",
+      "needs": [
+        "No sign-in is needed.",
+        "It holds publicly available documentation, not training or user profile information.",
+        "Its index refreshes incrementally after content updates and fully once a day.",
+        "The pages say that it is publicly available and free of charge, and state no release stage for it."
+      ],
+      "pages": [
+        {"url": "https://learn.microsoft.com/en-us/training/support/mcp", "updated": "2026-05-22"},
+        {"url": "https://github.com/MicrosoftDocs/mcp"}
+      ],
+      "tools": {
+        "from": "page",
+        "groups": [{"kind": "read", "names": ["microsoft_docs_search", "microsoft_docs_fetch", "microsoft_code_sample_search"]}]
+      },
+      "knowledge": [
+        {
+          "tools": ["microsoft_docs_search", "microsoft_docs_fetch", "microsoft_code_sample_search"],
+          "what": "search the current Microsoft documentation, read a page as markdown, find official code samples"
+        }
+      ],
+      "flagged": []
+    },
+    {
+      "id": "fabric-local",
+      "group": "pinned",
+      "name": "Fabric MCP Server (local)",
+      "hosting": "local",
+      "directory": true,
+      "use": "Fabric MCP Server (local). `docs`: Fabric API specs, item definitions and best practices, offline. `read`: OneLake, core and Data Factory reads. `full`: every tool, including the ones that create, update or delete (a dev profile only)",
+      "endpoint": "command",
+      "needs": [
+        "It runs on the development machine; the install methods are a VS Code extension, npm with npx, or a build from source.",
+        "Live operations sign in with the Azure CLI (az login) for a user, or with service-principal variables for a process; the page sends Data Factory authentication to the Data Factory tools reference.",
+        "Its Learn tool reference lists only some of the tools and says that names and availability vary by installed version and server configuration, so the list of this kit is the one measured in the lock.",
+        "The README on the main branch also documents core_get-item-definition, core_update-item-definition and a jobs namespace (jobs_run-on-demand-item-job and four more tools) that the locked version does not expose.",
+        "The README of the microsoft/mcp repository lists it as Microsoft Fabric (Public Preview); the Learn pages and its own README state no stage."
+      ],
+      "pages": [
+        {
+          "url": "https://learn.microsoft.com/en-us/rest/api/fabric/articles/mcp-servers/pro-dev-local/overview-local-mcp-server",
+          "updated": "2026-09-23"
+        },
+        {
+          "url": "https://learn.microsoft.com/en-us/rest/api/fabric/articles/mcp-servers/pro-dev-local/get-started-local",
+          "updated": "2026-09-23"
+        },
+        {
+          "url": "https://learn.microsoft.com/en-us/rest/api/fabric/articles/mcp-servers/pro-dev-local/tools-local-mcp-server",
+          "updated": "2026-09-23"
+        },
+        {"url": "https://github.com/microsoft/mcp/blob/main/servers/Fabric.Mcp.Server/README.md"},
+        {"url": "https://github.com/microsoft/mcp"},
+        {
+          "url": "https://learn.microsoft.com/en-us/rest/api/fabric/articles/mcp-servers/fabric-mcp-servers-list",
+          "updated": "2026-10-21"
+        }
+      ],
+      "tools": {"from": "lock", "contract": "fabric-local/full"},
+      "knowledge": [
+        {
+          "tools": [
+            "docs_list-item-types", "docs_item-api-spec", "docs_platform-api-spec", "docs_item-definitions",
+            "docs_best-practices", "docs_api-examples"
+          ],
+          "what": "Fabric API specifications, item definitions, best practices and request examples, offline in the `docs` variant"
+        }
+      ],
+      "flagged": [
+        {
+          "area": "row-level or object-level security",
+          "tools": ["onelake_create-or-update-data-access-role", "onelake_delete-data-access-role"]
+        },
+        {
+          "area": "capacity, tenant or workspace settings",
+          "tools": ["core_assign-workspace-to-capacity", "onelake_modify-diagnostics", "onelake_modify-immutability-policy"],
+          "changes": ["a `core_create-workspace` call that assigns a capacity or a domain"]
+        },
+        {
+          "area": "sensitivity labels",
+          "tools": [],
+          "changes": ["a `core_create-item` call that carries label settings"]
+        }
+      ]
+    },
+    {
+      "id": "fabric-core",
+      "group": "pinned",
+      "name": "Fabric Core MCP Server",
+      "hosting": "remote",
+      "directory": true,
+      "use": "Fabric Core MCP Server: workspaces, folders, items and their definitions, workspace roles, capacities, OneLake shortcuts, data access roles and workspace storage settings, catalog search, and `get_knowledge` for item-type guidance",
+      "endpoint": "one URL",
+      "needs": [
+        "Sign-in is OAuth 2.0 with Microsoft Entra, as the signed-in user: each tool maps to a Fabric REST API operation, so that user's permissions decide what works.",
+        "Creating a workspace needs the permission to create workspaces, which some organizations restrict.",
+        "Deleting a workspace permanently removes its items and cannot be undone, and a folder must be empty before it is deleted.",
+        "Without the Microsoft Graph MCP server, a role operation needs user principal IDs and not e-mail addresses.",
+        "The pages state no release stage for it.",
+        "The OneLake tools of this server take the workspace id, and the item-scoped ones the item id, as parameters."
+      ],
+      "pages": [
+        {
+          "url": "https://learn.microsoft.com/en-us/rest/api/fabric/articles/mcp-servers/core-remote/overview-core-mcp-server",
+          "updated": "2026-10-27"
+        },
+        {
+          "url": "https://learn.microsoft.com/en-us/rest/api/fabric/articles/mcp-servers/core-remote/get-started-core",
+          "updated": "2026-09-29"
+        },
+        {
+          "url": "https://learn.microsoft.com/en-us/rest/api/fabric/articles/mcp-servers/core-remote/tools-core-mcp-server",
+          "updated": "2026-10-27"
+        },
+        {
+          "url": "https://learn.microsoft.com/en-us/rest/api/fabric/articles/mcp-servers/fabric-mcp-servers-list",
+          "updated": "2026-10-21"
+        }
+      ],
+      "tools": {
+        "from": "page",
+        "groups": [
+          {
+            "kind": "read",
+            "names": [
+              "search_catalog", "list_workspaces", "get_workspace", "list_workspace_roles", "get_workspace_role",
+              "list_items", "get_item", "get_item_definition", "list_folders", "get_folder", "list_capacities",
+              "get_operation_state", "get_operation_result", "get_knowledge", "onelake_list_shortcuts",
+              "onelake_get_shortcut", "onelake_list_data_access_roles", "onelake_get_settings"
+            ]
+          },
+          {
+            "kind": "write",
+            "names": [
+              "create_workspace", "update_workspace", "add_workspace_role", "update_workspace_role", "create_item",
+              "update_item", "update_item_definition", "bulk_move_items", "create_folder", "update_folder",
+              "move_folder", "onelake_create_or_update_single_data_access_role", "onelake_modify_default_tier",
+              "onelake_modify_diagnostics", "onelake_modify_immutability_policy"
+            ]
+          },
+          {
+            "kind": "destructive",
+            "names": [
+              "delete_workspace", "delete_workspace_role", "delete_item", "delete_folder", "onelake_delete_shortcut",
+              "onelake_delete_data_access_role", "onelake_create_or_update_data_access_roles",
+              "onelake_create_shortcut", "onelake_create_shortcuts_in_bulk", "onelake_reset_shortcut_cache"
+            ]
+          }
+        ]
+      },
+      "knowledge": [{"tools": ["get_knowledge"], "what": "guidelines and best practices for item types"}],
+      "flagged": [
+        {"area": "permissions", "tools": ["add_workspace_role", "update_workspace_role", "delete_workspace_role"]},
+        {
+          "area": "row-level or object-level security",
+          "tools": [
+            "onelake_create_or_update_single_data_access_role", "onelake_create_or_update_data_access_roles",
+            "onelake_delete_data_access_role"
+          ]
+        },
+        {
+          "area": "capacity, tenant or workspace settings",
+          "tools": ["onelake_modify_default_tier", "onelake_modify_diagnostics", "onelake_modify_immutability_policy"]
+        }
+      ]
+    },
+    {
+      "id": "fabric-iq",
+      "group": "pinned",
+      "name": "Fabric IQ MCP server",
+      "hosting": "remote",
+      "directory": true,
+      "use": "Fabric IQ MCP server: read-only questions over reports and semantic models",
+      "endpoint": "one URL",
+      "needs": [
+        "Sign-in is delegated OAuth with the scopes Item.Read.All and Item.Execute.All; a service principal is not supported.",
+        "It is read-only, and the Power BI tenant setting for the Model Context Protocol server endpoints does not apply to it.",
+        "It is not available in Power BI-only regions or in sovereign clouds.",
+        "It does not cover dashboards, paginated reports, apps, ontologies or data agents, and it has no tool that answers a natural-language question: the agent writes the query from the schema.",
+        "ExecuteQuery returns up to 250 rows unless maxRows asks for more.",
+        "The header X-Variants with the value Fabric.Routing.FabricIQ.V1 pins the tool contract.",
+        "The Power BI MCP servers overview spells the path of its URL with capitals and the connector page in lower case; the manifest follows the connector page.",
+        "With private links, the endpoint on the Fabric API host is used instead of the Fabric IQ host."
+      ],
+      "pages": [
+        {"url": "https://learn.microsoft.com/en-us/fabric/iq/connectors/fabric-iq-mcp", "updated": "2026-10-21"},
+        {
+          "url": "https://learn.microsoft.com/en-us/power-bi/developer/mcp/mcp-servers-overview",
+          "updated": "2026-09-29"
+        },
+        {
+          "url": "https://learn.microsoft.com/en-us/rest/api/fabric/articles/mcp-servers/fabric-mcp-servers-list",
+          "updated": "2026-10-21"
+        }
+      ],
+      "tools": {
+        "from": "page",
+        "groups": [
+          {
+            "kind": "read",
+            "names": [
+              "DiscoverArtifacts", "ResolveFabricItem", "GetReportMetadata", "GetSemanticModelSchema", "ValueSearch",
+              "ExecuteQuery"
+            ]
+          }
+        ]
+      },
+      "knowledge": [],
+      "flagged": []
+    },
+    {
+      "id": "fabric-sql",
+      "group": "pinned",
+      "name": "Fabric Data Warehouse MCP server",
+      "hosting": "remote",
+      "directory": true,
+      "use": "Fabric Data Warehouse MCP server: T-SQL on a warehouse or a SQL analytics endpoint; its one tool can also change data and schema",
+      "endpoint": "one URL, or one URL per item",
+      "needs": [
+        "A person signs in with Microsoft credentials, and the statements run with that person's Fabric and SQL permissions.",
+        "Its one tool can run DDL and DML, so a call that changes data or schema changes live state and needs the approval that the rules ask for.",
+        "The Learn page names the tool executeSQL and the marketplace file of the skills repository names it execute_query: call the name that the server lists.",
+        "There is a global endpoint and an item-scoped endpoint that names a workspace and an item."
+      ],
+      "pages": [
+        {
+          "url": "https://learn.microsoft.com/en-us/fabric/data-warehouse/data-warehouse-mcp-server",
+          "updated": "2026-06-23"
+        },
+        {"url": "https://github.com/microsoft/skills-for-fabric/blob/v0.3.20/.github/plugin/marketplace.json"},
+        {
+          "url": "https://learn.microsoft.com/en-us/rest/api/fabric/articles/mcp-servers/fabric-mcp-servers-list",
+          "updated": "2026-10-21"
+        }
+      ],
+      "tools": {
+        "from": "page",
+        "groups": [{"kind": "mixed", "names": ["executeSQL"]}]
+      },
+      "knowledge": [],
+      "flagged": [
+        {"area": "permissions", "tools": [], "changes": ["a statement that changes permissions"]},
+        {
+          "area": "row-level or object-level security",
+          "tools": [],
+          "changes": ["a statement that changes row-level security"]
+        }
+      ]
+    },
+    {
+      "id": "powerbi-authoring-local",
+      "group": "pinned",
+      "name": "Power BI Authoring MCP server (local)",
+      "hosting": "local",
+      "directory": true,
+      "use": "semantic model objects, DAX and TMDL, on local files or in the service",
+      "endpoint": "command",
+      "needs": [
+        "It is generally available; the hosted twin is in preview.",
+        "It needs Write permission on the semantic model to change it: with only Build permission it can only run DAX queries.",
+        "For a model in a Fabric workspace, the XMLA endpoint must be set to Read Write on the capacity.",
+        "The --readonly switch prevents any write operations to the semantic model (the README's words), and the README does not say whether it covers anything else: the license acceptance is saved in a local configuration. Without it, the server asks for a confirmation before an edit, once per database.",
+        "It blocks every other tool call until its license (EULA) is accepted: the operator accepts it once, on purpose, and the server saves the acceptance in a local configuration.",
+        "The README says that database_operations can import and export TMDL folders and deploy to Fabric, and one of its example prompts creates semantic model parameters to enable easy switching of the data source location.",
+        "The variable PBI_MODELING_MCP_ALLOWED_CONNECTION_HOSTS adds hosts that the server connects to and sends access tokens to; the kit does not set it.",
+        "No tenant setting blocks it: only disabling the XMLA endpoint does, and that blocks every tool that uses XMLA."
+      ],
+      "pages": [
+        {
+          "url": "https://learn.microsoft.com/en-us/power-bi/developer/mcp/power-bi-authoring-mcp",
+          "updated": "2026-09-29"
+        },
+        {"url": "https://github.com/microsoft/powerbi-modeling-mcp"},
+        {
+          "url": "https://learn.microsoft.com/en-us/rest/api/fabric/articles/mcp-servers/fabric-mcp-servers-list",
+          "updated": "2026-10-21"
+        }
+      ],
+      "tools": {
+        "from": "page",
+        "groups": [
+          {"kind": "read", "names": ["connection_operations", "dax_query_operations", "trace_operations"]},
+          {"kind": "write", "names": ["accept_eula"]},
+          {
+            "kind": "mixed",
+            "names": [
+              "database_operations", "transaction_operations", "model_operations", "table_operations",
+              "column_operations", "relationship_operations", "measure_operations", "partition_operations",
+              "user_hierarchy_operations", "calculation_group_operations", "security_role_operations",
+              "perspective_operations", "named_expression_operations", "function_operations", "culture_operations",
+              "object_translation_operations", "calendar_operations", "query_group_operations"
+            ]
+          }
+        ]
+      },
+      "knowledge": [],
+      "flagged": [
+        {
+          "area": "license",
+          "tools": ["accept_eula"],
+          "note": "the README lets an agent call it after a person authorizes it; the kit leaves the acceptance to the operator, once, on purpose"
+        },
+        {
+          "area": "row-level or object-level security",
+          "tools": [],
+          "changes": ["a change of a security role or of a row-level security permission through `security_role_operations`"]
+        },
+        {
+          "area": "connections",
+          "tools": [],
+          "changes": [
+            "a change of the data source of a model, for example a Power Query parameter that `named_expression_operations` updates"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "powerbi-authoring-remote",
+      "group": "pinned",
+      "name": "Power BI Authoring MCP server (hosted)",
+      "hosting": "remote",
+      "directory": true,
+      "use": "the hosted twin of the local one: use one, and avoid registering both",
+      "endpoint": "one URL",
+      "needs": [
+        "It is in preview, uses Streamable HTTP and signs in with Microsoft Entra as the signed-in user.",
+        "A Fabric administrator must enable the tenant setting Users can use the Power BI Model Context Protocol server endpoint.",
+        "It has no transactions, no Analysis Services traces, no access to a model open in Power BI Desktop and no access to PBIP or TMDL files on disk.",
+        "Registering the local and the hosted server together gives the agent two overlapping tool sets: pick one."
+      ],
+      "pages": [
+        {
+          "url": "https://learn.microsoft.com/en-us/power-bi/developer/mcp/power-bi-authoring-mcp",
+          "updated": "2026-09-29"
+        },
+        {
+          "url": "https://learn.microsoft.com/en-us/power-bi/developer/mcp/mcp-servers-overview",
+          "updated": "2026-09-29"
+        },
+        {
+          "url": "https://learn.microsoft.com/en-us/rest/api/fabric/articles/mcp-servers/fabric-mcp-servers-list",
+          "updated": "2026-10-21"
+        }
+      ],
+      "tools": {
+        "from": "none",
+        "note": "The page lists no tools: it says that the server exposes tools grouped by object type, such as tables, columns, measures and relationships, and that the agent can be asked what is available."
+      },
+      "knowledge": [],
+      "flagged": [
+        {
+          "area": "row-level or object-level security",
+          "tools": [],
+          "changes": [
+            "a change of a security role or of a security rule, which the page lists among the changes that the server makes and for which it names no tool"
+          ]
+        },
+        {
+          "area": "connections",
+          "tools": [],
+          "changes": [
+            "a change of the data source or of a connection of a model, kept as a precaution: no page names a tool for it, and the list of objects that the page says the server changes ends with 'and more'"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "fabric-rti-local",
+      "group": "pinned",
+      "name": "Real-Time Intelligence MCP server (local)",
+      "hosting": "local",
+      "directory": true,
+      "use": "Real-Time Intelligence MCP server (local): KQL, Eventhouse, Eventstreams, Activator, maps and Azure Data Explorer",
+      "endpoint": "command",
+      "needs": [
+        "It is in public preview, and its README says that the implementation may change significantly before general availability.",
+        "Started by a command (stdio mode, as the kit does), it signs in with the default Azure credential chain; by default in HTTP mode a request needs a bearer token and no credentials of the local process are used, unless FABRIC_RTI_HTTP_ALLOW_MI (a managed identity) or FABRIC_RTI_HTTP_DEBUG_MODE (local process credentials) is enabled.",
+        "Its README counts 13 tools for Eventhouse and one more that is optional (kusto_get_shots, when KUSTO_SHOTS_TABLE is configured), 17 for Eventstreams, 2 for Activator and 7 for Map; its bullet list for Eventhouse names 12 of the 13 and omits kusto_show_command, which the lock has, and the lock lists 39 tools."
+      ],
+      "pages": [
+        {
+          "url": "https://learn.microsoft.com/en-us/fabric/real-time-intelligence/mcp-local-server",
+          "updated": "2026-06-22"
+        },
+        {"url": "https://github.com/microsoft/fabric-rti-mcp"},
+        {
+          "url": "https://learn.microsoft.com/en-us/rest/api/fabric/articles/mcp-servers/fabric-mcp-servers-list",
+          "updated": "2026-10-21"
+        }
+      ],
+      "tools": {"from": "lock", "contract": "fabric-rti-local/default"},
+      "knowledge": [],
+      "flagged": [
+        {
+          "area": "permissions",
+          "tools": [],
+          "changes": [
+            "a management command of `kusto_command` that changes who may access a cluster, a database, a table or a function"
+          ]
+        },
+        {
+          "area": "row-level or object-level security",
+          "tools": [],
+          "changes": ["a management command of `kusto_command` that changes a row-level security policy"]
+        },
+        {
+          "area": "security settings",
+          "tools": [],
+          "changes": ["a management command of `kusto_command` that changes another security policy of a database or a table"]
+        },
+        {
+          "area": "capacity, tenant or workspace settings",
+          "tools": [],
+          "changes": ["a management command of `kusto_command` that changes a policy of a cluster, for example its capacity"]
+        },
+        {
+          "area": "connections",
+          "tools": [],
+          "changes": [
+            "a management command of `kusto_command` that creates or changes a connection to another source, for example an external table",
+            "a connection, or the binding of one, in an eventstream that `eventstream_create`, `eventstream_update` or `eventstream_create_from_definition` writes (a precaution: the README says that `eventstream_update` modifies settings and destinations, that `eventstream_create` creates an eventstream with a custom configuration, and lists `eventstream_create_from_definition`, and it names no argument for a connection)",
+            "a connection, or the binding of one, in a map that `map_create` or `map_update_definition` writes (a precaution: the README says that `map_create` creates a map from a provided configuration and that `map_update_definition` replaces the full definition of a map, and it names no argument for a connection)"
+          ]
+        },
+        {
+          "area": "credentials",
+          "tools": [],
+          "changes": [
+            "a management command of `kusto_command` that carries a secret, a key or a connection string with a secret"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "azure-mcp",
+      "group": "pinned",
+      "name": "Azure MCP Server",
+      "hosting": "local",
+      "use": "Azure resources by service, and the tools for best practices, Terraform best practices, cloud architecture design and the Well-Architected Framework",
+      "endpoint": "command",
+      "needs": [
+        "Its tools are disabled by default in supported hosts, and the Azure RBAC permissions of the signed-in identity decide which work.",
+        "Sign-in is Microsoft Entra ID through the Azure Identity library.",
+        "The kit starts the read variant with the server's read-only switch, which allows no write operation; the lock lists the namespace tools of that variant.",
+        "The server asks for confirmation before a high-risk command, such as returning a Key Vault secret; the option that turns that off is not recommended, and the kit does not set it.",
+        "The stage here is that of the pinned build, a pre-release: the README on the main branch announces version 2.0 as generally available, and the Learn pages state no stage.",
+        "Its Learn tools page lists namespaces that the locked build does not have (azuremigrate, communication and resilience), and the lock has namespaces that the page does not list (arm, azd, containerapps, deviceprovisioning, documentation, foundryextensions, functions, iotoperations, netappfiles and resiliency).",
+        "The page names some tools by a namespace where the lock has tools with a suffix (extension, group and subscription against extension_cli_generate, extension_cli_install, group_list, group_resource_list and subscription_list), and writes get_azure_bestpractices as get azure bestpractices get: the list of this kit is the lock's."
+      ],
+      "pages": [
+        {
+          "url": "https://learn.microsoft.com/en-us/azure/developer/azure-mcp-server/overview",
+          "updated": "2026-10-16"
+        },
+        {"url": "https://learn.microsoft.com/en-us/azure/developer/azure-mcp-server/tools/", "updated": "2026-10-16"},
+        {"url": "https://github.com/microsoft/mcp/tree/main/servers/Azure.Mcp.Server"}
+      ],
+      "tools": {"from": "lock", "contract": "azure-mcp/read", "kinds": "variant"},
+      "knowledge": [
+        {
+          "tools": ["get_azure_bestpractices", "azureterraformbestpractices", "cloudarchitect", "wellarchitectedframework"],
+          "what": "Azure best practices, Terraform best practices, guided cloud architecture design, and architecture guidance by Well-Architected pillar"
+        }
+      ],
+      "flagged": [
+        {
+          "area": "credentials",
+          "tools": [],
+          "changes": [
+            "a call of any namespace that returns or takes the value of a secret, a key, a password, a connection string or a certificate, for example a `keyvault` secret or the application settings of an App Service web app (`appservice`): the read-only switch does not stop a read"
+          ]
+        },
+        {
+          "area": "permissions",
+          "tools": [],
+          "changes": ["a change of a role assignment (`role`), or of who may access a resource, through any namespace"]
+        },
+        {
+          "area": "security settings",
+          "tools": [],
+          "changes": [
+            "a change of an Azure Policy assignment, definition or initiative (`policy`), of a firewall rule, of the approval of a private endpoint connection or of a security setting of a backup, through any namespace"
+          ]
+        },
+        {
+          "area": "capacity, tenant or workspace settings",
+          "tools": [],
+          "changes": [
+            "a change of a quota or a limit (`quota`), or of the size, the SKU, the tier or the capacity of a resource, for example the capacity of a virtual machine scale set or the performance tier of an Azure SQL database, through any namespace"
+          ]
+        },
+        {
+          "area": "connections",
+          "tools": [],
+          "changes": [
+            "a change of a connection of a resource, for example the database connection of an App Service web app (`appservice`) or a connector of an SRE agent (`sreagent`)"
+          ]
+        },
+        {
+          "area": "schedules",
+          "tools": [],
+          "changes": [
+            "a change of a schedule, for example the schedule of a backup policy (`azurebackup`) or a scheduled task of an SRE agent (`sreagent`)"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "bicep-mcp",
+      "group": "pinned",
+      "name": "Bicep MCP server",
+      "hosting": "local",
+      "use": "Bicep schemas, formatting and best practices",
+      "endpoint": "command",
+      "needs": [
+        "The tools page says that its tools give context for writing Bicep and are not designed to deploy directly to Azure.",
+        "It uses stdio transport, launched locally by a client process, and is provided by the Azure.Bicep.McpServer NuGet tool.",
+        "The tools page names it Bicep (PREVIEW) in the tool picker of GitHub Copilot Chat, and states no other stage.",
+        "The tools page on the main branch lists get_bicep_file_diagnostics, which the locked contract does not have, and omits build_bicep and build_bicepparam, which the locked contract has.",
+        "Its catalog of resource type schemas is bundled with Bicep and not queried live from Azure: a selected version does not guarantee availability in a particular cloud, region or subscription."
+      ],
+      "pages": [
+        {"url": "https://github.com/Azure/bicep/blob/main/docs/mcp-tools.md"},
+        {
+          "url": "https://learn.microsoft.com/en-us/azure/azure-resource-manager/bicep/visual-studio-code",
+          "updated": "2026-06-02"
+        }
+      ],
+      "tools": {"from": "lock", "contract": "bicep-mcp/default"},
+      "knowledge": [{"tools": ["get_bicep_best_practices"], "what": "Bicep best practices"}],
+      "flagged": []
+    },
+    {
+      "id": "azure-arm-cost",
+      "group": "pinned",
+      "name": "Azure Resource Manager MCP server",
+      "hosting": "remote",
+      "use": "Azure cost and pricing queries. Treat it as the whole Azure Resource Manager server, which can also deploy templates and create or update resources, and whose cost toolset can create a budget: a change through it changes live Azure or a tenant and needs the approval that the rules ask for",
+      "endpoint": "one URL",
+      "needs": [
+        "Its README calls it a preview, and says that it can only be used with a set of MCP clients: GitHub Copilot Chat in VS Code and GitHub Copilot CLI.",
+        "The README says to sign in with Azure credentials, that every call is made on behalf of the signed-in user with that user's permissions, and does not name the method.",
+        "Its default tools include template deployments and creating or updating resources and resource groups, besides Azure Resource Graph queries, resource type schemas and cost and pricing queries.",
+        "The README names an Azure Policy that denies the requests of its deployment tool, create_deployment, as the way to block deployments.",
+        "The Cost Management toolset is optional, and a client turns it on with the header x-mcp-toolset set to CostManagement; it adds nine tools, one of which creates a budget. The kit sets that header, so those nine tools are on."
+      ],
+      "pages": [
+        {"url": "https://github.com/Azure/Azure-Resource-Manager-MCP"},
+        {"url": "https://github.com/Azure/Azure-Resource-Manager-MCP/blob/main/docs/CostManagementAndPricingTools.md"}
+      ],
+      "tools": {
+        "from": "page",
+        "groups": [
+          {
+            "kind": "read",
+            "names": [
+              "list_resource_types", "get_resource_type_schema", "generate_query", "validate_query", "execute_query",
+              "get_deployment_status", "get_async_operation_status", "whatif_deployment", "query_costs",
+              "query_aks_costs", "get_retail_prices", "get_pricesheet_status"
+            ]
+          },
+          {
+            "kind": "write",
+            "names": [
+              "create_deployment", "cancel_deployment", "create_or_update_resource",
+              "create_or_update_resource_group", "start_pricesheet_download"
+            ]
+          },
+          {
+            "kind": "read",
+            "set": "optional Cost Management toolset",
+            "names": [
+              "forecast_costs", "list_dimensions", "list_budgets", "get_budget", "list_alerts",
+              "list_benefit_utilization", "get_benefit_recommendations", "list_reservation_transactions"
+            ]
+          },
+          {"kind": "write", "set": "optional Cost Management toolset", "names": ["create_budget"]}
+        ]
+      },
+      "knowledge": [],
+      "flagged": [
+        {
+          "area": "credentials",
+          "tools": ["get_pricesheet_status"],
+          "note": "it returns a time-limited SAS download URL",
+          "changes": [
+            "a payload of `create_deployment` or `create_or_update_resource` that carries a secret, a key or a password"
+          ]
+        },
+        {
+          "area": "permissions",
+          "tools": [],
+          "changes": ["a change of a role assignment through `create_deployment` or `create_or_update_resource`"]
+        },
+        {
+          "area": "security settings",
+          "tools": [],
+          "changes": [
+            "a change of a policy assignment, a network security rule or another security resource through `create_deployment` or `create_or_update_resource`"
+          ]
+        },
+        {
+          "area": "connections",
+          "tools": [],
+          "changes": [
+            "a change of a connection of a resource to another through `create_deployment` or `create_or_update_resource`"
+          ]
+        },
+        {
+          "area": "schedules",
+          "tools": [],
+          "changes": [
+            "a change of a schedule or a trigger of a resource through `create_deployment` or `create_or_update_resource`"
+          ]
+        },
+        {
+          "area": "capacity, tenant or workspace settings",
+          "tools": [],
+          "changes": [
+            "a change of a capacity, or of a setting of a tenant, a management group or a subscription, through `create_deployment` or `create_or_update_resource`"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "eventhouse-remote",
+      "group": "listed",
+      "name": "Eventhouse MCP server",
+      "short": "Eventhouse",
+      "hosting": "remote",
+      "status": "preview",
+      "directory": true,
+      "use": "KQL over an eventhouse: schemas, queries, samples",
+      "endpoint": "one URL, or one URL per item",
+      "needs": ["It is in preview.", "The page names no tools."],
+      "pages": [
+        {
+          "url": "https://learn.microsoft.com/en-us/fabric/real-time-intelligence/mcp-remote-eventhouse",
+          "updated": "2026-10-23"
+        },
+        {
+          "url": "https://learn.microsoft.com/en-us/fabric/real-time-intelligence/mcp-overview",
+          "updated": "2026-10-23"
+        },
+        {
+          "url": "https://learn.microsoft.com/en-us/rest/api/fabric/articles/mcp-servers/fabric-mcp-servers-list",
+          "updated": "2026-10-21"
+        }
+      ],
+      "tools": {"from": "none", "note": "The page names no tools."},
+      "knowledge": [],
+      "flagged": []
+    },
+    {
+      "id": "activator-remote",
+      "group": "listed",
+      "name": "Activator MCP server",
+      "short": "Activator",
+      "hosting": "remote",
+      "status": "preview",
+      "directory": true,
+      "use": "rules with email or Teams actions, on KQL data",
+      "endpoint": "one URL per item",
+      "needs": ["It is in preview.", "A rule can have a KQL source only, and an e-mail or a Teams action only."],
+      "pages": [
+        {
+          "url": "https://learn.microsoft.com/en-us/fabric/real-time-intelligence/mcp-remote-activator",
+          "updated": "2026-10-23"
+        },
+        {
+          "url": "https://learn.microsoft.com/en-us/rest/api/fabric/articles/mcp-servers/fabric-mcp-servers-list",
+          "updated": "2026-10-21"
+        }
+      ],
+      "tools": {
+        "from": "page",
+        "groups": [
+          {"kind": "read", "names": ["list_rules"]},
+          {"kind": "write", "names": ["create_rule", "start_rule", "stop_rule"]}
+        ]
+      },
+      "knowledge": [],
+      "flagged": []
+    },
+    {
+      "id": "operations-agent-remote",
+      "group": "listed",
+      "name": "Operations agent MCP server",
+      "short": "Operations agent",
+      "hosting": "remote",
+      "status": "preview",
+      "directory": true,
+      "use": "configure an operations agent and its monitoring (two URLs per agent: configure and query)",
+      "endpoint": "two URLs per item",
+      "needs": [
+        "It is in preview, and only manual configuration is supported.",
+        "Using it needs Contributor or Admin access to the workspace that has the operations agent."
+      ],
+      "pages": [
+        {
+          "url": "https://learn.microsoft.com/en-us/fabric/real-time-intelligence/mcp-remote-operations-agent",
+          "updated": "2026-10-23"
+        },
+        {
+          "url": "https://learn.microsoft.com/en-us/rest/api/fabric/articles/mcp-servers/fabric-mcp-servers-list",
+          "updated": "2026-10-21"
+        }
+      ],
+      "tools": {
+        "from": "page",
+        "groups": [
+          {
+            "kind": "read",
+            "set": "configure URL",
+            "names": [
+              "get_agent_instructions", "get_agent_knowledge_sources", "get_agent_actions", "get_playbook_summary",
+              "get_playbook_rules", "get_rule_details", "get_generate_playbook_status"
+            ]
+          },
+          {
+            "kind": "write",
+            "set": "configure URL",
+            "names": [
+              "set_agent_instructions", "add_or_update_eventhouse_knowledge_source",
+              "add_or_update_fabric_ontology_knowledge_source", "add_or_update_agent_action", "generate_playbook",
+              "start_agent", "stop_agent"
+            ]
+          },
+          {"kind": "destructive", "set": "configure URL", "names": ["remove_knowledge_source", "remove_agent_action"]},
+          {
+            "kind": "read",
+            "set": "query URL",
+            "names": [
+              "get_agent_summary", "get_agent_state", "get_monitored_rules", "get_operation_details",
+              "query_operations"
+            ]
+          }
+        ]
+      },
+      "knowledge": [],
+      "flagged": []
+    },
+    {
+      "id": "data-agent-remote",
+      "group": "listed",
+      "name": "Fabric data agent as an MCP server",
+      "short": "Data agent as an MCP server",
+      "hosting": "remote",
+      "status": "unverified",
+      "directory": true,
+      "use": "ask a published data agent a question",
+      "endpoint": "one URL per item",
+      "needs": [
+        "Only a published data agent is an MCP server, and it exposes a single tool that stands for the agent: its description is the description of the data agent.",
+        "A request carries a Fabric bearer token of a user or of a service principal.",
+        "The server does not support dynamic client registration, and it supports MCP tasks for a long-running question.",
+        "The page states no release stage for it."
+      ],
+      "pages": [
+        {
+          "url": "https://learn.microsoft.com/en-us/fabric/data-science/data-agent-mcp-server",
+          "updated": "2026-09-04"
+        },
+        {
+          "url": "https://learn.microsoft.com/en-us/rest/api/fabric/articles/mcp-servers/fabric-mcp-servers-list",
+          "updated": "2026-10-21"
+        }
+      ],
+      "tools": {"from": "none", "note": "One tool that stands for the published data agent."},
+      "knowledge": [],
+      "flagged": []
+    },
+    {
+      "id": "ontology-remote",
+      "group": "listed",
+      "name": "Ontology MCP server",
+      "short": "Ontology",
+      "hosting": "remote",
+      "status": "preview",
+      "directory": true,
+      "use": "entities, relationships and definitions of an ontology",
+      "endpoint": "one URL per item",
+      "needs": [
+        "It is in preview, and because of a known issue a service principal cannot use it.",
+        "The page names no tools."
+      ],
+      "pages": [
+        {
+          "url": "https://learn.microsoft.com/en-us/fabric/iq/ontology/how-to-use-ontology-mcp-server",
+          "updated": "2026-10-01"
+        },
+        {
+          "url": "https://learn.microsoft.com/en-us/rest/api/fabric/articles/mcp-servers/fabric-mcp-servers-list",
+          "updated": "2026-10-21"
+        }
+      ],
+      "tools": {"from": "none", "note": "The page names no tools."},
+      "knowledge": [],
+      "flagged": []
+    },
+    {
+      "id": "datafactory-local",
+      "group": "listed",
+      "name": "DataFactory MCP server",
+      "short": "DataFactory",
+      "hosting": "local",
+      "status": "unverified",
+      "directory": true,
+      "use": "connections, dataflows, pipelines, copy jobs, Airflow jobs",
+      "endpoint": "command",
+      "needs": [
+        "It is a .NET 10 tool that starts with dnx; the README marks some tools as preview and the pipelines page calls pipeline management a preview feature, and no page states a release stage for the server as a whole.",
+        "Some of its tools sign in or out, or return an access token; the kit leaves sign-in to the person or the runner (rule 2), so no agent calls them.",
+        "The pipeline tools are a preview feature, and they appear only with the --pipeline flag.",
+        "The guide to connection management also names a tool, create_connection_ui, that opens a form for a new connection and is not in the list of the README.",
+        "The pipelines page says that pipeline deletion and schedule modification are not available through the MCP server, and the same page documents creating a schedule (mcp_datafactorymc_create_pipeline_schedule); the README also lists set_pipeline_schedule_enabled: the pages disagree about modifying a schedule.",
+        "Its execute_query tool runs M queries, and the knowledge files that the README lists cover Action.Sequence for writes, so the tool is listed as mixed."
+      ],
+      "pages": [
+        {"url": "https://github.com/microsoft/DataFactory.MCP"},
+        {"url": "https://github.com/microsoft/DataFactory.MCP/blob/main/docs/connection-management.md"},
+        {
+          "url": "https://learn.microsoft.com/en-us/fabric/data-factory/pipelines-manage-vs-code",
+          "updated": "2026-06-11"
+        },
+        {
+          "url": "https://learn.microsoft.com/en-us/rest/api/fabric/articles/mcp-servers/fabric-mcp-servers-list",
+          "updated": "2026-10-21"
+        }
+      ],
+      "tools": {
+        "from": "page",
+        "groups": [
+          {
+            "kind": "read",
+            "names": [
+              "get_authentication_status", "get_access_token", "list_gateways", "get_gateway",
+              "list_supported_connection_types", "list_connections", "get_connection", "list_workspaces",
+              "list_dataflows", "get_dataflow_definition", "refresh_dataflow_status", "list_capacities",
+              "list_pipelines", "get_pipeline", "get_pipeline_definition", "get_pipeline_run_status",
+              "list_pipeline_schedules", "list_copy_jobs", "get_copy_job", "get_copy_job_definition",
+              "get_copy_job_run_status", "list_copy_job_schedules", "list_airflow_jobs", "get_airflow_job",
+              "get_airflow_job_definition"
+            ]
+          },
+          {
+            "kind": "write",
+            "names": [
+              "authenticate_interactive", "authenticate_service_principal", "sign_out",
+              "create_virtualnetwork_gateway", "create_connection", "create_connection_ui", "create_dataflow",
+              "add_connection_to_dataflow", "add_or_update_query_in_dataflow", "save_dataflow_definition",
+              "refresh_dataflow_background", "create_pipeline", "update_pipeline", "update_pipeline_definition",
+              "run_pipeline", "create_pipeline_schedule", "set_pipeline_schedule_enabled", "create_copy_job",
+              "update_copy_job", "update_copy_job_definition", "run_copy_job", "create_copy_job_schedule",
+              "create_airflow_job", "update_airflow_job", "update_airflow_job_definition"
+            ]
+          },
+          {"kind": "destructive", "names": ["delete_airflow_job"]},
+          {"kind": "mixed", "names": ["execute_query"]}
+        ]
+      },
+      "knowledge": [],
+      "flagged": [
+        {
+          "area": "credentials",
+          "tools": ["get_access_token", "authenticate_interactive", "authenticate_service_principal", "sign_out"]
+        },
+        {
+          "area": "connections",
+          "tools": ["create_connection", "create_connection_ui", "create_virtualnetwork_gateway", "add_connection_to_dataflow"],
+          "changes": [
+            "a connection, or the binding of one, in a definition that `update_pipeline_definition`, `update_copy_job_definition` or `save_dataflow_definition` writes"
+          ]
+        },
+        {
+          "area": "schedules",
+          "tools": ["create_pipeline_schedule", "set_pipeline_schedule_enabled", "create_copy_job_schedule"]
+        }
+      ]
+    },
+    {
+      "id": "notebook-integration-local",
+      "group": "listed",
+      "name": "Fabric Data Engineering notebook integration",
+      "short": "Notebook integration",
+      "hosting": "local",
+      "status": "unverified",
+      "directory": true,
+      "use": "notebook context for Claude Code and Codex in VS Code",
+      "endpoint": "extension",
+      "needs": [
+        "It is a feature of the Fabric Data Engineering VS Code extension: the Claude Code or Codex extension uses the local MCP server of it to read the notebook language, target, document revision, workspace and runtime context, and attached-resource metadata.",
+        "It needs the Fabric Data Engineering extension and the Claude Code or the Codex extension, signed in; the page states no release stage for it."
+      ],
+      "pages": [
+        {
+          "url": "https://learn.microsoft.com/en-us/fabric/data-engineering/claudecode-codex-with-vs-code",
+          "updated": "2026-09-23"
+        },
+        {
+          "url": "https://learn.microsoft.com/en-us/rest/api/fabric/articles/mcp-servers/fabric-mcp-servers-list",
+          "updated": "2026-10-21"
+        }
+      ],
+      "tools": {"from": "none", "note": "The page names no tools."},
+      "knowledge": [],
+      "flagged": []
+    },
+    {
+      "id": "onelake-hosted",
+      "group": "also",
+      "name": "Hosted OneLake MCP server",
+      "short": "Hosted OneLake MCP server",
+      "hosting": "remote",
+      "status": "public-preview",
+      "use": "files, directories and table metadata of one OneLake item",
+      "endpoint": "one URL per item",
+      "needs": [
+        "It is in public preview, and its token audience is the storage audience and not the Fabric one.",
+        "It is not in the directory of Fabric MCP servers."
+      ],
+      "pages": [
+        {"url": "https://learn.microsoft.com/en-us/fabric/onelake/onelake-hosted-mcp", "updated": "2026-10-23"},
+        {
+          "url": "https://learn.microsoft.com/en-us/rest/api/fabric/articles/mcp-servers/fabric-mcp-servers-list",
+          "updated": "2026-10-21"
+        }
+      ],
+      "tools": {
+        "from": "page",
+        "groups": [
+          {
+            "kind": "read",
+            "names": [
+              "onelake_list_files", "onelake_blob_list", "onelake_list_items_data", "onelake_read_file",
+              "onelake_download_file", "onelake_get_principal_access", "onelake_list_namespaces",
+              "onelake_get_namespace", "onelake_get_table_config", "onelake_get_download_instructions",
+              "onelake_get_upload_instructions"
+            ]
+          },
+          {
+            "kind": "destructive",
+            "names": ["onelake_create_directory", "onelake_delete_directory", "onelake_delete_file", "onelake_blob_delete"]
+          }
+        ]
+      },
+      "knowledge": [],
+      "flagged": []
+    },
+    {
+      "id": "powerbi-consumption-remote",
+      "group": "also",
+      "name": "Power BI Consumption MCP server",
+      "short": "Power BI Consumption MCP server",
+      "hosting": "remote",
+      "status": "preview",
+      "use": "DAX queries and metadata of semantic models and reports; its page says to prefer the Fabric IQ MCP server (`fabric-iq`)",
+      "endpoint": "one URL",
+      "needs": [
+        "It is in preview, and a Power BI administrator must enable the tenant setting Users can use the Power BI Model Context Protocol server endpoint (preview).",
+        "Row-level security applies to user authentication; Power BI does not enforce it for a service principal, which can then access all the data that it is authorized to access."
+      ],
+      "pages": [
+        {
+          "url": "https://learn.microsoft.com/en-us/power-bi/developer/mcp/remote-mcp-server-get-started",
+          "updated": "2026-09-17"
+        },
+        {
+          "url": "https://learn.microsoft.com/en-us/rest/api/fabric/articles/mcp-servers/fabric-mcp-servers-list",
+          "updated": "2026-10-21"
+        }
+      ],
+      "tools": {
+        "from": "page",
+        "groups": [
+          {
+            "kind": "read",
+            "names": ["Execute Query", "Get Semantic Model Schema", "Get Report Metadata", "Generate Query"]
+          }
+        ]
+      },
+      "knowledge": [],
+      "flagged": []
+    },
+    {
+      "id": "graph-enterprise",
+      "group": "also",
+      "name": "Microsoft MCP Server for Enterprise",
+      "short": "Microsoft MCP Server for Enterprise (Graph)",
+      "hosting": "remote",
+      "status": "public-preview",
+      "use": "Microsoft Graph queries over a tenant (read-only Microsoft Entra scenarios, as its overview says); an Application Administrator or a Cloud Application Administrator provisions it, and the Fabric Core page suggests it for e-mail lookups in role changes, which the factory flags and does not make",
+      "endpoint": "one URL",
+      "needs": [
+        "It is in public preview and must be enabled in the tenant: an Application Administrator or a Cloud Application Administrator consents to the permissions."
+      ],
+      "pages": [
+        {"url": "https://learn.microsoft.com/en-us/graph/mcp-server/get-started", "updated": "2026-07-04"},
+        {"url": "https://learn.microsoft.com/en-us/graph/mcp-server/overview", "updated": "2026-07-04"},
+        {
+          "url": "https://learn.microsoft.com/en-us/rest/api/fabric/articles/mcp-servers/core-remote/tools-core-mcp-server",
+          "updated": "2026-10-27"
+        },
+        {
+          "url": "https://learn.microsoft.com/en-us/rest/api/fabric/articles/mcp-servers/fabric-mcp-servers-list",
+          "updated": "2026-10-21"
+        }
+      ],
+      "tools": {
+        "from": "page",
+        "groups": [
+          {
+            "kind": "read",
+            "names": ["microsoft_graph_suggest_queries", "microsoft_graph_get", "microsoft_graph_list_properties"]
+          }
+        ]
+      },
+      "knowledge": [],
+      "flagged": []
+    },
+    {
+      "id": "foundry-mcp",
+      "group": "also",
+      "name": "Foundry MCP Server",
+      "short": "Foundry MCP server",
+      "hosting": "remote",
+      "status": "public-preview",
+      "use": "Foundry agents, datasets, evaluations and models",
+      "endpoint": "one URL",
+      "needs": [
+        "It is in public preview, without a service-level agreement.",
+        "Every operation runs with the signed-in user's permissions through the Microsoft Entra On-Behalf-Of flow.",
+        "Its page lists 79 tools in 17 categories and marks 35 as read and 44 as write; 14 of the 44 delete, replace or regenerate something and are listed here as destructive.",
+        "Its model deployment tools take capacity units (model_deploy_azure_direct_model and its deprecated alias model_deploy) or an instance count (model_deploy_managed_compute), and an example prompt of the page says that Managed Compute allocates billable dedicated GPU capacity."
+      ],
+      "pages": [
+        {"url": "https://learn.microsoft.com/en-us/azure/ai-foundry/mcp/get-started", "updated": "2026-09-10"},
+        {"url": "https://learn.microsoft.com/en-us/azure/ai-foundry/mcp/available-tools", "updated": "2026-08-19"},
+        {
+          "url": "https://learn.microsoft.com/en-us/rest/api/fabric/articles/mcp-servers/fabric-mcp-servers-list",
+          "updated": "2026-10-21"
+        }
+      ],
+      "tools": {
+        "from": "page",
+        "groups": [
+          {
+            "kind": "read",
+            "names": [
+              "agent_get", "agent_container_status_get", "agent_definition_schema_get", "session_get", "session_list",
+              "session_logstream", "session_file_list", "session_file_stat", "session_file_download", "toolbox_get",
+              "toolbox_version_get", "evaluation_dataset_get", "evaluation_dataset_versions_get",
+              "evaluation_dataset_sas_url_get", "data_generation_job_get", "evaluation_get",
+              "evaluation_comparison_get", "evaluation_suite_get", "evaluation_suite_generation_job_get",
+              "evaluator_catalog_get", "evaluator_generation_job_get", "model_catalog_list", "model_details_get",
+              "model_deployment_get", "model_benchmark_get", "model_benchmark_subset_get", "model_similar_models_get",
+              "model_switch_recommendations_get", "model_monitoring_metrics_get", "model_deprecation_info_get",
+              "model_quota_list", "project_connection_list", "project_connection_get",
+              "project_connection_list_metadata", "continuous_eval_get"
+            ]
+          },
+          {
+            "kind": "write",
+            "names": [
+              "agent_update", "agent_invoke", "agent_container_control", "session_create", "session_file_mkdir",
+              "session_file_upload", "toolbox_version_create", "toolbox_update", "evaluation_dataset_create",
+              "data_generation_job_create", "data_generation_job_cancel", "evaluation_agent_batch_eval_create",
+              "evaluation_dataset_batch_eval_create", "evaluation_comparison_create",
+              "evaluation_agent_traces_batch_eval_create", "evaluation_traces_batch_eval_create",
+              "evaluation_suite_create", "evaluation_suite_update", "evaluation_suite_run",
+              "evaluation_suite_generation_job_create", "evaluation_suite_generation_job_cancel",
+              "evaluator_catalog_create", "evaluator_catalog_update", "evaluator_generation_job_cancel",
+              "model_deploy_azure_direct_model", "model_deploy", "model_deploy_managed_compute",
+              "project_connection_update", "prompt_optimize", "continuous_eval_create"
+            ]
+          },
+          {
+            "kind": "destructive",
+            "names": [
+              "agent_delete", "session_delete", "session_file_delete", "toolbox_delete", "toolbox_version_delete",
+              "data_generation_job_delete", "evaluation_suite_delete", "evaluation_suite_generation_job_delete",
+              "evaluator_catalog_delete", "evaluator_generation_job_create", "model_deployment_delete",
+              "project_connection_create", "project_connection_delete", "continuous_eval_delete"
+            ]
+          }
+        ]
+      },
+      "knowledge": [],
+      "flagged": [
+        {
+          "area": "connections",
+          "tools": ["project_connection_create", "project_connection_update", "project_connection_delete"]
+        },
+        {"area": "schedules", "tools": ["continuous_eval_create", "continuous_eval_delete"]},
+        {"area": "credentials", "tools": ["evaluation_dataset_sas_url_get"]},
+        {"area": "permissions", "tools": [], "changes": ["a `session_file_mkdir` call that sets a permission mode"]},
+        {
+          "area": "capacity, tenant or workspace settings",
+          "tools": [],
+          "changes": [
+            "a call of `model_deploy_azure_direct_model`, `model_deploy` or `model_deploy_managed_compute` that sets capacity units or an instance count"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "graphql-sample",
+      "group": "related",
+      "name": "Fabric API for GraphQL sample MCP server",
+      "short": "Fabric API for GraphQL sample (local)",
+      "hosting": "local",
+      "status": "unverified",
+      "use": "a sample that lets an agent discover and query a Fabric GraphQL API",
+      "endpoint": "local URL",
+      "needs": [
+        "It is a Node.js sample that the page starts from the fabric-samples repository, and it listens on a local address.",
+        "Introspection is disabled by default and only a workspace administrator can enable it; the sample needs it."
+      ],
+      "pages": [
+        {
+          "url": "https://learn.microsoft.com/en-us/fabric/data-engineering/api-graphql-local-model-context-protocol",
+          "updated": "2026-09-29"
+        },
+        {
+          "url": "https://learn.microsoft.com/en-us/rest/api/fabric/articles/mcp-servers/fabric-mcp-servers-list",
+          "updated": "2026-10-21"
+        }
+      ],
+      "tools": {
+        "from": "page",
+        "groups": [{"kind": "read", "names": ["introspect-schema"]}, {"kind": "mixed", "names": ["query-graphql"]}]
+      },
+      "knowledge": [],
+      "flagged": []
+    },
+    {
+      "id": "sql-mcp-server",
+      "group": "related",
+      "name": "SQL MCP Server",
+      "short": "SQL MCP Server of Data API builder (customer-hosted)",
+      "hosting": "customer",
+      "status": "unverified",
+      "use": "database entities for agents through Data API builder, which the customer hosts",
+      "endpoint": "customer",
+      "needs": [
+        "It is part of Data API builder from version 1.7 and is hosted by the customer, over streamable HTTP or stdio.",
+        "The page lists aggregate_records for version 2.0 and later and not for 1.7.x, and says that in 2.0 a stored procedure can be registered as a named tool (custom-tool), which this list does not hold.",
+        "It is designed for data and not for schema; execute_entity runs a stored procedure, and the pages do not limit what the procedure does."
+      ],
+      "pages": [
+        {"url": "https://learn.microsoft.com/en-us/azure/data-api-builder/mcp/overview", "updated": "2026-05-15"},
+        {
+          "url": "https://learn.microsoft.com/en-us/azure/data-api-builder/mcp/data-manipulation-language-tools",
+          "updated": "2026-06-22"
+        },
+        {
+          "url": "https://learn.microsoft.com/en-us/rest/api/fabric/articles/mcp-servers/fabric-mcp-servers-list",
+          "updated": "2026-10-21"
+        }
+      ],
+      "tools": {
+        "from": "page",
+        "groups": [
+          {"kind": "read", "names": ["describe_entities", "read_records", "aggregate_records"]},
+          {"kind": "write", "names": ["create_record", "update_record"]},
+          {"kind": "destructive", "names": ["delete_record"]},
+          {"kind": "mixed", "names": ["execute_entity"]}
+        ]
+      },
+      "knowledge": [],
+      "flagged": [
+        {
+          "area": "permissions",
+          "tools": [],
+          "changes": [
+            "a call of `execute_entity`, or of a custom tool, that runs a stored procedure which changes who may access something"
+          ]
+        },
+        {
+          "area": "row-level or object-level security",
+          "tools": [],
+          "changes": [
+            "a call of `execute_entity`, or of a custom tool, that runs a stored procedure which changes a row-level security policy"
+          ]
+        },
+        {
+          "area": "credentials",
+          "tools": [],
+          "changes": [
+            "a call of `execute_entity`, or of a custom tool, that runs a stored procedure which returns a secret, a key or a password"
+          ]
+        }
+      ]
+    }
+  ]
+}

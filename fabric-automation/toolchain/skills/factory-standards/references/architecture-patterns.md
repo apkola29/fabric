@@ -8,7 +8,7 @@ Tags: [gate] a deterministic check could verify it; [review] needs a reviewer's 
 
 | Label | Page | Updated | Retrieved |
 |---|---|---|---|
-| Patterns | https://learn.microsoft.com/azure/architecture/data-guide/technology-choices/fabric-deployment-patterns | 2026-09-21 | 2026-11-01 |
+| Patterns | https://learn.microsoft.com/azure/architecture/data-guide/technology-choices/fabric-deployment-patterns | 2026-11-02 | 2026-11-04 |
 | Greenfield | https://learn.microsoft.com/azure/architecture/example-scenario/data/greenfield-lakehouse-fabric | 2026-08-18 | 2026-11-01 |
 | Medallion | https://learn.microsoft.com/fabric/onelake/onelake-medallion-lakehouse-architecture | 2026-08-26 | 2026-11-01 |
 | CAF governance | https://learn.microsoft.com/azure/cloud-adoption-framework/data/fabric-governance-unified-data-platform | 2026-10-27 | 2026-11-01 |

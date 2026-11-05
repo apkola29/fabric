@@ -2,8 +2,8 @@
 
 usage: python pack_mechanics.py PACKDIR SOURCEDIR
 
-PACKDIR holds the four reference files (toolchain/skills/factory-standards/references) and SOURCEDIR the 16 pages reduced to text, one file per page, named by the
-address of the page with every run of other characters replaced by a hyphen, and starting with a line `SOURCE: <address>`.
+PACKDIR holds the reference files (toolchain/skills/factory-standards/references: the four of the first pack, the five of the workload pack, or the ones that are being checked) and SOURCEDIR the pages
+reduced to text, one file per page, named by the address of the page with every run of other characters replaced by a hyphen, and starting with a line `SOURCE: <address>`.
 
 For every check and every note of every reference file it verifies that: each cited label is in the sources table; each cited section heading is a heading of the
 extracted page of that label; every number in the check text occurs in the text of the cited pages; no run of more than 12 words is copied from a cited page. The
